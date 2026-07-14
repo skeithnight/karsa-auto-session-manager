@@ -75,6 +75,44 @@ When working on specific modules, the following additional criteria apply:
 - [ ] Accurately tracks and exposes execution latency to Prometheus.
 - [ ] Triggers a graceful shutdown (flatten $\rightarrow$ cancel $\rightarrow$ exit) on `SIGINT`/`SIGTERM`.
 
+### F. Universe Scorer (Stage 1)
+- [ ] Scoring formula unit tests with hand-calculated fixtures (Volume + Momentum + Squeeze + Overextension).
+- [ ] Sector mapping covers all configured symbols (no unclassified symbols).
+- [ ] Empty universe graceful degradation: falls back to static symbol list from config.
+- [ ] Redis write/read round-trip test for `system:universe:symbols`.
+- [ ] Sector cap enforcement: rejects signals when sector already at max positions.
+
+### G. AI CryptoAnalyst (Stage 3, MANDATORY)
+- [ ] 9router client handles retry, timeout (15s), and network errors.
+- [ ] Prompt template versioned in code (changes are reviewable).
+- [ ] JSON parse failure $\rightarrow$ signal rejection (never bypass AI on parse error).
+- [ ] Confidence blend formula unit test: `quant * 0.5 + AI * 0.5`.
+- [ ] Redis cache TTL verification (5min, key = `ai:cache:{hash}`).
+- [ ] AI unavailable $\rightarrow$ signal rejected (mandatory means mandatory).
+
+### H. AI Position Judge (Stage 6, MANDATORY in ambiguous zone)
+- [ ] 2-tier escalation path tested: cheap (haiku) $\rightarrow$ escalated (sonnet).
+- [ ] 3 consecutive HOLDs on losing position $\rightarrow$ forced EXIT test.
+- [ ] Parse failure $\rightarrow$ conservative HOLD (fail-safe, never exit without AI).
+- [ ] AI unavailable $\rightarrow$ HOLD (don't exit without AI verdict).
+- [ ] `JudgeVerdict` Pydantic model validation.
+
+### I. Multi-Timeframe Filter
+- [ ] 4H EMA(20) computation test against known candle data.
+- [ ] Contradiction penalty (0.5x) applied when 1H signal opposes 4H trend.
+- [ ] Graceful degradation: no penalty when 4H OHLCV unavailable.
+
+### J. Trade Memory
+- [ ] Redis sorted set write/read test for `karsa:memory:{symbol}`.
+- [ ] Prompt formatting test: last 3 trades matching symbol + regime.
+- [ ] Memory injection into AI analyst prompt verified.
+
+### K. Executor Task Wiring
+- [x] `sor.execute()` is called from `executor_task` (not just reconcile).
+- [x] Position store registration after fill (`position_store.save()`).
+- [x] Duplicate position prevention via `position_store.has_position()`.
+- [ ] Circuit breaker updated on trade results (`update_pnl`, `record_loss`).
+
 ---
 
 ## 4. The "Definition of NOT Done" (Anti-Patterns)

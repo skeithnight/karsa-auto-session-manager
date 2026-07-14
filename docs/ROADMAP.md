@@ -24,6 +24,7 @@ Different duration, different win-rate bar, and different risk-adjusted-return m
 | 2 | The Hands (Execution & Proxy) | `MVP_SCOPE.md` §5 | Dummy order placed/tracked/closed on Bybit Testnet via WARP, latency logged |
 | 3 | The Brain & The Shield (Alpha & Risk) | `MVP_SCOPE.md` §5 | Signals generated, filtered through Risk Gate, decisions logged to Postgres |
 | 4 | Integration & Paper Trading | `MVP_SCOPE.md` §5 | 72 hours on Testnet, zero crashes, zero state divergence |
+| 4.5 | AI Integration & 6-Stage Lifecycle | New (this doc) | Full 6-stage pipeline running with mandatory AI (see below) |
 | 5 | Graduation Evaluation | New (this doc) | Both `MVP_SCOPE.md` §6 **and** `PRD.md` §9 criteria pass (see conflict flag above) |
 | 6 | Live Capital — Limited (V1.1 Pilot) | New (this doc) | Defined below |
 | 7 | Live Capital — Scaled | New (this doc) | Defined below |
@@ -33,17 +34,65 @@ Phases 1–4 are already fully specified in `MVP_SCOPE.md` §5 — this roadmap 
 
 ---
 
+## Phase 4.5: AI Integration & 6-Stage Lifecycle
+
+Purpose: transform ASM from a rule-based system into a KCT-equivalent AI-augmented trading system with mandatory LLM integration.
+
+### Sub-phases (ordered by dependency)
+
+| Sub-phase | Scope | Effort | Status |
+| :--- | :--- | :--- | :--- |
+| 4.5.1 | Wire `executor_task` → `sor.execute()` (unblock the chain) | ~30 min | ✅ Done |
+| 4.5.2 | Dynamic universe scoring (`universe_scorer.py`) | ~4-5h | ✅ Done |
+| 4.5.3 | Multi-timeframe confirmation (`multi_tf.py`) | ~2-3h | ✅ Done |
+| 4.5.4 | AI CryptoAnalyst mandatory (remove toggle, enforce rejection on failure) | ~1-2h | ✅ Done |
+| 4.5.5 | Trade memory injection (`trade_memory.py`) | ~2-3h | ✅ Done |
+| 4.5.6 | Sector diversity cap (`sector_cap.py`) | ~2-3h | ✅ Done |
+
+**Total:** ~12-17 hours. Each sub-phase independently mergeable.
+
+### Gate to Phase 5
+
+- Full 6-stage pipeline runs for 72h on Testnet without AI-related crashes *(skipped — testnet unavailable)*
+- AI analyst p95 latency < 2s
+- AI position judge correctly identifies HARD_FAIL positions in test scenarios
+- Universe scorer produces sensible top-15 list on testnet data
+- All tests in `tests/unit/test_universe_scorer.py`, `test_analyst.py`, `test_position_judge.py`, `test_multi_tf.py`, `test_trade_memory.py`, `test_sector_cap.py` pass
+
+---
+
 ## Phase 5: Graduation Evaluation Gate
 
 Purpose: a formal, deliberate checkpoint between "paper trading works" and "real money is at risk" — not an automatic transition.
 
-**Exit criteria (proposed, pending conflict resolution above):**
-- 30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence (stricter duration of the two conflicting specs)
-- Win rate > 52% **and** R:R > 1.2 **and** Sharpe > 1.5 over that period (union of both specs' bars, not either alone)
-- Circuit breaker intentionally triggered at least once during the period and verified to flatten + halt correctly
-- Manual review sign-off by the operator, referencing `RISK_AND_RUNBOOK.md` §6 (Operations Runbook Matrix) — confirm every alert type has actually fired and been handled at least once in Testnet, not just theorized
+**Status:** Code complete. Testnet skipped — deploying to live Bybit with $1 max loss per position SL hard cap. Operator decision (no testnet API access available).
 
-**If criteria aren't met:** return to Phase 3/4 with a documented list of what failed — this is not a one-shot gate.
+**Phase 5 code additions (committed):**
+- `scripts/init_db.sql` — `trades` + `ai_decisions` Postgres tables, auto-created on first `docker compose up`
+- `app/core/trade_store.py` — Postgres CRUD: `record_entry()`, `close_trade()`, `get_history()`, `record_ai_decision()`
+- `app/core/config.py` — `bybit_testnet: bool = False` toggle
+- `app/execution/bybit_client.py` — pybit `HTTP(testnet=...)` pass-through
+- `app/data/ccxt_manager.py` — `exchange.set_sandbox_mode(True)` when testnet enabled
+- `app/execution/sor.py` — `$1 SL cap`: SL price = `fill_price +/- (max_loss_usd / amount)`, adapts distance to position size
+- `app/execution/position_lifecycle.py` — `CheckpointManager._exit_position()` writes to trade store
+- `app/core/position_store.py` — `json.dumps`/`json.loads` replaces `ast.literal_eval`/`str(dict)`
+- `app/main.py` — balance-based position sizing (`available * risk_pct / price`), trade store wiring
+- `.env.testnet` — template with `BYBIT_TESTNET=true` and WireGuard guidance
+
+**Original exit criteria (for reference — testnet phase skipped per operator decision):**
+- 30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence
+- Win rate > 52% **and** R:R > 1.2 **and** Sharpe > 1.5 over that period
+- Circuit breaker intentionally triggered at least once and verified to flatten + halt correctly
+- AI analyst p95 latency consistently < 2s
+- AI position judge correctly handled at least 5 ambiguous-zone positions
+- Manual review sign-off by the operator, referencing `RISK_AND_RUNBOOK.md` §6
+
+**What replaces testnet gate for live deployment:**
+- $1 hard cap per position (exchange-side SL, survives crash)
+- Circuit breaker -2% daily drawdown (existing)
+- Consecutive loss pause (existing, 3 losses → 60 min pause)
+- $100 max position size (existing config default)
+- Daily manual review per `RISK_AND_RUNBOOK.md` §6
 
 ---
 

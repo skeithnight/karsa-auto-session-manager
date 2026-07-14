@@ -13,10 +13,9 @@ from app.risk.circuit_breaker import CircuitBreaker
 class TestCircuitBreaker:
     def setup_method(self):
         self.cb = CircuitBreaker(
-            daily_drawdown_limit=-0.02,
+            daily_drawdown_limit=Decimal("-0.02"),
             max_consecutive_losses=3,
             loss_pause_minutes=60,
-            max_latency_ms=1500,
         )
 
     def test_update_pnl_no_trigger(self):
@@ -44,11 +43,15 @@ class TestCircuitBreaker:
         self.cb.record_win()
         assert self.cb.consecutive_losses == 0
 
-    def test_check_latency_ok(self):
-        assert self.cb.check_latency(500) is False
-
-    def test_check_latency_too_slow(self):
-        assert self.cb.check_latency(2000) is True
+    def test_usd_loss_cap_triggers(self):
+        """max_daily_loss_usd enforced when set."""
+        cb = CircuitBreaker(
+            daily_drawdown_limit=Decimal("-200"),  # Loose limit so drawdown doesn't trigger
+            max_daily_loss_usd=Decimal("100"),
+        )
+        assert cb.update_pnl(Decimal("-100")) is True
+        assert cb.halted is True
+        assert "USD loss cap" in cb.halt_reason
 
     def test_is_paused_false(self):
         assert self.cb.is_paused() is False

@@ -2,10 +2,13 @@
 
 Tracks: entry price, peak price, ATR, SL order ID, checkpoint state, timestamps.
 Key: karsa:position:{symbol}:{side}
+Callers: main.py, TrailingStopManager, CheckpointManager, SectorCap, executor_task.
+Change: switch from ast.literal_eval(str(dict)) to json.dumps/loads for safety.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, Optional
@@ -52,7 +55,7 @@ class PositionStore:
             "entered_at": datetime.now(timezone.utc).isoformat(),
             "last_check_at": datetime.now(timezone.utc).isoformat(),
         }
-        await self.redis.redis.set(key, str(data))
+        await self.redis.redis.set(key, json.dumps(data))
         logger.info(f"Position saved: {symbol} {side} @ {entry_price}")
 
     async def get(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
@@ -62,8 +65,7 @@ class PositionStore:
         if not raw:
             return None
         try:
-            import ast
-            return ast.literal_eval(raw)
+            return json.loads(raw)
         except Exception:
             return None
 
@@ -76,7 +78,7 @@ class PositionStore:
         if price > peak:
             pos["peak_price"] = str(price)
             pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-            await self.redis.redis.set(self._key(symbol, side), str(pos))
+            await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_sl(self, symbol: str, side: str, sl_order_id: str) -> None:
         """Update SL order ID."""
@@ -85,7 +87,7 @@ class PositionStore:
             return
         pos["sl_order_id"] = sl_order_id
         pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-        await self.redis.redis.set(self._key(symbol, side), str(pos))
+        await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_checkpoint(self, symbol: str, side: str, checkpoint: str) -> None:
         """Update checkpoint state."""
@@ -94,7 +96,7 @@ class PositionStore:
             return
         pos["checkpoint"] = checkpoint
         pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-        await self.redis.redis.set(self._key(symbol, side), str(pos))
+        await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def remove(self, symbol: str, side: str) -> None:
         """Remove position (on close)."""
@@ -118,8 +120,7 @@ class PositionStore:
             raw = await self.redis.redis.get(key)
             if raw:
                 try:
-                    import ast
-                    positions.append(ast.literal_eval(raw))
+                    positions.append(json.loads(raw))
                 except Exception:
                     pass
         return positions

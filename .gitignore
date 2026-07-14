@@ -40,3 +40,5 @@ htmlcov/
 # Ruff
 .ruff_cache/
 *.backup
+
+.claude/

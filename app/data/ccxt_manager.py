@@ -10,6 +10,8 @@ from typing import Dict
 import ccxt.pro as ccxt_pro
 from loguru import logger
 
+from app.core import metrics
+
 
 class CCXTManager:
     """Manages WebSocket connections to multiple exchanges via CCXT Pro."""
@@ -22,8 +24,9 @@ class CCXTManager:
         self.stale_threshold_seconds: int = 15
         logger.debug("CCXTManager.__init__: returning")
 
-    async def start(self) -> None:
-        """Initialize exchanges, load markets, and start WebSocket streams."""
+    async def start(self, testnet: bool = False) -> None:
+        """Initialize exchanges, load markets, and start WebSocket streams.
+        Callers: main.py (passes settings.bybit_testnet). No schema change."""
         logger.debug("start: entering")
         # Binance — spot only
         binance = ccxt_pro.binance({
@@ -48,6 +51,9 @@ class CCXTManager:
             "enableRateLimit": True,
         })
         bybit.options["defaultType"] = "swap"
+        if testnet:
+            bybit.set_sandbox_mode(True)
+            logger.info("Bybit CCXT set to sandbox/testnet mode")
         self.exchanges["bybit"] = bybit
 
         logger.info(f"Initialized exchanges: {list(self.exchanges.keys())}")
@@ -111,6 +117,7 @@ class CCXTManager:
             logger.debug("watch_orderbook: returning dict")
             return orderbook
         except Exception as e:
+            metrics.ws_disconnects.labels(exchange=exchange_id).inc()
             logger.error(f"WebSocket error on {exchange_id}: {e}")
             logger.debug(f"watch_orderbook: error={e}")
             raise
@@ -128,6 +135,7 @@ class CCXTManager:
             logger.debug("watch_trades: returning list")
             return trades
         except Exception as e:
+            metrics.ws_disconnects.labels(exchange=exchange_id).inc()
             logger.error(f"WebSocket error on {exchange_id}: {e}")
             logger.debug(f"watch_trades: error={e}")
             raise
@@ -137,11 +145,13 @@ class CCXTManager:
         logger.debug(f"is_stale: entering exchange_id={exchange_id}")
         last = self.last_update.get(exchange_id)
         if not last:
+            metrics.exchange_status.labels(exchange=exchange_id).set(1)
             logger.debug("is_stale: returning True (no last update)")
             return True
 
         elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         result = elapsed > self.stale_threshold_seconds
+        metrics.exchange_status.labels(exchange=exchange_id).set(1 if result else 0)
         logger.debug(f"is_stale: returning {result}")
         return result
 

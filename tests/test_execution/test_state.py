@@ -78,12 +78,13 @@ class TestStateManager:
 
     @pytest.mark.asyncio
     async def test_reconcile_bybit_unreachable(self, state_manager, mock_bybit):
-        """Bybit unreachable — returns False."""
+        """Bybit unreachable — degraded startup, allows continue."""
         mock_bybit.fetch_positions = AsyncMock(side_effect=Exception("Connection refused"))
 
         result = await state_manager.reconcile()
 
-        assert result is False
+        # ponytail: allow startup without Bybit private API (return True, reconciled stays False)
+        assert result is True
         assert state_manager.reconciled is False
 
     def test_update_position_new(self, state_manager):

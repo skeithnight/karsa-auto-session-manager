@@ -23,7 +23,7 @@ Due to regional geo-restrictions, Bybit execution must be routed through a Cloud
 
 ### The Core Thesis: "Read Global, Execute Local"
 The system treats Bybit strictly as an **execution venue**, not a data source for alpha. 
-* **The Read Pipeline (Global):** Uses CCXT Pro WebSockets to ingest L2 order books, trades, and funding rates from Binance, OKX, Bybit, and Coinbase. It calculates a unified "Global State" (Global VWAP, Aggregate Order Book Skew, Average Funding).
+* **The Read Pipeline (Global):** Uses CCXT Pro WebSockets to ingest L2 order books, trades, and funding rates from Binance, OKX, and Bybit. It calculates a unified "Global State" (Global VWAP, Aggregate Order Book Skew, Average Funding).
 * **The Write Pipeline (Local):** Executes trades *only* on Bybit. The system uses the Global State as a leading indicator. If the global aggregate shifts heavily bullish, but Bybit's local price hasn't moved yet, the system executes a Long on Bybit, anticipating that Bybit's price will inevitably be pulled up by global market forces.
 
 ### The Strategic Pivot: Intraday & Swing over HFT
@@ -50,21 +50,23 @@ The system is expected to generate positive risk-adjusted returns (Alpha) by cap
 
 ---
 
-## 6. Key System Requirements (The "6 Keys")
+## 6. Key System Requirements (6-Stage Trade Lifecycle)
 
-1. **Global Read Engine (CCXT Pro):** Maintain persistent, fault-tolerant WebSocket connections to 3-5 major exchanges. Normalize and aggregate data into a unified in-memory state.
-2. **Session Orchestrator:** Manage trading logic based on UTC time blocks (Asia, London, NY) and dynamically adjust strategy parameters based on the current market regime.
-3. **Alpha Bridge:** Calculate the mathematical edge (Global Skew, Funding Divergence, VWAP deviations) and generate raw directional signals.
-4. **Local Execution Engine (Bybit):** Execute trades strictly on Bybit via **Private WebSockets** (to minimize proxy latency). Implement local Smart Order Routing (Post-Only Limit -> Reprice -> Market).
-5. **Globalized 9-Layer Risk Gate:** A deterministic, rule-based risk engine that evaluates signals against global liquidity, cross-exchange spread, and portfolio correlation before allowing execution.
-6. **Telemetry & State Reconciliation:** Expose metrics to Prometheus/Grafana. Implement a strict startup reconciliation process to sync local Postgres state with actual Bybit positions.
+The system follows a 6-stage pipeline. AI is **mandatory** in two safe positions (pre-entry analyst + post-entry position judge), strictly forbidden in the execution hot path.
+
+1. **Universe Selection (Dynamic Scoring):** Score all configured symbols by Volume + Momentum + Squeeze + Overextension. Top 15 above threshold, respecting sector diversity cap (max 2 per sector). Cross-exchange aggregate volume from Binance+OKX+Bybit.
+2. **Regime Detection:** Classify BTC market regime every 15 minutes using Hurst Exponent + ADX(14) + EMA(200). CHOP regime halts all trading. TREND_BULL/BEAR and MEAN_REVERSION apply regime-specific confidence modifiers.
+3. **Signal Generation (AI-Mandatory):** Multi-signal composite confidence (skew + lead-lag + funding + OI). Entry filter (5 checks). Multi-timeframe confirmation (4H EMA trend). **AI CryptoAnalyst via 9router** synthesizes all signals into final confidence. If AI fails, signal is rejected.
+4. **Risk Gate (Deterministic):** 3-layer gate (liquidity, spread health, circuit breaker) + sector diversity cap. No AI in this path.
+5. **SOR Execution (Deterministic):** Post-Only Limit → Reprice → Market IOC on Bybit. Exchange-side SL placed immediately on fill. No AI in this path.
+6. **Post-Entry Management (AI-Mandatory):** Trailing stop (ATR-based). Checkpoint manager (HARD_FAIL, CLEAR_WIN, TIME_STOP). **AI Position Judge** in ambiguous zone (2-tier escalation). 3 consecutive HOLDs on loser = forced EXIT. Trade memory stored for future AI context.
 
 ---
 
 ## 7. Infrastructure & Technical Constraints
 * **Architecture:** **Single-Process Python Application.** To mitigate internal network latency and state divergence, the Orchestrator and Bot are merged into one `asyncio` event loop.
 * **Proxy Mandate:** All Bybit REST and WebSocket traffic *must* be routed through the Cloudflare WARP SOCKS5 proxy (`socks5h://host.docker.internal:1080`).
-* **LLM Constraint (The 9 Router):** The Anthropic/DeepSeek LLM is **strictly prohibited from the hot execution path**. It will only be used in background threads for daily parameter tuning, regime detection, and post-trade journaling.
+* **LLM Integration (9router):** AI is **mandatory** in two safe positions: pre-entry CryptoAnalyst and post-entry PositionJudge, via 9router proxy at `127.0.0.1:20129`. AI is **strictly forbidden** in the execution hot path (SOR/risk gate). Models: `claude-haiku-3-5` for analyst and cheap judge, `claude-sonnet-4-5` for escalated judge. See `docs/review/ai_layer_analysis.md`.
 * **Environment:** Local development and paper trading will be containerized via Docker Compose (App, Redis, Postgres, Prometheus, Grafana).
 
 ---
@@ -73,7 +75,7 @@ The system is expected to generate positive risk-adjusted returns (Alpha) by cap
 To ensure rapid deployment and capital preservation, the following are explicitly **OUT OF SCOPE** for Version 1:
 * Multi-exchange execution (arbitrage). The bot only trades on Bybit.
 * High-Frequency Trading (HFT) or sub-second scalping strategies.
-* Using the LLM (9 Router) for real-time trade validation or entry/exit decisions.
+* Using the LLM in the execution hot path (SOR/risk gate). AI is mandatory in safe positions only (pre-entry analyst, post-entry judge).
 * Complex Reinforcement Learning (RL) execution models (e.g., FinRL).
 * Trading low-liquidity altcoins or spot markets.
 
@@ -82,5 +84,5 @@ To ensure rapid deployment and capital preservation, the following are explicitl
 ## 9. Success Metrics
 * **System Stability:** 99.9% uptime during active trading sessions. Zero state-divergence incidents between local DB and Bybit.
 * **Execution Quality:** Average execution latency (from signal generation to Bybit fill confirmation) must remain under 800ms (accounting for WARP proxy overhead).
-* **Risk Management:** Maximum daily drawdown strictly capped at 3%. Zero instances of the bot opening a trade that violates the 9-Layer Risk Gate.
+* **Risk Management:** Maximum daily drawdown strictly capped at 2%. Zero instances of the bot opening a trade that violates the 3-Layer Risk Gate.
 * **Profitability (Paper):** Achieve a positive Sharpe Ratio (> 1.5) and a win rate > 52% over a 30-day continuous paper-trading period before live capital deployment.

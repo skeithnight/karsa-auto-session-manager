@@ -15,6 +15,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from app.core import metrics
 from app.alpha.ta_tools import (
     calculate_rsi,
     calculate_bollinger_bands,
@@ -22,6 +23,7 @@ from app.alpha.ta_tools import (
     calculate_atr,
     calculate_ema,
 )
+from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -130,6 +132,8 @@ class PositionJudge:
 
         # Forced exit after 3 consecutive HOLDs on loser
         if hold_count >= 3 and pnl_pct < 0:
+            metrics.ai_consecutive_hold_exits.inc()
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="EXIT", tier="forced").inc()
             logger.warning(f"PositionJudge: forced EXIT {symbol} {side} after {hold_count} HOLDs, pnl={pnl_pct:.2f}%")
             self._hold_counters[hold_key] = 0
             return JudgeVerdict(
@@ -146,6 +150,7 @@ class PositionJudge:
         )
 
         if verdict and verdict.action != "HOLD":
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="cheap").inc()
             self._hold_counters[hold_key] = 0
             return verdict
 
@@ -161,6 +166,7 @@ class PositionJudge:
         )
 
         if escalated:
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=escalated.action, tier="escalated").inc()
             if escalated.action == "HOLD" and pnl_pct < 0:
                 self._hold_counters[hold_key] = hold_count + 1
             else:
@@ -168,6 +174,7 @@ class PositionJudge:
             return escalated
 
         # Both tiers failed — conservative HOLD (fail-safe: never exit without AI)
+        metrics.ai_judge_verdict.labels(symbol=symbol, verdict="HOLD", tier="fallback").inc()
         if pnl_pct < 0:
             self._hold_counters[hold_key] = hold_count + 1
         return JudgeVerdict(
@@ -198,9 +205,13 @@ class PositionJudge:
 
         response = await self.ai_client.complete(prompt, max_tokens=128)
         if not response:
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="unavailable", tier="cheap").inc()
             return None
 
-        return self._parse_response(response, "cheap")
+        verdict = self._parse_response(response, "cheap")
+        if verdict:
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="cheap").inc()
+        return verdict
 
     async def _escalated_pass(
         self, symbol, side, entry_price, current_price, peak_price, atr, regime,
@@ -276,9 +287,13 @@ class PositionJudge:
 
         response = await self.ai_client.complete(prompt, max_tokens=256)
         if not response:
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="unavailable", tier="escalated").inc()
             return None
 
-        return self._parse_response(response, "escalated")
+        verdict = self._parse_response(response, "escalated")
+        if verdict:
+            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="escalated").inc()
+        return verdict
 
     def _parse_response(self, response: str, tier: str) -> Optional[JudgeVerdict]:
         try:

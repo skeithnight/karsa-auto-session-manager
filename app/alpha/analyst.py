@@ -16,6 +16,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from app.core import metrics
 from app.alpha.ta_tools import (
     calculate_rsi,
     calculate_bollinger_bands,
@@ -23,6 +24,7 @@ from app.alpha.ta_tools import (
     calculate_atr,
     calculate_ema,
 )
+from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -144,13 +146,17 @@ class CryptoAnalyst:
 
         response = await self.ai_client.complete(prompt, max_tokens=256)
         if not response:
+            metrics.ai_analyst_calls.labels(result="unavailable").inc()
             logger.warning(f"Analyst: AI unavailable for {symbol}")
             return None
 
         result = self._parse_response(response)
         if result is None:
+            metrics.ai_analyst_calls.labels(result="parse_error").inc()
             logger.warning(f"Analyst: parse failed for {symbol}, raw={response[:200]}")
             return None
+
+        metrics.ai_analyst_calls.labels(result="success").inc()
 
         if self.redis:
             await self.redis.set_ai_cache(cache_key, {

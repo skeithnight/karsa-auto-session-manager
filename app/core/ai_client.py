@@ -7,10 +7,13 @@ Handles auth, retries, timeouts. Returns None on any failure (graceful degradati
 from __future__ import annotations
 
 import asyncio
+import time
 from typing import Optional
 
 import aiohttp
 from loguru import logger
+
+from app.core import metrics
 
 
 class AIClient:
@@ -50,6 +53,7 @@ class AIClient:
     ) -> Optional[str]:
         """Send chat completion request. Returns response text or None on failure."""
         session = await self._get_session()
+        start_time = time.monotonic()
         payload = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -63,10 +67,13 @@ class AIClient:
             try:
                 async with session.post(url, json=payload) as resp:
                     if resp.status == 200:
+                        elapsed = time.monotonic() - start_time
+                        metrics.ai_analyst_latency.observe(elapsed)
                         data = await resp.json()
                         choices = data.get("choices", [])
                         if choices:
                             content = choices[0].get("message", {}).get("content", "")
+                            metrics.ai_analyst_calls.labels(result="success").inc()
                             logger.debug(f"AI complete: model={self.model}")
                             return content
                         logger.warning("AI complete: empty choices")
@@ -93,12 +100,14 @@ class AIClient:
 
             except asyncio.TimeoutError:
                 last_error = "timeout"
+                metrics.ai_analyst_calls.labels(result="timeout").inc()
                 logger.warning(f"AI timeout, retry {attempt + 1}/{self.max_retries}")
             except aiohttp.ClientError as e:
                 last_error = str(e)
                 logger.warning(f"AI client error: {e}, retry {attempt + 1}/{self.max_retries}")
                 await asyncio.sleep(1)
 
+        metrics.ai_analyst_calls.labels(result="failure").inc()
         logger.error(f"AI complete failed after {self.max_retries + 1} attempts: {last_error}")
         return None
 

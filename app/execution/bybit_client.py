@@ -8,20 +8,23 @@ Reference: karsa-claude-trading/src/data/bybit_client.py pattern.
 from __future__ import annotations
 
 import asyncio
+import time
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from loguru import logger
 from pybit.unified_trading import HTTP
 
+from app.core import metrics
 from app.core.config import get_settings
 
 
 def _safe_decimal(value: Any, default: str = "0") -> Decimal:
     """Convert value to Decimal safely."""
+    from decimal import DecimalException
     try:
         return Decimal(str(value)) if value is not None else Decimal(default)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, DecimalException):
         return Decimal(default)
 
 
@@ -42,9 +45,11 @@ class BybitClient:
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
             api_secret=self.settings.bybit_api_secret,
+            testnet=self.settings.bybit_testnet,
         )
         self.connected = True
-        logger.info("Bybit connected via pybit")
+        mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
+        logger.info(f"Bybit connected via pybit ({mode})")
         logger.debug("connect: returning None")
 
     async def disconnect(self) -> None:
@@ -61,10 +66,13 @@ class BybitClient:
             last_exc = None
             for attempt in range(3):
                 try:
+                    start = time.monotonic()
                     resp = await asyncio.wait_for(
                         asyncio.to_thread(func, *args, **kwargs),
                         timeout=15,
                     )
+                    elapsed_ms = (time.monotonic() - start) * 1000
+                    metrics.proxy_latency.observe(elapsed_ms)
                     if resp.get("retCode") == 0:
                         return resp.get("result", {})
                     ret_code = resp.get("retCode")
@@ -200,9 +208,13 @@ class BybitClient:
         )
         coins = result.get("list", [{}])[0].get("coin", [])
         usdt = next((c for c in coins if c.get("coin") == "USDT"), {})
-        free = _safe_decimal(usdt.get("availableToWithdraw"))
         total = _safe_decimal(usdt.get("equity"))
-        used = _safe_decimal(usdt.get("usedMargin"))
+        # ponytail: availableToWithdraw is empty on UNIFIED accounts.
+        # available = equity - order margin - position margin
+        order_im = _safe_decimal(usdt.get("totalOrderIM"))
+        pos_im = _safe_decimal(usdt.get("totalPositionIM"))
+        used = order_im + pos_im
+        free = total - used
         balance = {"free": free, "used": used, "total": total}
         logger.debug("fetch_balance: returning dict")
         return balance

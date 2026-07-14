@@ -101,11 +101,133 @@ In traditional enterprise software, separating the "Signal Generator" (Orchestra
 *   Writes all trade events, risk decisions, and state changes to PostgreSQL via `asyncpg`.
 *   Handles **Startup Reconciliation**: Queries Bybit REST API on boot to ensure local DB matches actual exchange positions.
 
-### G. AI Layer (Off Hot-Path)
-*   **Pre-Entry Analyst** (`app/alpha/analyst.py`): Runs AFTER deterministic signal generation, BEFORE order placement. Only activates in ambiguous confidence zone (0.55-0.85). Fetches 200 1H candles, computes TA indicators, sends structured prompt to AI via 9router. Blends AI confidence 50/50 with deterministic.
-*   **Position Judge** (`app/alpha/position_judge.py`): Runs in CheckpointManager when position is in ambiguous zone. 2-tier: cheap pass (fast, no TA) -> escalate if ambiguous. 3 consecutive HOLDs on losing position -> forced EXIT.
-*   **9router Proxy** (`app/core/ai_client.py`): Async HTTP client to 9router container at `127.0.0.1:20129`. OpenAI-compatible format. Returns None on any failure (graceful degradation — deterministic layer continues).
-*   **Safety:** AI is NEVER in the hot execution path. Risk gate, SOR, and order execution remain fully deterministic. AI can only *reject* entries (lower confidence below threshold) or *flag* positions for exit — it cannot force trades.
+### G. AI Layer (Off Hot-Path, MANDATORY)
+*   **Pre-Entry CryptoAnalyst** (`app/alpha/analyst.py`): MANDATORY step in signal pipeline. Runs after deterministic signal generation, before risk gate. Fetches 200 1H candles, computes TA indicators (RSI, BB, MACD, ATR, EMA), sends structured prompt to AI via 9router. Final confidence = quant_confidence × 0.5 + ai_confidence × 0.5. Gate: final_confidence >= 0.65. If AI call fails, signal is **rejected** (not bypassed).
+*   **Position Judge** (`app/alpha/position_judge.py`): MANDATORY in CheckpointManager when position is in ambiguous zone (between HARD_FAIL and CLEAR_WIN). 2-tier: cheap pass (haiku, no TA) → escalate to stronger model if ambiguous. 3 consecutive HOLDs on losing position → forced EXIT.
+*   **Trade Memory** (`app/alpha/trade_memory.py`): Before AI analyst call, retrieves last 3 similar trades (same symbol + regime) from Redis sorted set and injects into prompt context. Stores PnL, hold duration, regime, exit reason on position close.
+*   **9router Proxy** (`app/core/ai_client.py`): Async HTTP client to 9router container at `127.0.0.1:20129`. OpenAI-compatible format. Returns None on any failure — but since AI is mandatory, signal is rejected on failure.
+*   **Safety:** AI is NEVER in the hot execution path (SOR/risk gate). AI can reject entries (lower confidence below threshold) or flag positions for exit — it cannot force trades or bypass risk gates.
+*   **Models:** Pre-entry analyst: `claude-haiku-3-5` (~400ms). Position judge cheap: `claude-haiku-3-5`. Position judge escalated: `claude-sonnet-4-5`. Estimated cost: ~$0.60–1.20/day at 5 symbols.
+
+### H. Dynamic Universe Scoring (`app/data/universe_scorer.py`)
+*   **Purpose:** Replace static symbol list with dynamic scoring based on market conditions. Adapts KCT's UniverseScorer pattern.
+*   **Scoring model (cross-exchange advantage):**
+    *   Volume score (0-30): aggregate 24h volume across Binance+OKX+Bybit from Redis `global:state:{symbol}`.
+    *   Momentum score (0-40): 1H price change % from `ohlcv_fetcher`. Positive momentum = higher score.
+    *   Overextension penalty (-40 to -10): penalize >30% 24h moves (avoid chasing tops).
+    *   Squeeze detection (0-30): BB width narrowing on 1H = squeeze building.
+*   **Output:** Top N symbols (configurable, default 15) above minimum score (default 55), respecting sector cap (max 2 per sector). Shared via Redis key `system:universe:symbols`.
+*   **Refresh:** Every 4 hours (configurable). Data engine picks up changes naturally.
+*   **Sector mapping** (`app/data/sector_mapping.py`): Static classification — BTC/ETH, L1, L2, DeFi, Meme, AI, RWA. Stablecoins excluded.
+
+### I. Multi-Timeframe Confirmation (`app/alpha/multi_tf.py`)
+*   **Purpose:** Prevent entering against the 4H trend. KCT requires 1H trigger + 4H trend agreement.
+*   **Logic:** Fetch 4H OHLCV via `ohlcv_fetcher` (TTL=3600s, ~1 REST call/symbol/hour). Compute EMA(20) on 4H using `ta_tools.calculate_ema()`. If signal direction contradicts 4H EMA trend: apply 0.5x confidence penalty. Graceful degradation: no penalty if 4H data unavailable.
+*   **Integration:** Wired in `alpha_bridge_task` between `signal_generator.generate()` and AI analyst call.
+
+### J. Sector Diversity Cap (`app/risk/sector_cap.py`)
+*   **Purpose:** Prevent concentrated losses when correlated crypto sectors dump together.
+*   **Logic:** Uses `sector_mapping.py` to classify. Counts active positions per sector via `position_store.list_all()`. If target sector already at cap (default 2), reject signal.
+*   **Integration:** Checked in `executor_task` before `sor.execute()`.
+
+---
+
+## 5. Full Trade Lifecycle (6 Stages)
+
+The system follows a 6-stage pipeline matching KCT's architecture, enhanced with ASM's multi-exchange data advantage (Binance + OKX + Bybit).
+
+### Lifecycle Gating — Data Always On, ASM Gates Execution
+
+**Always running (when app starts):**
+- Stages 1-3: Data Engine (WebSocket streams), Regime Engine (15min classification), Alpha Bridge (signal generation)
+- Stage 4: Risk Gate (evaluates signals)
+- Post-Entry: Trailing Stop + Checkpoint Manager (manage existing positions)
+- Watchdog (health monitoring)
+
+**Gated by ASM (Launch Session):**
+- Stage 5: Executor only places trades when ASM session is active
+- Stage 6: Post-Entry management is active for any open position (ASM or manual)
+
+**Key insight:** The data pipeline runs continuously regardless of ASM state. Signals are generated and queued. The executor only processes them when ASM is active. This means the system is always "warm" — no cold-start delay when launching a session.
+
+```mermaid
+graph TD
+    subgraph ALWAYS_ON[Always Running]
+        S1[1. Universe Selection]
+        S2[2. Regime Detection]
+        S3[3. Signal Generation]
+        S4[4. Risk Gate]
+    end
+
+    subgraph ASM_GATED[Gated by ASM Session]
+        S5[5. SOR Execution]
+        S6[6. Post-Entry Management]
+    end
+
+    S1 -->|top 15 symbols| S2
+    S2 -->|regime != CHOP| S3
+    S2 -->|CHOP| HALT[HALT: No Trading]
+    S3 -->|final_confidence >= 0.65| S4
+    S3 -->|AI fails or conf < 0.65| REJECT[REJECT Signal]
+    S4 -->|all gates pass + sector cap OK| QUEUE[Signal Queue]
+    S4 -->|gate fails| BLOCK[BLOCKED]
+    QUEUE -->|ASM active| S5
+    QUEUE -->|ASM inactive| WAIT[Waiting in queue]
+    S5 -->|position open| S6
+```
+
+### Stage 1 — Universe Selection (`app/data/universe_scorer.py`)
+UniverseScorer runs every 4 hours. Scores all configured symbols 0–100:
+- **Volume** (0–30): aggregate 24h volume across Binance+OKX+Bybit from Redis `global:state:{symbol}`.
+- **Momentum** (0–40): 1H price change % from `ohlcv_fetcher`. Positive momentum = higher score.
+- **Overextension** penalty (-40 to -10): penalize >30% 24h moves (avoid chasing tops).
+- **Squeeze** (0–30): BB width narrowing on 1H = squeeze building.
+
+Output: Top 15 symbols above score 55, respecting sector cap (max 2 per sector). Shared via Redis `system:universe:symbols`. Cross-exchange aggregate volume gives more accurate liquidity picture than single-venue.
+
+### Stage 2 — Regime Detection (`app/alpha/regime.py`)
+Runs every 15 minutes on BTC/USDT 1H candles (200 bars). Three indicators:
+- **Hurst Exponent** (R/S method, windows 10/20/40): H > 0.55 = trending, H < 0.45 = mean-reverting.
+- **ADX(14)**: > 25 = strong trend, < 20 = choppy.
+- **EMA(200)**: price above = bullish, below = bearish.
+
+Output: TREND_BULL, TREND_BEAR, MEAN_REVERSION, or CHOP. **CHOP halts all signal generation.** Stored in Redis `system:config:regime`.
+
+### Stage 3 — Signal Generation (AI-Mandatory Pipeline)
+Sequential pipeline in `alpha_bridge_task`:
+
+1. **Deterministic composite** (`signals.py`): `regime_mult × (0.4×S_skew + 0.3×S_lead_lag + 0.2×S_funding + 0.1×S_oi)`. Regime modifier: TREND=1.2×, MR=0.8×, CHOP=0.0×.
+2. **Entry filter** (`entry_filter.py`): 5 checks — regime (CHOP blocks), spread (<0.3%), depth ratio, time-of-day (block 00:00–01:00 UTC), existing position.
+3. **Multi-timeframe confirmation** (`multi_tf.py`): 4H EMA(20) trend check. Contradicts 1H signal → 0.5× confidence penalty.
+4. **AI CryptoAnalyst** (`analyst.py`, MANDATORY): Structured prompt with TA indicators + trade memory context. Final confidence = `quant_confidence × 0.5 + ai_confidence × 0.5`. Gate: >= 0.65. **If AI call fails, signal is rejected.**
+
+### Stage 4 — Risk Gate (Deterministic Only)
+Sequential gates in `risk_gate_task`:
+1. **Circuit breaker:** `is_halted()` / `is_paused()` check.
+2. **Liquidity:** 24h volume >= $1M.
+3. **Spread health:** bid-ask spread <= 0.5%.
+4. **Sector cap** (`sector_cap.py`): Check position count per sector before allowing new entry.
+
+### Stage 5 — SOR Execution (Deterministic Only)
+Smart Order Router in `executor_task`:
+1. Post-Only Limit at current price.
+2. Reprice (up to 2 attempts, moving toward market).
+3. Market/IOC fallback.
+4. **Exchange-side SL placed immediately on every fill** via `bybit_client.place_stop_loss()`. No AI in this path.
+
+### Stage 6 — Post-Entry Management
+- **Trailing Stop** (`TrailingStopManager`): ATR-based, amends exchange-side SL when price moves favorably. 60s cooldown per symbol.
+- **Checkpoint Manager** (`CheckpointManager`): Every 5 minutes:
+  - HARD_FAIL: -2% in 30min or -3% ever → immediate exit (no AI).
+  - CLEAR_WIN: gain > 3× ATR → activate trailing (no AI).
+  - AMBIGUOUS zone → AI Position Judge (MANDATORY).
+  - TIME_STOP: held > 72h → forced exit.
+- **AI Position Judge** (`position_judge.py`): 2-tier escalation (haiku → sonnet). 3 consecutive HOLDs on losing position → forced EXIT.
+- **Trade Memory** (`trade_memory.py`): On exit, store PnL, hold duration, regime, exit reason to Redis sorted set for future AI context.
+
+---
+
+### Telegram Bot (Key 7)
 *   Uses `python-telegram-bot` (PTB) with `ApplicationBuilder` and an `asyncio`-native polling loop.
 *   Full command specs, alert system, and security model defined in `TELEGRAM_INTERFACE.md`.
 *   All handlers are gated by `_is_authorized()` — a single security boundary that checks `TELEGRAM_CHAT_ID` from `Settings`.
@@ -115,7 +237,7 @@ In traditional enterprise software, separating the "Signal Generator" (Orchestra
 
 ---
 
-## 5. The Watchdog Implementation (Key 6)
+## 6. The Watchdog Implementation (Key 6)
 Because this bot runs autonomously, it must be able to detect when it is "going blind" or "going rogue" and take defensive action. The Watchdog runs as a concurrent background task in the main `asyncio` loop.
 
 ### Watchdog Responsibilities:
@@ -134,7 +256,7 @@ Because this bot runs autonomously, it must be able to detect when it is "going 
 
 ---
 
-## 6. Trade Lifecycle Sequence Diagram
+## 7. Trade Lifecycle Sequence Diagram
 
 ```mermaid
 sequenceDiagram
@@ -253,7 +375,7 @@ flowchart LR
 
 ---
 
-## 7. Technology Stack
+## 8. Technology Stack
 
 | Component | Technology | Justification |
 | :--- | :--- | :--- |
@@ -268,7 +390,7 @@ flowchart LR
 
 ---
 
-## 8. Directory / Folder Structure
+## 9. Directory / Folder Structure
 
 ```text
 karsa-auto-session-manager/
@@ -288,14 +410,21 @@ karsa-auto-session-manager/
 │   │   ├── ccxt_manager.py         # WebSocket connections, auto-reconnect logic
 │   │   ├── normalizer.py           # Standardizes exchange payloads
 │   │   ├── filters.py              # Bad tick & outlier rejection
-│   │   └── ohlcv_fetcher.py        # Cached OHLCV REST fetcher (Phase 1, execution plan)
+│   │   ├── ohlcv_fetcher.py        # Cached OHLCV REST fetcher
+│   │   ├── universe_scorer.py      # Dynamic universe scoring (Volume+Momentum+Squeeze+Overextension)
+│   │   └── sector_mapping.py       # Static sector classification for diversity cap
 │   │
 │   ├── alpha/                      # Key 2: Signal Generation
 │   │   ├── metrics.py              # Global VWAP, Skew, Funding calculations
-│   │   ├── signals.py              # Signal generation (multi-signal composite, Phase 2)
-│   │   ├── regime.py               # Hurst + ADX regime classifier (Phase 1, execution plan)
-│   │   ├── lead_lag_buffer.py      # 15-min rolling price buffer (Phase 2)
-│   │   └── entry_filter.py         # Pre-entry structural checklist (Phase 3)
+│   │   ├── signals.py              # Multi-signal composite (skew+lead_lag+funding+OI)
+│   │   ├── regime.py               # Hurst + ADX regime classifier
+│   │   ├── lead_lag_buffer.py      # 15-min rolling price buffer
+│   │   ├── entry_filter.py         # Pre-entry structural checklist (5 checks)
+│   │   ├── ta_tools.py             # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
+│   │   ├── analyst.py              # AI CryptoAnalyst (MANDATORY, via 9router)
+│   │   ├── position_judge.py       # AI PositionJudge (MANDATORY, 2-tier escalation)
+│   │   ├── multi_tf.py             # Multi-timeframe confirmation (1H+4H)
+│   │   └── trade_memory.py         # Trade history injection into AI prompts
 │   │
 │   ├── execution/                  # Key 4: Local Write Engine
 │   │   ├── bybit_client.py         # Bybit Private WS & REST via WARP proxy (+ SL methods, Phase 0B)
@@ -304,7 +433,8 @@ karsa-auto-session-manager/
 │   │
 │   ├── risk/                       # Key 3: Risk Management
 │   │   ├── gates.py                # The 3-Layer Risk Gate logic
-│   │   └── circuit_breaker.py      # Daily drawdown limits, hard stops
+│   │   ├── circuit_breaker.py      # Daily drawdown limits, hard stops
+│   │   └── sector_cap.py           # Sector diversity cap (max N positions per sector)
 │   │
 │   ├── watchdog/                   # Key 6: Telemetry & Health
 │   │   ├── monitor.py              # Heartbeat tracking, loop lag detection
@@ -342,7 +472,7 @@ karsa-auto-session-manager/
 
 ---
 
-## 9. Deployment & VPN Configuration
+## 10. Deployment & VPN Configuration
 *   **VPN:** All outbound traffic routes through a WireGuard VPN tunnel via the `gluetun` Docker service. The app shares gluetun's network namespace (`network_mode: "service:gluetun"`).
 *   **Server:** DigitalOcean droplet running WireGuard (port 51820). Config in `.env`: `WIREGUARD_*`, `VPN_ENDPOINT_*`.
 *   **DNS:** ISP DNS poisoning bypassed via Python-level DNS override in `app/main.py`. Queries gluetun DNS (127.0.0.1 → Cloudflare 1.1.1.1) for external domains, Docker DNS (127.0.0.11) for internal names.

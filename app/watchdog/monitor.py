@@ -51,19 +51,31 @@ class Watchdog:
         logger.debug("Watchdog.__init__: returning")
 
     async def start(self) -> None:
-        """Start watchdog loop."""
+        """Start watchdog loop with auto-restart on crash."""
         logger.debug("start: entering")
         self.running = True
+        max_restarts = 3
+        restart_count = 0
+
         logger.info("Watchdog started")
         while self.running:
             try:
                 await self._check_health()
                 await asyncio.sleep(self.check_interval)
+                restart_count = 0  # Reset on successful cycle
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Watchdog error: {e}")
                 logger.debug(f"start: error={e}")
+                restart_count += 1
+                if restart_count >= max_restarts:
+                    logger.critical(
+                        f"Watchdog crashed {max_restarts}x in a row — giving up"
+                    )
+                    self.running = False
+                    break
+                logger.warning(f"Watchdog restart {restart_count}/{max_restarts}")
                 await asyncio.sleep(self.check_interval)
         logger.debug("start: returning None")
 

@@ -28,7 +28,9 @@ async def run_bot(
     kill_switch: asyncio.Event,
     session_manager: object | None = None,
     db_engine: object | None = None,
+    alert_service: object | None = None,
 ) -> None:
+    """Callers: main.py. alert_service gets bot registered after PTB init. No schema change."""
     """Build, start, and run PTB until kill_switch fires."""
     logger.debug("run_bot: entering")
     from app.core.config import get_settings
@@ -83,6 +85,11 @@ async def run_bot(
     # ── Start polling ───────────────────────────────────────────────────
     await application.initialize()
     await application.start()
+
+    # Register bot instance with AlertService for proactive push alerts
+    if alert_service is not None:
+        alert_service.register_bot(application.bot)
+
     await application.updater.start_polling(drop_pending_updates=True)
     logger.info("bot_polling_started")
 

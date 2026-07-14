@@ -1,0 +1,35 @@
+-- Karsa Auto Session Manager — DB Schema
+-- Mounted to postgres docker-entrypoint-initdb.d
+-- Callers: docker-compose.yml mounts to /docker-entrypoint-initdb.d/
+-- Tables: trades (trade history), ai_decisions (AI audit trail)
+
+CREATE TABLE IF NOT EXISTS trades (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    side VARCHAR(10) NOT NULL,
+    amount DECIMAL(20,8) NOT NULL,
+    entry_price DECIMAL(20,8) NOT NULL,
+    exit_price DECIMAL(20,8),
+    pnl DECIMAL(20,8),
+    regime VARCHAR(30),
+    entry_time TIMESTAMPTZ NOT NULL,
+    exit_time TIMESTAMPTZ,
+    exit_reason VARCHAR(50),
+    ai_confidence INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS ai_decisions (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    decision_type VARCHAR(20) NOT NULL,
+    model VARCHAR(50),
+    input_hash VARCHAR(64),
+    output_json JSONB,
+    latency_ms INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_trades_symbol ON trades(symbol);
+CREATE INDEX IF NOT EXISTS idx_trades_entry_time ON trades(entry_time);
+CREATE INDEX IF NOT EXISTS idx_ai_decisions_symbol ON ai_decisions(symbol, created_at);

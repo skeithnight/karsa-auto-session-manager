@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Bybit API credentials
     bybit_api_key: str
     bybit_api_secret: str
+    bybit_testnet: bool = False
 
     # PostgreSQL
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"
@@ -76,8 +77,8 @@ class Settings(BaseSettings):
         default="claude-haiku-3-5",
         validation_alias=AliasChoices("9ROUTER_MODEL", "nine_router_model"),
     )
-    ai_analyst_enabled: bool = True
-    ai_position_judge_enabled: bool = True
+    # AI mandatory — toggles removed per CONTEXT.md Issue #8
+    # ai_analyst_enabled and ai_position_judge_enabled removed: AI is not optional
 
 
 @lru_cache

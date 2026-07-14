@@ -33,7 +33,12 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 ### C. Alpha & Signal Generation (The "Brain")
 *   **Basic Global Metrics:** Calculation of **Global VWAP** and **Global Order Book Skew** (Bid vs. Ask volume ratio across the read exchanges).
 *   **Basic Lead-Lag Math:** Simple threshold logic comparing Binance price movement against Bybit price movement on a 15-minute rolling window.
-*   **Signal Output:** Generation of a simple directional signal (`LONG`, `SHORT`, `FLAT`) with a predefined position size.
+*   **Multi-Signal Composite:** Weighted confidence: `regime_mult × (0.4×skew + 0.3×lead_lag + 0.2×funding + 0.1×oi)`.
+*   **Regime Detection:** Hurst + ADX + EMA200 on BTC 1H. CHOP halts all trading.
+*   **Multi-Timeframe Confirmation:** 4H EMA trend check, penalizes signals contradicting higher timeframe.
+*   **Dynamic Universe Scoring:** Replace static symbol list with Volume+Momentum+Squeeze+Overextension scoring.
+*   **AI CryptoAnalyst (MANDATORY):** LLM-powered pre-entry analysis via 9router proxy. Final confidence = quant × 0.5 + AI × 0.5. If AI fails, signal is rejected.
+*   **Signal Output:** Generation of a directional signal (`LONG`, `SHORT`, `FLAT`) with confidence score.
 
 ### D. Execution (The "Write" Pipeline)
 *   **Bybit-Only Execution:** The bot will strictly place, amend, and cancel orders on Bybit.
@@ -58,7 +63,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 
 If you find yourself wanting to build these, put them in the `docs/IDEAS_BACKLOG.md` file and close the IDE.
 
-*   ❌ **The 9 Router (LLM) in the Hot Path:** No LLMs will be called during signal generation or execution. The proxy latency + LLM latency will destroy the trade.
+*   ❌ **LLM in the Hot Execution Path (SOR/Risk Gate):** No LLMs in the SOR or risk gate — latency and determinism requirements forbid it. **AI is MANDATORY in two safe positions:** pre-entry CryptoAnalyst and post-entry PositionJudge, via 9router proxy. See `docs/review/ai_layer_analysis.md`.
 *   ❌ **Multi-Exchange Execution:** We are not building cross-exchange arbitrage or routing orders to OKX/Binance. We only *read* from them. We only *write* to Bybit.
 *   ❌ **Complex RL / FinRL Execution:** No Reinforcement Learning agents for order slicing. We use deterministic, rule-based SOR.
 *   ❌ **Microservice Split:** We are not separating the Orchestrator and Bot into different Docker containers communicating via Redis Pub/Sub. It introduces fatal state-divergence risks.
@@ -112,15 +117,21 @@ The MVP is considered **successful** and ready for live capital (V1.1) only when
 
 Once the MVP core pipeline (Phase 1–4 of §5) is stable, the following enhancements target >80% win rate on testnet:
 
-| Phase | Scope | Effort | Blocks On |
+| Phase | Scope | Effort | Status |
 | :--- | :--- | :--- | :--- |
-| **0A** | Wire real bid/ask/volume into RiskGate (fix hardcoded values) | ~30 min | None |
-| **0B** | Exchange-side Stop Loss on fill (BybitClient + SOR) | ~2-3h | None |
-| **1** | Regime Engine (Hurst + ADX on BTC 1H) | ~4-5h | OHLCV fetcher |
-| **2** | Multi-signal confidence (lead-lag + funding + OI) | ~5-6h | Regime, lead-lag buffer |
-| **3** | Entry quality filter (spread, book depth, time-of-day) | ~2-3h | Regime |
-| **4** | Position lifecycle (trailing stop + performance checkpoints) | ~6-8h | Redis confirmed, SL in place |
+| **0A** | Wire real bid/ask/volume into RiskGate | ~30 min | ✅ DONE |
+| **0B** | Exchange-side Stop Loss on fill (BybitClient + SOR) | ~2-3h | ✅ DONE |
+| **1** | Regime Engine (Hurst + ADX on BTC 1H) | ~4-5h | ✅ DONE |
+| **2** | Multi-signal confidence (lead-lag + funding + OI) | ~5-6h | ✅ DONE |
+| **3** | Entry quality filter (spread, book depth, time-of-day) | ~2-3h | ✅ DONE |
+| **4** | Position lifecycle (trailing stop + performance checkpoints) | ~6-8h | ✅ DONE |
+| **5** | Wire executor_task → `sor.execute()` (unblock chain) | ~30 min | 🔴 TODO |
+| **6** | Dynamic universe scoring | ~4-5h | 🔴 TODO |
+| **7** | Multi-timeframe confirmation (4H) | ~2-3h | 🔴 TODO |
+| **8** | AI CryptoAnalyst mandatory (remove toggle) | ~1-2h | 🔴 TODO |
+| **9** | Trade memory injection | ~2-3h | 🔴 TODO |
+| **10** | Sector diversity cap | ~2-3h | 🔴 TODO |
 
-**Total:** ~20-26 hours. Each phase independently mergeable. Phase 0 is safety-critical (P0).
+**Total remaining:** ~12-17 hours. Each phase independently mergeable.
 
-**Deferred:** AI PositionJudge (LLM hot path — out of scope), Grafana dashboards (out of scope), dynamic universe scoring.
+**Deferred (post V1.1):** Grafana dashboards (out of scope), Reinforcement Learning.

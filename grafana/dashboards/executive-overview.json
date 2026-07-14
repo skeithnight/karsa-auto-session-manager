@@ -335,7 +335,7 @@
       "type": "table",
       "targets": [{
         "datasource": { "type": "grafana-postgresql-datasource", "uid": "grafana-postgresql-datasource" },
-        "rawSql": "SELECT timestamp, symbol, entry_price, pnl_usdt AS realized_pnl, CASE WHEN pnl_usdt > 0 THEN 'Win' ELSE 'Loss' END as result FROM trades ORDER BY timestamp DESC LIMIT 50",
+        "rawSql": "SELECT entry_time AS timestamp, symbol, entry_price, pnl AS realized_pnl, CASE WHEN pnl > 0 THEN 'Win' ELSE 'Loss' END as result FROM trades ORDER BY entry_time DESC LIMIT 50",
         "format": "table",
         "refId": "A"
       }]

@@ -107,6 +107,7 @@ from app.data.universe_scorer import UniverseScorer
 from app.watchdog.monitor import Watchdog
 from app.watchdog.dead_mans_switch import DeadMansSwitch
 from app.bot.runner import run_bot
+from app.bot.alert_service import AlertService
 from app.core.session import AutonomousSessionManager
 from app.core.database import DatabaseEngine
 from app.core import metrics
@@ -267,6 +268,7 @@ async def alpha_bridge_task(
                         oi_change=oi_change,
                     )
                     if signal:
+                        metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
                         # Multi-TF confirmation: 4H EMA penalty if contradicts
                         if signal.direction in ("LONG", "SHORT"):
                             mtf = await multi_tf.check(symbol, signal.direction)
@@ -346,9 +348,11 @@ async def risk_gate_task(
 
         if decision["passed"]:
             metrics.risk_gate_pass.labels(symbol=signal.symbol).inc()
+            metrics.signals_completed_pipeline.labels(symbol=signal.symbol, outcome="passed").inc()
             await risk_queue.put(signal)
         else:
             metrics.risk_gate_reject.labels(symbol=signal.symbol, reason=decision["failed_gate"]).inc()
+            metrics.signals_completed_pipeline.labels(symbol=signal.symbol, outcome="rejected").inc()
             logger.warning(f"Signal rejected: {decision['failed_gate']}")
     logger.debug("risk_gate_task: returning None")
 
@@ -542,9 +546,12 @@ async def _get_price(redis_client: RedisClient, symbol: str) -> Optional[Decimal
 
 async def main() -> None:
     """Initialize all components and run the main event loop."""
-    logger.debug("main: entering")
+    # Suppress info/debug noise — WARNING+ only
+    logger.remove()
+    logger.add(sys.stderr, level="WARNING")
+
     settings = get_settings()
-    logger.info("Karsa Auto Session Manager starting...")
+    logger.warning("Karsa Auto Session Manager starting...")
 
     # Initialize components
     redis_client = RedisClient()
@@ -555,6 +562,7 @@ async def main() -> None:
 
     ccxt_manager = CCXTManager()
     await ccxt_manager.start(testnet=settings.bybit_testnet)
+    metrics.vpn_status.set(1)  # VPN up if ccxt_manager.start() succeeded (Bybit goes through WARP)
     normalizer = Normalizer()
     bad_tick_filter = BadTickFilter()
     alpha_metrics = AlphaMetrics()
@@ -568,9 +576,12 @@ async def main() -> None:
 
     bybit_client = BybitClient()
     await bybit_client.connect()
-    sor = SmartOrderRouter(bybit_client)
-    risk_gate = RiskGate()
-    circuit_breaker = CircuitBreaker()
+    metrics.bybit_status.set(1)  # Bybit connected
+    alert_service = AlertService(settings.telegram_chat_id)
+    sor = SmartOrderRouter(bybit_client, alert_service=alert_service)
+    circuit_breaker = CircuitBreaker(alert_service=alert_service, redis_client=redis_client)
+    await circuit_breaker.restore()  # Persisted halt state survives restarts
+    risk_gate = RiskGate(circuit_breaker=circuit_breaker)  # Fix #5: shared CB instance
     state_manager = StateManager(redis_client, bybit_client)
     watchdog = Watchdog(redis_client, alpha_paused=alpha_paused, sor=sor, kill_switch=kill_switch)
     dead_mans_switch = DeadMansSwitch()
@@ -592,7 +603,7 @@ async def main() -> None:
     position_store = PositionStore(redis_client)
     trade_store = TradeStore(db_engine)
     trailing_stop = TrailingStopManager(position_store, bybit_client)
-    checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge, trade_store=trade_store)
+    checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge, trade_store=trade_store, alert_service=alert_service)
 
     # Phase 4.5 modules
     multi_tf = MultiTFFilter(ohlcv_fetcher)
@@ -651,7 +662,7 @@ async def main() -> None:
         asyncio.create_task(universe_refresh_task(universe_scorer, valid_symbols)),
         asyncio.create_task(dead_mans_switch.start()),
         asyncio.create_task(session_manager.run_loop()),
-        asyncio.create_task(run_bot(redis_client, bybit_client, kill_switch, session_manager, db_engine)),
+        asyncio.create_task(run_bot(redis_client, bybit_client, kill_switch, session_manager, db_engine, alert_service)),
         asyncio.create_task(regime_engine_task(regime_engine, ohlcv_fetcher, redis_client)),
         asyncio.create_task(trailing_stop.run(kill_switch, lambda s: _get_price(redis_client, s))),
         asyncio.create_task(checkpoint_mgr.run(kill_switch, lambda s: _get_price(redis_client, s), state_manager)),

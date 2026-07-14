@@ -121,7 +121,7 @@
 | Constant | Value | Unit | Source | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | Heartbeat check interval | `10` | seconds | `monitor.py` | Watchdog cycle frequency |
-| Heartbeat stale threshold | `10` | seconds | `monitor.py` | No WS data in 10s = pause alpha |
+| Heartbeat stale threshold | `30` | seconds | `monitor.py` | No WS data in 30s = pause alpha |
 | Execution latency warning | `1500` | ms | `monitor.py` | Switch SOR to skip-to-market |
 | Event loop lag threshold | `100` | ms | `monitor.py` | Loop blocking detection |
 | Loop lag consecutive checks | `3` | count | `monitor.py` | 3 consecutive lag checks = flatten |

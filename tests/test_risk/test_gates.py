@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -11,10 +12,12 @@ from app.risk.gates import RiskGate
 
 class TestRiskGate:
     def setup_method(self):
+        self.mock_cb = MagicMock()
+        self.mock_cb.is_halted.return_value = False
         self.gate = RiskGate(
             min_24h_volume=Decimal("1000000"),
             max_spread_pct=Decimal("0.005"),
-            daily_drawdown_limit=-0.02,
+            circuit_breaker=self.mock_cb,
         )
 
     def test_liquidity_pass(self):
@@ -38,7 +41,7 @@ class TestRiskGate:
         assert self.gate.check_circuit_breaker() is True
 
     def test_circuit_breaker_fail(self):
-        self.gate.daily_pnl = Decimal("-0.03")
+        self.mock_cb.is_halted.return_value = True
         assert self.gate.check_circuit_breaker() is False
 
     def test_evaluate_all_pass(self):
@@ -50,12 +53,3 @@ class TestRiskGate:
         result = self.gate.evaluate(Decimal("100"), Decimal("64000"), Decimal("64192"))
         assert result["passed"] is False
         assert result["failed_gate"] == "liquidity"
-
-    def test_update_pnl(self):
-        self.gate.update_pnl(Decimal("100"))
-        assert self.gate.daily_pnl == Decimal("100")
-
-    def test_reset_daily(self):
-        self.gate.daily_pnl = Decimal("500")
-        self.gate.reset_daily()
-        assert self.gate.daily_pnl == Decimal("0")

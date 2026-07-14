@@ -37,27 +37,42 @@ Straight from `DEFINITION_OF_DONE.md` §4 ("Definition of NOT Done"). Violating 
 
 ```text
 app/
-├── main.py              # asyncio loop entrypoint — all 6 keys start here
+├── main.py              # asyncio loop entrypoint — all 7 keys start here
 ├── core/
 │   ├── config.py         # Pydantic Settings, loads .env — secrets live ONLY here
 │   ├── session.py         # UTC session/regime logic (not one of the "6 Keys" — see CONTEXT.md #5)
-│   └── state.py            # In-memory state + Postgres sync (Key 5)
+│   ├── state.py            # In-memory state + Postgres sync (Key 5)
+│   ├── ai_client.py        # 9router async HTTP client (AI layer)
+│   ├── metrics.py          # Prometheus metrics (counters, gauges, histograms)
+│   └── position_store.py   # Redis-backed position lifecycle state
 ├── data/                  # Key 1 — Global Data Engine
-│   ├── ccxt_manager.py
+│   ├── ccxt_manager.py     # CCXT Pro WS + load_markets() symbol validation
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
-│   └── filters.py            # Bad tick rejection
+│   ├── filters.py            # Bad tick rejection
+│   └── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
 ├── alpha/                  # Key 2 — Alpha Bridge
 │   ├── metrics.py
-│   └── signals.py
+│   ├── signals.py            # Multi-signal composite (Phase 2)
+│   ├── regime.py             # Hurst + ADX regime classifier
+│   ├── lead_lag_buffer.py    # 15-min rolling price buffer
+│   ├── entry_filter.py       # Pre-entry structural checklist
+│   ├── ta_tools.py           # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
+│   ├── analyst.py            # AI pre-entry analyst (Phase 5)
+│   └── position_judge.py     # AI position judge (Phase 5)
 ├── execution/               # Key 4 — Bybit Executor
-│   ├── bybit_client.py       # WARP proxy config lives here
-│   └── sor.py                # Post-Only -> Reprice -> Market
+│   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
+│   ├── sor.py                # Post-Only -> Reprice -> Market
+│   └── position_lifecycle.py # Trailing stop + performance checkpoints
 ├── risk/                     # Key 3 — 3-Layer Risk Gate
 │   ├── gates.py
 │   └── circuit_breaker.py
-└── watchdog/                 # Key 6
-    ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
-    └── dead_mans_switch.py     # External health ping
+├── watchdog/                 # Key 6
+│   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
+│   └── dead_mans_switch.py     # External health ping
+└── bot/                      # Key 7 — Telegram Command Interface
+    ├── handlers.py           # All command & callback handlers
+    ├── runner.py             # PTB app builder, bot_data wiring, startup
+    └── utils/                # Formatters, helpers
 tests/                        # see TESTING_STRATEGY.md for full layout
 ```
 
@@ -86,7 +101,6 @@ Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
 ## 6. Do NOT
 
 - Do not add Redis, Grafana, a microservice split, or an LLM in the hot execution path — all explicitly OUT OF SCOPE per `MVP_SCOPE.md` §4, regardless of how convenient it seems for the task at hand. (Redis specifically has an open question — see `CONTEXT.md` #1 — don't add code for it until that's resolved.) **AI is permitted in off-hot-path positions only** (pre-entry analyst, position judge) via 9router proxy.
-- Do not change the WARP proxy configuration (`socks5h://host.docker.internal:1080`) without an explicit request — this is a hard infra dependency, not a tunable.
 - Do not weaken or bypass the Kill Switch, Circuit Breakers, or Startup Reconciliation for convenience during development (e.g., "just comment this out for local testing"). If it needs a dev-mode bypass, that bypass must be explicit, logged, and never the default.
 - Do not invent a Prometheus metric name, Postgres column, or Pydantic field that isn't in `DATA_MODEL.md` or `DEFINITION_OF_DONE.md` §4 without flagging it as a new addition for review.
 - Do not mark something "done" without walking the actual `DEFINITION_OF_DONE.md` checklist for that component — not just "tests pass."

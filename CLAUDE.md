@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-`karsa-auto-session-manager` — crypto trading bot. Reads global market data (Binance, OKX, Bybit public feeds), executes directional trades on Bybit via WARP SOCKS5 proxy. Single-process monolith, Python asyncio.
+`karsa-auto-session-manager` — crypto trading bot. Reads global market data (Binance, OKX, Bybit public feeds), executes directional trades on Bybit via Gluetun WireGuard VPN. Single-process monolith, Python asyncio.
 
 **Read first:** `CONTEXT.md` (orientation + known doc conflicts). This file is rules, not background — go there for the "why."
 
@@ -48,9 +48,10 @@ app/
 │   ├── session.py         # UTC session/regime logic (not one of the "6 Keys" — see CONTEXT.md #5)
 │   ├── state.py            # In-memory state + Postgres sync (Key 5)
 │   ├── ai_client.py        # 9router async HTTP client (AI layer)
+│   ├── metrics.py          # Prometheus metrics (counters, gauges, histograms)
 │   └── position_store.py   # Redis-backed position lifecycle state
 ├── data/                  # Key 1 — Global Data Engine
-│   ├── ccxt_manager.py
+│   ├── ccxt_manager.py     # CCXT Pro WS + load_markets() symbol validation
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
 │   ├── filters.py            # Bad tick rejection
 │   └── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
@@ -64,7 +65,7 @@ app/
 │   ├── analyst.py            # AI pre-entry analyst (Phase 5)
 │   └── position_judge.py     # AI position judge (Phase 5)
 ├── execution/               # Key 4 — Bybit Executor
-│   ├── bybit_client.py       # WARP proxy config + exchange-side SL
+│   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market
 │   └── position_lifecycle.py # Trailing stop + performance checkpoints
 ├── risk/                     # Key 3 — 3-Layer Risk Gate
@@ -123,7 +124,6 @@ Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
 ## 7. Do NOT
 
 - Do not add Redis, Grafana, a microservice split, or an LLM in the hot execution path — all explicitly OUT OF SCOPE per `MVP_SCOPE.md` §4, regardless of how convenient it seems for the task at hand. (Redis specifically has an open question — see `CONTEXT.md` #1 — don't add code for it until that's resolved.) **AI is permitted in off-hot-path positions only** (pre-entry analyst, position judge) via 9router proxy.
-- Do not change the WARP proxy configuration (`socks5h://warp:1080`) without an explicit request — WARP runs as a Docker service (`karsa-warp`), this is a hard infra dependency, not a tunable.
 - Do not weaken or bypass the Kill Switch, Circuit Breakers, or Startup Reconciliation for convenience during development (e.g., "just comment this out for local testing"). If it needs a dev-mode bypass, that bypass must be explicit, logged, and never the default.
 - Do not invent a Prometheus metric name, Postgres column, or Pydantic field that isn't in `DATA_MODEL.md` or `DEFINITION_OF_DONE.md` §4 without flagging it as a new addition for review.
 - Do not mark something "done" without walking the actual `DEFINITION_OF_DONE.md` checklist for that component — not just "tests pass."

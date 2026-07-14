@@ -154,3 +154,14 @@ positions_flattened_total = Counter(
     "Positions flattened by watchdog",
     ["reason"],
 )
+
+# ── Symbol Validation ────────────────────────────────────────
+symbol_universe_total = Gauge(
+    "karsa_symbol_universe_total",
+    "Valid symbols after cross-exchange validation",
+)
+
+symbol_universe_dropped = Gauge(
+    "karsa_symbol_universe_dropped",
+    "Symbols dropped during cross-exchange validation",
+)

@@ -17,12 +17,13 @@ class CCXTManager:
     def __init__(self) -> None:
         logger.debug("CCXTManager.__init__: entering")
         self.exchanges: Dict[str, ccxt_pro.Exchange] = {}
+        self.markets_loaded: list[str] = []  # exchanges with successfully loaded markets
         self.last_update: Dict[str, datetime] = {}
         self.stale_threshold_seconds: int = 15
         logger.debug("CCXTManager.__init__: returning")
 
     async def start(self) -> None:
-        """Initialize exchange connections and start WebSocket streams."""
+        """Initialize exchanges, load markets, and start WebSocket streams."""
         logger.debug("start: entering")
         # Binance — spot only
         binance = ccxt_pro.binance({
@@ -50,7 +51,52 @@ class CCXTManager:
         self.exchanges["bybit"] = bybit
 
         logger.info(f"Initialized exchanges: {list(self.exchanges.keys())}")
+
+        # Load markets for all exchanges (needed for symbol validation)
+        # Retries needed — Gluetun VPN tunnel can be slow/unstable for HTTPS REST
+        # Non-fatal: if all retries fail, skip that exchange for validation
+        max_retries = 3
+        for exchange_id, exchange in self.exchanges.items():
+            loaded = False
+            for attempt in range(1, max_retries + 1):
+                try:
+                    await exchange.load_markets()
+                    self.markets_loaded.append(exchange_id)
+                    logger.info(f"Loaded {len(exchange.markets)} markets from {exchange_id}")
+                    loaded = True
+                    break
+                except Exception as e:
+                    if attempt == max_retries:
+                        logger.error(f"Failed to load markets from {exchange_id} after {max_retries} attempts: {e}")
+                        break
+                    wait = 2 ** attempt
+                    logger.warning(f"load_markets({exchange_id}) attempt {attempt}/{max_retries} failed: {e}, retrying in {wait}s")
+                    await asyncio.sleep(wait)
+            if not loaded:
+                logger.warning(f"Symbol validation will skip {exchange_id} — markets not loaded")
+
         logger.debug("start: returning None")
+
+    def get_valid_universe(self, target_symbols: list[str]) -> list[str]:
+        """Return only symbols present on ALL exchanges that loaded markets.
+
+        Must be called after start() so markets are loaded.
+        Only validates against exchanges in self.markets_loaded.
+        """
+        if not self.markets_loaded:
+            logger.error("No exchanges have loaded markets — cannot validate symbols")
+            return []
+        valid = []
+        for symbol in target_symbols:
+            if all(symbol in self.exchanges[eid].markets for eid in self.markets_loaded):
+                valid.append(symbol)
+            else:
+                missing = [
+                    eid for eid in self.markets_loaded
+                    if symbol not in self.exchanges[eid].markets
+                ]
+                logger.debug(f"Symbol {symbol} missing from {missing}, skipping")
+        return valid
 
     async def watch_orderbook(self, symbol: str, exchange_id: str) -> dict:
         """Watch L2 orderbook for a symbol on a specific exchange."""

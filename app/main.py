@@ -120,6 +120,62 @@ kill_switch = asyncio.Event()
 alpha_paused = asyncio.Event()
 
 
+async def _stream_orderbook(
+    symbol: str,
+    exchange_id: str,
+    ccxt_manager: CCXTManager,
+    normalizer: Normalizer,
+    bad_tick_filter: BadTickFilter,
+    redis_client: RedisClient,
+    lead_lag_buffer: LeadLagBuffer,
+) -> None:
+    """Stream orderbook for a single (symbol, exchange) pair. Runs until kill_switch."""
+    logger.info(f"Starting stream {exchange_id}/{symbol}")
+    while not kill_switch.is_set():
+        try:
+            orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
+            metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
+            await redis_client.set_exchange_heartbeat(exchange_id)
+            exchange_data = normalizer.normalize_orderbook(orderbook, exchange_id, symbol)
+            exchange_data = bad_tick_filter.filter_orderbook(exchange_data)
+            if exchange_data.is_stale:
+                metrics.bad_tick_rejected.labels(exchange=exchange_id, symbol=symbol).inc()
+            metrics.orderbook_normalized.labels(exchange=exchange_id, symbol=symbol).inc()
+
+            # Feed lead-lag buffer with mid price
+            best_bid = max(exchange_data.bids, key=lambda x: x[0])[0] if exchange_data.bids else None
+            best_ask = min(exchange_data.asks, key=lambda x: x[0])[0] if exchange_data.asks else None
+            if best_bid and best_ask:
+                mid = (float(best_bid) + float(best_ask)) / 2
+                lead_lag_buffer.update(symbol, exchange_id, mid)
+
+            if not exchange_data.is_stale:
+                global_state = normalizer.build_global_state(symbol, [exchange_data])
+                if global_state:
+                    await redis_client.set_global_state(symbol, {
+                        "global_vwap": str(global_state.global_vwap),
+                        "aggregate_skew": global_state.aggregate_skew,
+                        "best_bid": str(global_state.best_bid) if global_state.best_bid else None,
+                        "best_ask": str(global_state.best_ask) if global_state.best_ask else None,
+                        "total_volume": str(global_state.total_volume) if global_state.total_volume else None,
+                        "updated_at": global_state.updated_at.isoformat(),
+                    })
+                    metrics.global_state_written.labels(symbol=symbol).inc()
+                    if global_state.global_vwap is not None:
+                        metrics.vwap_value.labels(symbol=symbol).set(float(global_state.global_vwap))
+                    if global_state.aggregate_skew is not None:
+                        metrics.skew_value.labels(symbol=symbol).set(float(global_state.aggregate_skew))
+        except asyncio.CancelledError:
+            logger.info(f"Stream {exchange_id}/{symbol} cancelled")
+            raise
+        except Exception as e:
+            metrics.orderbook_errors.labels(exchange=exchange_id, symbol=symbol, error_type=type(e).__name__).inc()
+            logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
+            logger.debug(f"_stream_orderbook: error={e}")
+            await asyncio.sleep(1)
+    logger.debug(f"Stream {exchange_id}/{symbol} exiting")
+
+
 async def data_engine_task(
     ccxt_manager: CCXTManager,
     normalizer: Normalizer,
@@ -128,52 +184,19 @@ async def data_engine_task(
     lead_lag_buffer: LeadLagBuffer,
     symbols: list[str],
 ) -> None:
-    """Key 1: Ingest global market data from exchanges."""
+    """Key 1: Ingest global market data from exchanges concurrently."""
     logger.debug("data_engine_task: entering")
-    logger.info("Data Engine starting...")
     exchanges = ["binance", "okx", "bybit"]
+    logger.info(f"Data Engine starting — {len(symbols)} symbols × {len(exchanges)} exchanges = {len(symbols) * len(exchanges)} streams")
 
-    while not kill_switch.is_set():
-        for symbol in symbols:
-            for exchange_id in exchanges:
-                try:
-                    orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
-                    metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
-                    await redis_client.set_exchange_heartbeat(exchange_id)
-                    exchange_data = normalizer.normalize_orderbook(orderbook, exchange_id, symbol)
-                    exchange_data = bad_tick_filter.filter_orderbook(exchange_data)
-                    if exchange_data.is_stale:
-                        metrics.bad_tick_rejected.labels(exchange=exchange_id, symbol=symbol).inc()
-                    metrics.orderbook_normalized.labels(exchange=exchange_id, symbol=symbol).inc()
-
-                    # Feed lead-lag buffer with mid price
-                    best_bid = max(exchange_data.bids, key=lambda x: x[0])[0] if exchange_data.bids else None
-                    best_ask = min(exchange_data.asks, key=lambda x: x[0])[0] if exchange_data.asks else None
-                    if best_bid and best_ask:
-                        mid = (float(best_bid) + float(best_ask)) / 2
-                        lead_lag_buffer.update(symbol, exchange_id, mid)
-
-                    if not exchange_data.is_stale:
-                        global_state = normalizer.build_global_state(symbol, [exchange_data])
-                        if global_state:
-                            await redis_client.set_global_state(symbol, {
-                                "global_vwap": str(global_state.global_vwap),
-                                "aggregate_skew": global_state.aggregate_skew,
-                                "best_bid": str(global_state.best_bid) if global_state.best_bid else None,
-                                "best_ask": str(global_state.best_ask) if global_state.best_ask else None,
-                                "total_volume": str(global_state.total_volume) if global_state.total_volume else None,
-                                "updated_at": global_state.updated_at.isoformat(),
-                            })
-                            metrics.global_state_written.labels(symbol=symbol).inc()
-                            if global_state.global_vwap is not None:
-                                metrics.vwap_value.labels(symbol=symbol).set(float(global_state.global_vwap))
-                            if global_state.aggregate_skew is not None:
-                                metrics.skew_value.labels(symbol=symbol).set(float(global_state.aggregate_skew))
-                except Exception as e:
-                    metrics.orderbook_errors.labels(exchange=exchange_id, symbol=symbol, error_type=type(e).__name__).inc()
-                    logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
-                    logger.debug(f"data_engine_task: error={e}")
-                    await asyncio.sleep(1)
+    await asyncio.gather(
+        *[
+            _stream_orderbook(symbol, eid, ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer)
+            for symbol in symbols
+            for eid in exchanges
+        ],
+        return_exceptions=True,
+    )
     logger.debug("data_engine_task: returning None")
 
 
@@ -484,6 +507,23 @@ async def main() -> None:
     signal_queue: asyncio.Queue = asyncio.Queue()
     risk_queue: asyncio.Queue = asyncio.Queue()
 
+    # Validate symbol universe — keep only symbols present on all 3 exchanges
+    # Fall back to raw config if no exchange markets were loaded (VPN down etc.)
+    validated = ccxt_manager.get_valid_universe(settings.symbols)
+    if validated:
+        valid_symbols = validated
+        dropped = len(settings.symbols) - len(valid_symbols)
+        if dropped:
+            logger.warning(f"Dropped {dropped} symbols not available on all exchanges. {len(valid_symbols)} remaining.")
+        else:
+            logger.info(f"All {len(valid_symbols)} symbols validated across all exchanges.")
+    else:
+        valid_symbols = settings.symbols
+        dropped = 0
+        logger.warning(f"Symbol validation skipped (no exchange markets loaded). Using all {len(valid_symbols)} config symbols.")
+    metrics.symbol_universe_total.set(len(valid_symbols))
+    metrics.symbol_universe_dropped.set(dropped)
+
     # Graceful shutdown on SIGINT/SIGTERM
     def handle_shutdown(signum: int, frame: object) -> None:
         logger.info(f"Received signal {signum}, initiating shutdown")
@@ -494,8 +534,8 @@ async def main() -> None:
 
     # Start all tasks
     tasks = [
-        asyncio.create_task(data_engine_task(ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer, settings.symbols)),
-        asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, settings.symbols, signal_queue)),
+        asyncio.create_task(data_engine_task(ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer, valid_symbols)),
+        asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, valid_symbols, signal_queue)),
         asyncio.create_task(risk_gate_task(risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue)),
         asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog)),
         asyncio.create_task(watchdog_task(watchdog, redis_client)),
@@ -511,7 +551,7 @@ async def main() -> None:
     for t in tasks:
         t.add_done_callback(lambda f: logger.error(f"Task died: {f.exception()}") if f.exception() else None)
 
-    logger.info(f"All components started. Monitoring {len(settings.symbols)} symbols.")
+    logger.info(f"All components started. Monitoring {len(valid_symbols)} symbols.")
 
     # Wait for kill switch
     await kill_switch.wait()

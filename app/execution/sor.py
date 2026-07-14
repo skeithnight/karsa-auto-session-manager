@@ -29,11 +29,12 @@ class SmartOrderRouter:
         amount: Decimal,
         price: Decimal,
         price_tick: Decimal = Decimal("0.01"),
-        sl_distance_pct: Decimal = Decimal("0.02"),
+        max_loss_usd: Decimal = Decimal("1.00"),
     ) -> Optional[Dict[str, Any]]:
-        """
-        Execute order with 3-step fallback + exchange-side SL on fill.
-
+        """Execute order with 3-step fallback + exchange-side SL on fill.
+        Callers: executor_task in main.py.
+        API change: sl_distance_pct replaced with max_loss_usd (absolute USD loss cap).
+        SL price = fill_price - (max_loss_usd / amount) for LONG, + for SHORT.
         1. Post-Only Limit
         2. Reprice (up to max_reprice_attempts)
         3. Market/IOC fallback
@@ -47,7 +48,7 @@ class SmartOrderRouter:
             logger.info(f"SOR: latency mode — market order {side} {amount}")
             try:
                 market_order = await self.client.create_market_order(symbol, side, amount)
-                await self._place_sl_after_fill(symbol, side, price, amount, sl_distance_pct)
+                await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
                 return market_order
             except Exception as e:
                 logger.error(f"SOR market fallback failed: {e}")
@@ -59,7 +60,7 @@ class SmartOrderRouter:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") == "open":
                 logger.info(f"Post-Only filled: {order['id']}")
-                await self._place_sl_after_fill(symbol, side, price, amount, sl_distance_pct)
+                await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
                 logger.debug("execute: returning dict (Post-Only filled)")
                 return order
         except Exception as e:
@@ -85,7 +86,7 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
                     logger.info(f"Reprice filled: {order['id']}")
-                    await self._place_sl_after_fill(symbol, side, current_price, amount, sl_distance_pct)
+                    await self._place_sl_after_fill(symbol, side, current_price, amount, max_loss_usd)
                     logger.debug("execute: returning dict (Reprice filled)")
                     return order
             except Exception as e:
@@ -99,7 +100,7 @@ class SmartOrderRouter:
 
             market_order = await self.client.create_market_order(symbol, side, amount)
             logger.info(f"Market fallback filled: {market_order['id']}")
-            await self._place_sl_after_fill(symbol, side, price, amount, sl_distance_pct)
+            await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
             logger.debug("execute: returning dict (Market fallback)")
             return market_order
         except Exception as e:
@@ -113,14 +114,16 @@ class SmartOrderRouter:
         side: str,
         fill_price: Decimal,
         amount: Decimal,
-        sl_distance_pct: Decimal,
+        max_loss_usd: Decimal,
     ) -> None:
-        """Place exchange-side SL immediately after fill. CLAUDE.md Rule 5."""
+        """Place exchange-side SL immediately after fill. CLAUDE.md Rule 5.
+        SL price: loss = max_loss_usd / amount, so SL is at fill_price - loss (LONG) or + loss (SHORT)."""
         try:
+            sl_distance = max_loss_usd / amount if amount > 0 else Decimal("0")
             if side == "buy":
-                sl_price = fill_price * (Decimal("1") - sl_distance_pct)
+                sl_price = fill_price - sl_distance
             else:
-                sl_price = fill_price * (Decimal("1") + sl_distance_pct)
+                sl_price = fill_price + sl_distance
 
             sl_order = await self.client.place_stop_loss(symbol, side, sl_price, amount)
             if sl_order:

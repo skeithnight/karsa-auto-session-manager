@@ -19,12 +19,16 @@ class CircuitBreaker:
         max_consecutive_losses: int = 3,
         loss_pause_minutes: int = 60,
         max_latency_ms: int = 1500,
+        max_daily_loss_usd: Optional[Decimal] = None,
     ) -> None:
+        """Callers: main.py. max_daily_loss_usd: absolute USD loss cap (e.g. Decimal('1.00')).
+        Schema change: none — only adds constructor param."""
         logger.debug("CircuitBreaker.__init__: entering")
         self.daily_drawdown_limit = daily_drawdown_limit
         self.max_consecutive_losses = max_consecutive_losses
         self.loss_pause_minutes = loss_pause_minutes
         self.max_latency_ms = max_latency_ms
+        self.max_daily_loss_usd = max_daily_loss_usd
 
         self.daily_pnl = Decimal("0")
         self.consecutive_losses = 0

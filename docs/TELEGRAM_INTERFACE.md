@@ -1,29 +1,30 @@
 # Telegram Bot Interface Specification
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft
-**Purpose:** Define the complete Telegram command interface, alert system, and security model for Key 7.
+**Purpose:** Define the Telegram mini-app interface (single `/start` command with inline keyboard navigation), alert system, and security model.
 
 ---
 
 ## 1. Overview
 
-The Telegram bot serves as the **operator control panel** for the trading system. It provides:
-1. **Real-time alerts** — trade executions, circuit breaker events, system status
-2. **Manual controls** — kill switch, halt clearing, settings adjustments
-3. **Status queries** — positions, PnL, system health
+The Telegram bot is a **single-command mini-app**. The operator sends `/start` and navigates everything via inline keyboard buttons — no other commands needed.
 
-The bot runs as a concurrent `asyncio` task alongside the 6 core trading keys. It uses `python-telegram-bot` (PTB) v20+ with an asyncio-native polling loop.
+**Architecture:**
+- One `/start` command handler → launches dashboard
+- All navigation via `CallbackQueryHandler` (inline keyboard buttons)
+- Dashboard adapts based on session state (active vs inactive)
+- Emergency actions (kill switch, sell all) in Control Panel with confirmation
+- Edit-in-place pattern (updates existing message, not new messages)
 
 ---
 
 ## 2. Security Model
 
 ### 2.1 Authorization Boundary
-Every public handler **must** call `_is_authorized(update)` as its first line. No exceptions.
+Every handler (command and callback) **must** call `_is_authorized(update)` as its first line.
 
 ```python
 def _is_authorized(update: Update) -> bool:
-    """Single security boundary — checks TELEGRAM_CHAT_ID."""
     settings = get_settings()
     if not settings.telegram_chat_id:
         return False
@@ -31,169 +32,142 @@ def _is_authorized(update: Update) -> bool:
 ```
 
 ### 2.2 Unauthorized Access
-If `_is_authorized()` returns `False`:
 - Handler returns immediately (no response)
-- Log warning: `logger.warning(f"Unauthorized access attempt from chat {update.effective_chat.id}")`
-- Do NOT reveal system existence or functionality to unauthorized users
-
-### 2.3 Secret Management
-- `TELEGRAM_BOT_TOKEN` — loaded from `.env` via Pydantic Settings, never hardcoded
-- `TELEGRAM_CHAT_ID` — loaded from `.env` via Pydantic Settings, never hardcoded
-- If either is empty/missing, bot fails to start with clear error message
+- Log warning: `logger.warning(f"Unauthorized access from chat {update.effective_chat.id}")`
 
 ---
 
-## 3. Bot Startup & Lifecycle
+## 3. Main Menu (`/start` → Dashboard)
 
-### 3.1 Initialization (runner.py)
-```python
-async def run_bot(redis_client: RedisClient, bybit_client: BybitClient, kill_switch: asyncio.Event):
-    """Build and start PTB application."""
-    settings = get_settings()
+### 3.1 Dashboard (Session Inactive)
 
-    application = (
-        ApplicationBuilder()
-        .token(settings.telegram_bot_token)
-        .build()
-    )
+When no autonomous session is running:
 
-    # Wire dependencies into bot_data
-    application.bot_data["redis_client"] = redis_client
-    application.bot_data["bybit_client"] = bybit_client
-    application.bot_data["kill_switch"] = kill_switch
+```
+🤖 Karsa Auto Session Manager
 
-    # Register handlers
-    register_handlers(application)
+📊 System: Idle
+💰 Wallet: $10,000.00
+📈 Positions: 0
 
-    # Start polling
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    # Wait for kill switch
-    await kill_switch.wait()
-
-    # Graceful shutdown (must complete within 5s)
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
+[🚀 LAUNCH NEW SESSION]
+[📜 Trade History]  [⚙️ Settings]
+[🎛️ Control Panel]  [💼 Positions]
 ```
 
-### 3.2 Kill Switch Integration
-- PTB polling loop respects global `kill_switch` asyncio.Event
-- On `kill_switch.set()`, bot calls `application.stop()` within 5 seconds
-- Bot sends final "🚨 KILL SWITCH ACTIVATED" alert before shutdown (if possible)
+### 3.2 Dashboard (Session Active)
 
-### 3.3 Bot Data Access
-All shared state accessed via `context.bot_data`:
-- `context.bot_data["redis_client"]` — RedisClient instance
-- `context.bot_data["bybit_client"]` — BybitClient instance
-- `context.bot_data["kill_switch"]` — asyncio.Event
+When autonomous session is running:
 
-Never use globals. Never import client instances directly.
+```
+🤖 Karsa Auto Session Manager
+
+📊 System: Running | Regime: TREND_BULL
+💰 Wallet: $10,142.50 (+1.43%)
+📈 Positions: 2 | Daily PnL: +$142.50
+
+Session: 14h 32m remaining
+
+[📊 Dashboard]  [📋 Activity]
+[💼 Portfolio]  [🎛️ Control Panel]
+[⚙️ Settings]   [📜 History]
+```
+
+### 3.3 Main Keyboard Layout
+
+**Session inactive:**
+```
+[🚀 LAUNCH NEW SESSION]
+[📜 Trade History]  [⚙️ Settings]
+[🎛️ Control Panel]  [💼 Positions]
+```
+
+**Session active:**
+```
+[📊 Dashboard]  [📋 Activity]
+[💼 Portfolio]  [🎛️ Control Panel]
+[⚙️ Settings]   [📜 History]
+[🧠 AI Status]  [🌐 Universe]
+```
+
+### 3.4 AI Status Panel (`cmd_ai_status`)
+
+**Purpose:** Show AI analyst and position judge health.
+**Data sources:** Redis (`ai:cache:*`, position store), Prometheus metrics.
+
+```
+🧠 AI Layer Status
+
+📊 CryptoAnalyst (Stage 3)
+  Model: claude-haiku-3-5
+  Last call: 12s ago (245ms)
+  Success: 42 | Failures: 1
+  Cache hits: 8
+
+⚖️ Position Judge (Stage 6)
+  Active positions judged: 2
+  Last verdict: HOLD (BTC/USDT)
+  Consecutive holds: 1
+  Forced exits (3-HOLD): 0
+
+[🔙 Back to Dashboard]
+```
+
+### 3.5 Universe Panel (`cmd_universe`)
+
+**Purpose:** Show active tradeable universe from scorer.
+**Data source:** Redis (`system:universe:symbols`).
+
+```
+🌐 Active Universe
+
+Last refresh: 3m ago
+Active symbols: 12 / 60
+
+Top 5 by score:
+  1. BTC/USDT  — 87 (vol:30 mom:25 sq:22 pen:0) [L1]
+  2. ETH/USDT  — 82 (vol:28 mom:22 sq:22 pen:0) [L1]
+  3. SOL/USDT  — 74 (vol:24 mom:20 sq:20 pen:0) [L2]
+  4. DOGE/USDT — 68 (vol:20 mom:18 sq:20 pen:0) [L3]
+  5. ARB/USDT  — 61 (vol:18 mom:15 sq:18 pen:0) [L4]
+
+Sectors: L1=2/2  L2=2/2  L3=1/2  L4=1/2
+
+[🔄 Force Refresh]  [🔙 Back to Dashboard]
+```
 
 ---
 
-## 4. Command Reference
+## 4. Screen Reference
 
-### 4.1 Emergency Commands
+### 4.1 Dashboard (`cmd_dashboard`)
 
-#### `/kill_karsa`
-**Purpose:** Emergency halt — cancel all orders, flatten all positions, stop bot.
-**Priority:** CRITICAL — must execute in < 10 seconds
-**Authorization:** Required
+**Purpose:** Main hub — system health, wallet balance, session status.
+**Data sources:** Bybit REST (wallet, positions), Redis (regime, circuit breaker), Postgres (daily PnL).
 
-**Flow:**
-1. Handler sets global `kill_switch` Event
-2. Main loop detects event, executes Kill Switch Sequence:
-   - Cancel all open limit orders
-   - Market Flatten (IOC) all open positions
-   - Set `karsa:global_halt` = `"1"` in Redis
-   - Send final alert: "🚨 KILL SWITCH ACTIVATED. All positions flattened. Bot halted."
-   - `sys.exit(1)`
-
-**Response:**
-```
-🚨 EXECUTING KILL SWITCH...
-
-⏳ Cancelling all open orders...
-⏳ Flattening all positions...
-✅ Kill switch complete. Bot halted.
-
-Check Bybit UI to confirm flat state.
-Restart bot manually when ready.
-```
-
-**Redis Keys:**
-- Sets: `karsa:global_halt` = `"1"`
+**Adapts to state:**
+- No session → shows "LAUNCH NEW SESSION" button
+- Session active → shows session timer, daily PnL, regime
 
 ---
 
-#### `/clear_halt`
-**Purpose:** Clear emergency halt flag and resume normal operation.
-**Priority:** HIGH
-**Authorization:** Required
+### 4.2 Activity Feed (`cmd_activity`)
 
-**Flow:**
-1. Verify `karsa:global_halt` is currently `"1"`
-2. Clear `karsa:global_halt` from Redis
-3. Confirm with operator
+**Purpose:** Live feed of recent signals and closed trades.
+**Status:** Stub — requires signal/trade tables (pending DATA_MODEL.md §7 sign-off).
 
-**Response:**
-```
-✅ Halt cleared. Bot ready to resume.
-⚠️ Ensure all positions are flat before restarting.
-```
-
-**Redis Keys:**
-- Reads: `karsa:global_halt`
-- Deletes: `karsa:global_halt`
+**Current behavior:** Shows placeholder message with back button.
 
 ---
 
-### 4.2 Status Commands
+### 4.3 Portfolio (`cmd_portfolio`)
 
-#### `/status`
-**Purpose:** Show current system status overview.
-**Priority:** NORMAL
-**Authorization:** Required
+**Purpose:** Open positions fetched live from Bybit.
+**Data source:** `bybit.get_positions()` + `global:state:{symbol}` for current prices.
 
-**Response:**
+**Layout:**
 ```
-📊 System Status
-
-🔄 Data Engine: ✅ Active
-🧠 Alpha Bridge: ✅ Active
-🛡️ Risk Gate: ✅ Active
-⚡ Executor: ✅ Connected
-📡 Watchdog: ✅ Monitoring
-
-📈 Open Positions: 2
-💰 Daily PnL: +$142.50 (+0.47%)
-⏱️ Uptime: 14h 32m
-
-🔌 WARP Proxy: ✅ Connected
-🗄️ Redis: ✅ Connected
-🐘 PostgreSQL: ✅ Connected
-```
-
-**Data Sources:**
-- Component status: in-memory flags from each Key
-- Open positions: `state_manager.get_all_positions()`
-- Daily PnL: `circuit_breaker.daily_pnl`
-- Uptime: process start time calculation
-- Connections: health check pings
-
----
-
-#### `/positions`
-**Purpose:** List all open positions with current PnL.
-**Priority:** NORMAL
-**Authorization:** Required
-
-**Response:**
-```
-📈 Open Positions (2)
+💼 Open Positions
 
 ┌─ BTC/USDT:USDT ─────────────┐
 │ Side: LONG                  │
@@ -201,285 +175,247 @@ Restart bot manually when ready.
 │ Entry: $64,250.00           │
 │ Current: $64,890.00         │
 │ PnL: +$0.64 (+1.00%)       │
+│ SL: $64,100.00              │
 └─────────────────────────────┘
 
-┌─ ETH/USDT:USDT ─────────────┐
-│ Side: SHORT                 │
-│ Size: 0.05 ETH              │
-│ Entry: $3,450.00            │
-│ Current: $3,420.00          │
-│ PnL: +$1.50 (+0.87%)       │
-└─────────────────────────────┘
+💰 Total Unrealized PnL: +$0.64
 
-💰 Total Unrealized PnL: +$2.14
+[🔙 Back to Dashboard]
 ```
-
-**Data Sources:**
-- `state_manager.get_all_positions()`
-- Current prices from Redis `global:state:{symbol}`
 
 ---
 
-#### `/pnl`
-**Purpose:** Show daily PnL summary.
-**Priority:** NORMAL
-**Authorization:** Required
+### 4.4 Control Panel (`cmd_control`)
 
-**Response:**
+**Purpose:** Emergency controls and overrides.
+**Authorization:** Required (critical actions).
+
+**Layout:**
 ```
-💰 Daily PnL Summary
+🎛️ DESK CONTROL PANEL
 
-Realized: +$89.25
-Unrealized: +$53.25
-─────────────────
-Total: +$142.50 (+0.47%)
+System State:
+Global Halt: 🟢 INACTIVE
+Cooldown: 🟢 INACTIVE
+Trade Alerts: 🔔 ON
 
-Trades Today: 8 (6W / 2L)
-Win Rate: 75.0%
+Select an operation below.
 
-Circuit Breaker: ✅ OK
-Daily Limit: -2.0% (-$620.00)
-Current Drawdown: -0.47%
+[🚨 HALT]  [💸 SELL ALL]
+[▶️ RESUME]  [🔙 Back]
 ```
 
-**Data Sources:**
-- Realized PnL: query from `trades` table (Postgres)
-- Unrealized: sum of position unrealized PnL
-- Circuit breaker state: `circuit_breaker.get_state()`
+**Actions:**
+| Button | Callback | Action |
+|--------|----------|--------|
+| HALT | `execute_kill` | Set `karsa:global_halt`, cancel all orders, flatten positions |
+| SELL ALL | `execute_sellall` | Market close all positions, set 15-min cooldown |
+| RESUME | `execute_resume` | Clear `karsa:global_halt` and cooldown |
 
 ---
 
-#### `/risk`
-**Purpose:** Show current risk parameters and circuit breaker status.
-**Priority:** NORMAL
-**Authorization:** Required
+### 4.5 Settings (`cmd_settings`)
 
-**Response:**
+**Purpose:** Toggle bot parameters inline.
+**Data source:** Redis `karsa:settings:*` keys.
+
+**Layout:**
 ```
-🛡️ Risk Status
-
-Circuit Breaker: ✅ ACTIVE
-Daily PnL: +$142.50 (limit: -2.0%)
-Consecutive Losses: 0 (max: 3)
-Execution Latency: 342ms (limit: 1500ms)
-
-Open Orders: 1
-Margin Used: 15.2% (limit: 40%)
-
-Last Reconciliation: 14h 32m ago
-```
-
-**Data Sources:**
-- `circuit_breaker.get_state()`
-- Exchange info from Bybit REST
-
----
-
-### 4.3 Settings Commands
-
-#### `/settings`
-**Purpose:** Show current bot settings with inline keyboard for adjustments.
-**Priority:** NORMAL
-**Authorization:** Required
-
-**Response:**
-```
-⚙️ Current Settings
+⚙️ Settings
 
 Max Positions: 3
 Risk Profile: Conservative
 Regime Filter: ✅ Enabled
-Trade Alerts: ✅ Enabled
+Trade Alerts: 🔔 Enabled
 
-[Modify Settings]
+[Max Positions: 3 ▼]
+[Risk Profile ▼]
+[Regime Filter: ON]
+[Alerts: ON]
+[🔙 Back]
 ```
 
-**Inline Keyboard:**
-```
-[Max Positions: 3 ▼]  [Risk Profile ▼]
-[Regime Filter: ON]    [Alerts: ON]
-[Close]
-```
-
-**Callback Queries:**
-- `settings:max_positions` — Cycle through 3 → 5 → 8 → 3
-- `settings:risk_profile` — Cycle through conservative → semi_aggressive → aggressive
-- `settings:regime_filter` — Toggle 1/0
-- `settings:alerts` — Toggle 1/0
-- `settings:close` — Delete message
-
-**Redis Keys:**
-- Reads/Writes: `karsa:settings:max_positions`
-- Reads/Writes: `karsa:settings:regime_filter`
-- Reads/Writes: `karsa:alerts_enabled`
+**Callback actions:**
+- `toggle_max_pos` — Cycle 3 → 5 → 8 → 3
+- `toggle_risk_profile` — Cycle conservative → semi_aggressive → aggressive
+- `toggle_regime` — Toggle on/off
+- `toggle_alerts` — Toggle on/off
 
 ---
 
-#### `/alerts on` / `/alerts off`
-**Purpose:** Toggle trade alert notifications.
-**Priority:** LOW
-**Authorization:** Required
+### 4.6 Trade History (`cmd_trade_history`)
 
-**Response:**
+**Purpose:** Paginated view of closed trades.
+**Data source:** Postgres `trades` table.
+
+**Layout:**
 ```
-✅ Trade alerts enabled.
-```
-or
-```
-⏸️ Trade alerts disabled. System alerts (circuit breaker, kill switch) will still be sent.
-```
+📜 Trade History
 
-**Redis Keys:**
-- Reads/Writes: `karsa:alerts_enabled`
+Page 1/3
 
----
+1. BTC/USDT LONG +$0.64 (1.00%) — 2h 15m
+2. ETH/USDT SHORT -$0.30 (-0.87%) — 45m
+3. SOL/USDT LONG +$1.20 (2.40%) — 3h 10m
 
-### 4.4 Utility Commands
-
-#### `/help`
-**Purpose:** Show available commands.
-**Priority:** LOW
-**Authorization:** Required
-
-**Response:**
-```
-📖 Available Commands
-
-🚨 Emergency
-/kill_karsa - Emergency halt (flatten all + stop)
-/clear_halt - Clear halt flag
-
-📊 Status
-/status - System status overview
-/positions - Open positions
-/pnl - Daily PnL summary
-/risk - Risk parameters
-
-⚙️ Settings
-/settings - View/modify settings
-/alerts on|off - Toggle trade alerts
-
-❓ Help
-/help - Show this message
+[◀️ Prev]  [Page 1/3]  [Next ▶️]
+[🔙 Back]
 ```
 
 ---
 
-#### `/start`
-**Purpose:** Welcome message and initial status.
-**Priority:** LOW
-**Authorization:** Required
+### 4.7 Position Detail (`view_positions_detail`)
 
-**Response:**
+**Purpose:** Detailed position view with management actions.
+**Data source:** Bybit REST + Redis position store.
+
+**Layout:**
 ```
-🤖 Karsa Auto Session Manager
+📈 Position Detail
 
-Bot started and monitoring markets.
-Use /help to see available commands.
+BTC/USDT:USDT LONG
+Entry: $64,250.00 | Current: $64,890.00
+PnL: +$0.64 (+1.00%)
+SL: $64,100.00 | TP: $65,500.00
+Duration: 2h 15m
 
-📊 Quick Status: /status
+[Move SL to BE]  [Close Position]
+[🔙 Back]
+```
+
+**Actions:**
+| Button | Callback | Action |
+|--------|----------|--------|
+| Move SL to BE | `move_sl_be:{symbol}` | Amend stop-loss to entry price |
+| Close Position | `close_position:{symbol}` | Market close at current price |
+
+---
+
+### 4.8 Universe (`universe_cmd`)
+
+**Purpose:** Show configured trading universe.
+**Status:** Stub — uses `settings.symbols` until UniverseEngine is ported.
+
+**Layout:**
+```
+📡 Crypto Universe
+
+Scanning 60 coins (from config):
+
+  1. BTC/USDT
+  2. ETH/USDT
+  3. SOL/USDT
+  ...
+
+[🔙 Back to Dashboard]
 ```
 
 ---
 
 ## 5. Alert System (Outbound Messages)
 
-### 5.1 Alert Priority Levels
+Alerts are sent as standalone messages (not edits). Priority levels:
 
 | Level | Prefix | Examples | Always Send? |
 |-------|--------|----------|--------------|
-| CRITICAL | 🚨 | Kill switch, circuit breaker triggered, state divergence | Yes — overrides alerts_off |
-| WARNING | ⚠️ | Proxy degradation, stale data, high latency | Yes — overrides alerts_off |
-| INFO | 📊 | Trade executed, position opened/closed | Only if alerts_enabled |
+| CRITICAL | 🚨 | Kill switch, circuit breaker, AI offline | Yes |
+| WARNING | ⚠️ | Proxy degraded, stale data, sector cap | Yes |
+| INFO | 📊 | Trade executed, position opened/closed | If alerts_enabled |
+| AI_DECISION | 🤖 | AI analyst verdict, judge decision | If alerts_enabled |
 
-### 5.2 Trade Alerts
+### 5.1 Trade Alerts
 
-#### Position Opened
+**Position Opened:**
 ```
 📈 Position Opened
 
 Symbol: BTC/USDT:USDT
-Side: LONG
-Size: 0.001 BTC
+Side: LONG | Size: 0.001 BTC
 Entry: $64,250.00
-Signal Confidence: 78.2%
-
-Risk Gate: ✅ Passed
+Confidence: 78.2%
 Latency: 342ms
 ```
 
-#### Position Closed
+**Position Closed:**
 ```
 📉 Position Closed
 
 Symbol: BTC/USDT:USDT
-Side: LONG
-Size: 0.001 BTC
-Entry: $64,250.00 → Exit: $64,890.00
 PnL: +$0.64 (+1.00%)
-
 Duration: 2h 15m
 ```
 
-#### Order Filled
-```
-✅ Order Filled
+### 5.2 System Alerts
 
-Symbol: ETH/USDT:USDT
-Type: Post-Only Limit
-Side: SELL
-Size: 0.05 ETH
-Price: $3,450.00
-Order ID: abc123
-
-SOR Step: 1 (Post-Only)
-```
-
-### 5.3 System Alerts
-
-#### Circuit Breaker Triggered
+**Circuit Breaker:**
 ```
 🛑 CIRCUIT BREAKER TRIGGERED
 
-Reason: Daily drawdown exceeded
-PnL: -$625.00 (-2.01%)
-Limit: -2.00%
-
-Action: All positions flattened, bot halted.
-Manual restart required.
+Daily drawdown: -2.01% (limit: -2.00%)
+All positions flattened. Bot halted.
 ```
 
-#### Proxy Degraded
+**AI Offline:**
 ```
-⚠️ WARP Proxy Degraded
+🚨 AI OFFLINE
 
-Bybit WebSocket disconnected.
-Open orders cancelled.
-Existing positions protected by exchange-side SL.
-
-Bot paused. Attempting reconnect every 30s.
+9router unreachable after 3 failures.
+Signals halted (AI mandatory).
 ```
 
-#### Stale Data
+### 5.3 AI Decision Alerts
+
+**AI Analyst Rejected Signal:**
 ```
-⚠️ Stale Data Detected
+🤖 AI Signal Rejected
 
-Exchange: Binance
-Last Update: 18s ago (threshold: 15s)
-
-Alpha Bridge paused. No new entries.
+Symbol: SOL/USDT
+Deterministic confidence: 72.1%
+AI confidence: 31.0%
+Blended: 51.6% (below 65% gate)
+Reason: Funding divergence lacks cross-exchange confirmation
 ```
 
-#### Startup Reconciliation
+**AI Position Judge Verdict:**
 ```
-🔄 Startup Reconciliation
+⚖️ Judge Verdict: TIGHTEN_STOP
 
-Scenario: Clean
-Positions synced: 2
-Orders synced: 1
-Duration: 1.2s
+Symbol: ETH/USDT:USDT (LONG)
+PnL: +0.45% | Duration: 47m
+Tier: cheap (haiku) → escalated (sonnet)
+Reason: Momentum fading, move SL to breakeven
+Consecutive holds: 0
+```
 
-✅ Ready to trade.
+**3-HOLD Forced Exit:**
+```
+🚨 AI Forced Exit
+
+Symbol: ARB/USDT:USDT (LONG)
+PnL: -1.2% | Duration: 3h 12m
+Reason: 3 consecutive HOLD verdicts on losing position
+Action: Market close triggered
+```
+
+### 5.4 Universe & Lifecycle Alerts
+
+**Universe Refreshed:**
+```
+🌐 Universe Refreshed
+
+Active: 12 symbols (was 14)
+New: ARB/USDT, TIA/USDT
+Dropped: AVAX/USDT, LINK/USDT
+Reason: score threshold or sector cap
+```
+
+**Sector Cap Rejected:**
+```
+⚠️ Sector Cap Rejected
+
+Symbol: OP/USDT (L2 sector)
+Current L2 positions: 2/2 (ETH, ARB)
+Signal blocked by diversity cap
 ```
 
 ---
@@ -488,175 +424,115 @@ Duration: 1.2s
 
 ### 6.1 Keys Read by Bot
 
-| Key | Purpose | Handler |
-|-----|---------|---------|
-| `karsa:global_halt` | Check if halt active | `/status`, `/clear_halt` |
-| `karsa:alerts_enabled` | Check alert toggle | `/settings`, alert dispatch |
-| `karsa:settings:max_positions` | Read max positions | `/settings` |
-| `karsa:settings:regime_filter` | Read regime filter | `/settings` |
-| `karsa:state:risk_profile` | Read risk profile | `/settings`, `/risk` |
-| `global:state:{symbol}` | Current market state | `/positions` |
-| `system:circuit_breaker` | Circuit breaker state | `/risk` |
+| Key | Purpose | Screen |
+|-----|---------|--------|
+| `karsa:global_halt` | Halt status | Control Panel, Dashboard |
+| `karsa:crypto_cooldown` | Cooldown status | Control Panel |
+| `karsa:alerts_enabled` | Alert toggle | Settings, Control Panel |
+| `karsa:settings:max_positions` | Max positions | Settings |
+| `karsa:settings:regime_filter` | Regime filter | Settings |
+| `karsa:state:risk_profile` | Risk profile | Settings |
+| `global:state:{symbol}` | Market state | Portfolio, Position Detail |
+| `system:circuit_breaker` | Breaker state | Dashboard |
+| `system:config:regime` | Regime | Dashboard |
+| `system:universe:symbols` | Universe scores | Universe Panel |
+| `ai:cache:{hash}` | AI analyst cache | AI Status Panel |
+| `karsa:memory:{symbol}` | Trade memory | AI Status (last injection) |
+| `karsa:sector:{sector}` | Sector position count | Universe Panel |
+| `karsa:position:{symbol}:{side}` | Position lifecycle state | Portfolio, Judge alerts |
 
 ### 6.2 Keys Written by Bot
 
-| Key | Purpose | Handler |
-|-----|---------|---------|
-| `karsa:global_halt` | Set/clear halt flag | `/kill_karsa`, `/clear_halt` |
-| `karsa:alerts_enabled` | Toggle alerts | `/alerts on/off` |
-| `karsa:settings:max_positions` | Update max positions | Settings callback |
-| `karsa:settings:regime_filter` | Toggle regime filter | Settings callback |
-| `karsa:state:risk_profile` | Update risk profile | Settings callback |
-
-### 6.3 Keys Read from Other Components
-
-| Key | Written By | Read By Bot For |
-|-----|------------|-----------------|
-| `global:state:{symbol}` | Data Engine | `/positions` (current prices) |
-| `system:heartbeat` | Watchdog | `/status` (component health) |
-| `system:circuit_breaker` | Circuit Breaker | `/risk` (breaker state) |
+| Key | Purpose | Action |
+|-----|---------|--------|
+| `karsa:global_halt` | Halt flag | Control Panel (HALT/RESUME) |
+| `karsa:crypto_cooldown` | Cooldown | Control Panel (SELL ALL) |
+| `karsa:alerts_enabled` | Alert toggle | Settings callback |
+| `karsa:settings:max_positions` | Max positions | Settings callback |
+| `karsa:settings:regime_filter` | Regime filter | Settings callback |
+| `karsa:state:risk_profile` | Risk profile | Settings callback |
 
 ---
 
-## 7. Stub Subsystems
+## 7. Error Handling
 
-The following subsystems are documented but **not yet implemented**. Handlers that depend on them return a user-visible warning.
+### 7.1 Dependency Unavailable
+- Reply: `⚠️ [Component] unavailable. Please try again later.`
+- Log: `logger.error(f"Handler error: {e}")`
+- Never crash the bot process
 
-### 7.1 Autonomous Session Manager (ASM)
-- Redis keys: `karsa:auto:state:active`, `karsa:auto:config`, `karsa:auto:start_time`, `karsa:auto:pending_duration_min`
-- Status: Not ported
-- Handler behavior: Return `⚠️ Autonomous Session Manager not yet available.`
-
-### 7.2 Universe Engine
-- Purpose: Dynamic Top-N symbol selection
-- Status: Not ported
-- Handler behavior: Return `⚠️ Universe Engine not yet available.`
-
-### 7.3 Performance Tracker
-- Purpose: Win rate, Sharpe ratio, drawdown analytics
-- Status: Not ported
-- Handler behavior: Return `⚠️ Performance Tracker not yet available.`
-
-### 7.4 Stub Pattern
-```python
-async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handler for unported subsystem."""
-    if not _is_authorized(update):
-        return
-
-    logger.warning("Handler called but subsystem not ported")
-    await update.message.reply_text("⚠️ Not yet available.")
-```
-
----
-
-## 8. Error Handling
-
-### 8.1 Dependency Unavailable
-If Bybit, Redis, or Postgres is unreachable:
-- Reply with user-visible degradation: `⚠️ [Component] unavailable. Please try again later.`
-- Log the cause: `logger.error(f"Handler error: {e}")`
-- Do NOT crash the bot process
-
-### 8.2 Handler Exceptions
-Every `except` block must:
-1. Log the error: `logger.error(f"Handler error: {e}")`
-2. Reply to user: `⚠️ An error occurred. Please try again.`
-3. Never silently pass
-
+### 7.2 Callback Query Errors
 ```python
 try:
     # ... handler logic
 except Exception as e:
-    logger.error(f"Handler error: {e}")
-    await update.message.reply_text("⚠️ An error occurred. Please try again.")
+    logger.error(f"Callback error: {e}")
+    await query.answer("⚠️ Error occurred", show_alert=True)
 ```
 
-### 8.3 Rate Limiting
-- PTB handles Telegram API rate limits automatically
-- No custom rate limiting required for MVP
-- Future: per-user rate limit if multiple operators
-
----
-
-## 9. Message Formatting
-
-### 9.1 HTML Formatting
-All messages use HTML (not Markdown) for consistent rendering:
-- `<b>bold</b>` for labels
-- `<i>italic</i>` for secondary info
-- `<code>inline code</code>` for values
-- `<pre>preformatted</pre>` for tables
-
-### 9.2 Formatting Helpers (utils/format.py)
+### 7.3 Stale Callbacks
+If a callback references a deleted message:
 ```python
-def bold(text: str) -> str:
-    return f"<b>{text}</b>"
-
-def italic(text: str) -> str:
-    return f"<i>{text}</i>"
-
-def code(text: str) -> str:
-    return f"<code>{text}</code>"
-
-def pre(text: str) -> str:
-    return f"<pre>{text}</pre>"
+except telegram.error.BadRequest as e:
+    if "Message is not modified" in str(e):
+        pass  # Content unchanged, ignore
+    else:
+        logger.warning(f"Callback stale: {e}")
 ```
 
-### 9.3 Decimal Formatting
-All prices/PnL rendered from `Decimal` — never `float`:
+---
+
+## 8. Implementation Notes
+
+### 8.1 Handler Registration
 ```python
-def format_price(value: Decimal) -> str:
-    """Format price with comma separators."""
-    return f"${value:,.2f}"
+# Single command handler
+application.add_handler(CommandHandler("start", dashboard_cmd))
 
-def format_pnl(value: Decimal) -> str:
-    """Format PnL with sign and color indicator."""
-    sign = "+" if value >= 0 else ""
-    return f"{sign}${value:,.2f}"
+# All callbacks via pattern routing
+application.add_handler(CallbackQueryHandler(handle_callback, pattern=r"^(cmd_|auto_|execute_|toggle_|view_|move_|close_)"))
+```
+
+### 8.2 Edit-in-Place Pattern
+```python
+async def _reply(update: Update, content, **kwargs):
+    """Unified reply — edits existing message or sends new."""
+    if update.callback_query:
+        try:
+            return await update.callback_query.message.edit_text(text, **kwargs)
+        except Exception:
+            return await update.callback_query.message.reply_text(text, **kwargs)
+    elif update.message:
+        return await update.message.reply_text(text, **kwargs)
+```
+
+### 8.3 Keyboard Builder
+```python
+def build_main_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("📊 Dashboard", callback_data="cmd_dashboard"),
+         InlineKeyboardButton("📋 Activity", callback_data="cmd_activity")],
+        [InlineKeyboardButton("💼 Portfolio", callback_data="cmd_portfolio"),
+         InlineKeyboardButton("🎛️ Control Panel", callback_data="cmd_control")],
+        [InlineKeyboardButton("⚙️ Settings", callback_data="cmd_settings"),
+         InlineKeyboardButton("📜 History", callback_data="cmd_trade_history")],
+    ])
 ```
 
 ---
 
-## 10. Testing Requirements
+## 9. Testing
 
-### 10.1 Unit Tests (tests/bot/)
-- `test_auth.py` — Authorization boundary tests
-- `test_format.py` — Formatting helper tests
-- `test_decimal_safety.py` — Ensure no float leakage in UI
+### 9.1 Required Tests
+- Authorization boundary (authorized/unauthorized)
+- All menu routes render correctly
+- Settings callbacks persist to Redis
+- Control Panel actions (halt, sell all, resume)
+- Position management (move SL to BE, close)
+- Stale callback handling
+- Decimal formatting (no float in UI)
 
-### 10.2 Required Test Cases
-
-#### Authorization
-- Authorized user → handler executes
-- Unauthorized user → handler returns silently
-- Empty chat_id config → bot fails to start
-
-#### Kill Switch
-- `/kill_karsa` sets `kill_switch` Event
-- `/kill_karsa` sets `karsa:global_halt` in Redis
-- `/clear_halt` clears `karsa:global_halt`
-- `/clear_halt` when no halt → appropriate message
-
-#### Settings
-- `/settings` returns current values
-- Settings callback cycles through options
-- Settings persist to Redis
-
-#### Decimal Safety
-- No `float` values in rendered messages
-- All prices use `Decimal` formatting
-- PnL calculations use `Decimal`
-
----
-
-## 11. Future Enhancements (Post-MVP)
-
-Not in scope for V1.0, documented for reference:
-
-1. **Inline Queries** — Quick position lookup via inline bot
-2. **Group Chat Support** — Multiple authorized operators
-3. **Custom Alerts** — User-defined alert thresholds
-4. **Trade Journal** — Post-trade notes via Telegram
-5. **Chart Screenshots** — Automated TradingView chart captures
-6. **Voice Commands** — Voice-to-text for hands-free operation
+### 9.2 Test Files
+- `tests/bot/test_auth.py` — Authorization boundary
+- `tests/bot/test_format.py` — Formatting helpers
+- `tests/bot/test_decimal_safety.py` — No float leakage

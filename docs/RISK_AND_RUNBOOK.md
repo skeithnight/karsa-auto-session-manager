@@ -31,11 +31,15 @@ When triggered, the bot immediately executes the following sequence, ignoring al
 
 | Breaker Name | Trigger Condition | Bot Action |
 | :--- | :--- | :--- |
-| **Daily Drawdown (Hard)** | Realized + Unrealized PnL drops **> 3%** from the starting daily equity. | **HARD STOP:** Cancel all orders, flatten all positions, halt bot, alert Telegram. |
+| **Daily Drawdown (Hard)** | Realized + Unrealized PnL drops **> 2%** from the starting daily equity. | **HARD STOP:** Cancel all orders, flatten all positions, halt bot, alert Telegram. |
 | **Consecutive Losses (Soft)** | **3** losing trades in a row. | **SOFT STOP:** Halt *new* trade generation for 60 minutes. Existing positions are managed normally. |
 | **Execution Latency Spike** | Average order execution latency exceeds **1500ms** over a 5-minute rolling window. | **HALT:** Cancel open orders, pause new entries. Alert Telegram: *"Proxy degradation detected."* |
 | **Margin Utilization** | Total Bybit margin used exceeds **40%** of total account equity. | **HALT:** Block all new position openings. Allow existing positions to be managed/closed. |
 | **Stale Data** | Global Read Engine (Binance/OKX) receives no WebSocket updates for **> 15 seconds**. | **HALT:** Pause Alpha generation. Do not open new trades. Alert Telegram. |
+| **AI Call Latency** | AI analyst p95 latency exceeds **5 seconds** over a 5-minute rolling window. | **DEGRADE:** Skip AI for next cycle, use deterministic confidence only. Alert Telegram: *"AI degraded, running deterministic."* |
+| **AI Confidence Anomaly** | AI returns confidence **< 0.20** for **10+ consecutive** signals. | **ALERT:** Possible model degradation or market regime shift. Telegram: *"AI confidence anomaly — review recommended."* |
+| **AI Unavailable** | 9router returns error or timeout on **3 consecutive** calls. | **HALT SIGNALS:** AI is mandatory — no bypass. All signals rejected until AI recovers. Alert Telegram: *"AI offline, signals halted."* |
+| **Universe Scorer Empty** | Universe scorer returns **0 symbols** above threshold. | **FALLBACK:** Use static symbol list from `config.py`. Alert Telegram: *"Universe empty, fallback to static list."* |
 
 ---
 
@@ -96,13 +100,18 @@ A quick-reference guide for the operator when alerts fire.
 | Alert / Symptom | Bot's Automated Action | Human Operator Action |
 | :--- | :--- | :--- |
 | **🚨 KILL SWITCH ACTIVATED** | Flattened all, bot stopped. | Investigate why it was triggered. Check Bybit UI to confirm flat. Restart bot manually when ready. |
-| **🛑 Daily Drawdown > 3%** | Flattened all, bot stopped. | Review trade logs in Postgres. Analyze if market regime changed. Reset daily equity tracker tomorrow. |
+| **🛑 Daily Drawdown > 2%** | Flattened all, bot stopped. | Review trade logs in Postgres. Analyze if market regime changed. Reset daily equity tracker tomorrow. |
 | **⚠️ VPN Tunnel Down** | Paused trading, stale data warnings. | Check `docker logs karsa-gluetun`. Verify WireGuard server is running on droplet. Check DO Cloud Firewall allows UDP 51820. |
 | **📉 Stale Data (>15s)** | Paused new entries. | Check VPN tunnel. Check if Binance/OKX are experiencing global outages. |
 | **⏳ Execution Latency > 1500ms** | Paused new entries. | Check Docker resource usage. Check VPN routing. |
 | **💀 Postgres Connection Failed** | Rebuilt state from Bybit, continued. | Check Docker logs for Postgres container. Restart Postgres container (`docker compose restart db`). |
 | **⚠️ Reconciliation Degraded** | Startup continues in degraded mode (data engine + alpha bridge run). | Check Bybit API key permissions ("Asset" read required). Verify VPN tunnel is up. Positions cannot be verified until Bybit reachable. |
 | **🔄 State Divergence Detected** | Canceled orphaned orders, synced DB. | Review `CRITICAL` logs. This indicates a bug in the execution logic or a missed WebSocket message. |
+| **🤖 AI Analyst Timeout** | Signals rejected (AI mandatory). | Check 9router health (`curl http://127.0.0.1:20129/health`). Check Anthropic API status. If persistent, temporarily set `ai_analyst_enabled=false` in `.env` (explicit flag, logged). |
+| **🤖 AI Position Judge All HOLDs** | Positions never exiting via AI. | Check consecutive hold counter in position store. Verify 3-HOLD forced exit is working. Review AI reasoning in Telegram alerts. |
+| **📊 Universe Scorer Empty** | Fell back to static symbol list. | Check if market-wide volume drop or data issue. Manually trigger `/universe` refresh via Telegram. |
+| **🧠 Trade Memory Corrupted** | AI prompts with garbage context. | Flush `karsa:memory:*` Redis keys. Rebuild from PostgreSQL `trades` table if needed. |
+| **⚙️ Sector Cap Rejected** | Signal blocked by sector diversity. | Review current sector allocation via `/status`. Adjust `sector_cap_max` in config if needed. |
 
 ---
 

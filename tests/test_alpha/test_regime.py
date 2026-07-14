@@ -29,12 +29,13 @@ class TestRegimeEngine:
 
     def test_insufficient_data_returns_chop(self):
         candles = _make_candles(50)
-        assert self.engine.classify(candles) == REGIME_CHOP
+        regime, hurst, adx = self.engine.classify(candles)
+        assert regime == REGIME_CHOP
 
     def test_exact_200_candles(self):
         candles = _make_candles(200)
-        result = self.engine.classify(candles)
-        assert result in (REGIME_CHOP, REGIME_MEAN_REVERSION, REGIME_TREND_BULL, REGIME_TREND_BEAR)
+        regime, hurst, adx = self.engine.classify(candles)
+        assert regime in (REGIME_CHOP, REGIME_MEAN_REVERSION, REGIME_TREND_BULL, REGIME_TREND_BEAR)
 
     def test_hurst_computation(self):
         import random

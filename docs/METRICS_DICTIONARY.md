@@ -70,12 +70,53 @@
 
 ---
 
-## 7. Dashboards vs. Raw Metrics
+## 7. Stage 1 — Universe Selection
+
+| Metric | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `karsa_universe_refresh_total` | Counter | — | Universe scorer refresh cycles completed |
+| `karsa_universe_symbols_active` | Gauge | — | Current number of active tradeable symbols |
+| `karsa_universe_score` | Gauge | `symbol` | Last computed universe score per symbol |
+| `karsa_universe_sector_cap_rejections_total` | Counter | `sector` | Signals rejected because sector already at cap |
+
+## 8. Stage 3 — AI Signal Generation
+
+| Metric | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `karsa_ai_analyst_calls_total` | Counter | `result` (`success`/`failure`/`timeout`/`parse_error`) | Every AI analyst invocation and outcome |
+| `karsa_ai_analyst_latency_seconds` | Histogram | — | 9router call latency distribution |
+| `karsa_ai_analyst_confidence` | Histogram | — | AI confidence distribution (0-100) |
+| `karsa_ai_analyst_rejections_total` | Counter | `reason` | Signals rejected by AI (below threshold, AI failed, AI says FLAT) |
+| `karsa_ai_analyst_cache_hits_total` | Counter | — | Cache hits from `ai:cache:*` Redis keys |
+| `karsa_multi_tf_penalty_applied_total` | Counter | `symbol` | Times 4H trend contradicted 1H signal |
+| `karsa_final_confidence_score` | Gauge | `symbol` | Final blended confidence (quant * 0.5 + AI * 0.5) |
+
+## 9. Stage 6 — AI Position Judge
+
+| Metric | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `karsa_position_judge_calls_total` | Counter | `tier`, `action` | Every position judge invocation |
+| `karsa_position_judge_latency_seconds` | Histogram | `tier` | Judge call latency by tier |
+| `karsa_position_judge_consecutive_hold_exits_total` | Counter | — | Forced exits after 3 consecutive HOLDs |
+| `karsa_trade_memory_entries_stored_total` | Counter | `symbol` | Trade memory entries written on close |
+| `karsa_trade_memory_injection_hits_total` | Counter | `symbol` | Memory context injected into AI prompt |
+
+## 10. Lifecycle Integration
+
+| Metric | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `karsa_signals_entered_pipeline_total` | Counter | `symbol` | Signals entering the full 6-stage pipeline |
+| `karsa_signals_completed_pipeline_total` | Counter | `symbol`, `outcome` | Signals completed or rejected at stage |
+| `karsa_position_lifecycle_duration_seconds` | Histogram | — | Time from position open to close |
+
+---
+
+## 11. Dashboards vs. Raw Metrics
 
 Per `MVP_SCOPE.md` §4, Grafana is explicitly out of scope for the MVP — these metrics are meant to be queried raw via `/metrics` or `curl`'d directly during the MVP phase, not built into dashboards yet (see `IDEAS_BACKLOG.md` #7).
 
 ---
 
-## 8. Adding a New Metric
+## 12. Adding a New Metric
 
 Before adding anything not in this table: (1) confirm it maps to a real DoD or Runbook requirement — don't add speculative metrics, (2) follow the `karsa_<component>_<measurement>_<unit>` convention, (3) update this file in the same PR that adds the metric, so this dictionary never drifts out of sync with the code the way the original docs drifted from each other.

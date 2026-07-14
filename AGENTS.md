@@ -7,7 +7,7 @@
 
 ## 1. Source-of-Truth Order
 
-When docs disagree, resolve in this order. If the conflict is a **safety-critical numeric value** (thresholds, timeouts, %), do not pick one — stop and ask. See `CONTEXT.md` §7 for the currently known conflicts (Redis in/out, 2% vs 3% drawdown, Coinbase, "6 Keys" naming).
+When docs disagree, resolve in this order. If the conflict is a **safety-critical numeric value** (thresholds, timeouts, %), do not pick one — stop and ask. See `CONTEXT.md` §7 for the currently known conflicts.
 
 1. `RISK_AND_RUNBOOK.md` — for anything runtime-safety related (kill switch, circuit breakers, failover, reconciliation behavior)
 2. `DEFINITION_OF_DONE.md` — for what "complete" means on any PR
@@ -30,6 +30,7 @@ Straight from `DEFINITION_OF_DONE.md` §4 ("Definition of NOT Done"). Violating 
 | No blocking the event loop | `time.sleep()` and blocking `requests` calls are banned inside `asyncio` code. Use `await asyncio.sleep()` / async HTTP clients. |
 | Every position gets an exchange-side SL | The Bybit Executor must place a hard Stop-Loss on the exchange server immediately on fill — not "eventually," not "if convenient." This is the single most safety-critical line of code in the repo. |
 | No guessing field names | Use the strict Pydantic models in `DATA_MODEL.md`. No raw `data['price']`-style dict access outside `app/data/normalizer.py`. |
+| AI mandatory in safe positions | Pre-entry CryptoAnalyst and post-entry PositionJudge are not optional. LLM calls only via 9router proxy — never in the execution path (SOR/risk gate). See `docs/review/ai_layer_analysis.md`. |
 
 ---
 
@@ -49,23 +50,28 @@ app/
 │   ├── ccxt_manager.py     # CCXT Pro WS + load_markets() symbol validation
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
 │   ├── filters.py            # Bad tick rejection
-│   └── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
+│   ├── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
+│   ├── universe_scorer.py    # Dynamic universe scoring (planned — Phase 4.5.2)
+│   └── sector_mapping.py     # Static sector classification (planned — Phase 4.5.6)
 ├── alpha/                  # Key 2 — Alpha Bridge
 │   ├── metrics.py
-│   ├── signals.py            # Multi-signal composite (Phase 2)
+│   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
 │   ├── regime.py             # Hurst + ADX regime classifier
 │   ├── lead_lag_buffer.py    # 15-min rolling price buffer
-│   ├── entry_filter.py       # Pre-entry structural checklist
+│   ├── entry_filter.py       # Pre-entry structural checklist (5 checks)
 │   ├── ta_tools.py           # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
-│   ├── analyst.py            # AI pre-entry analyst (Phase 5)
-│   └── position_judge.py     # AI position judge (Phase 5)
+│   ├── analyst.py            # AI pre-entry analyst (MANDATORY, via 9router)
+│   ├── position_judge.py     # AI position judge (MANDATORY, 2-tier escalation)
+│   ├── multi_tf.py           # Multi-timeframe confirmation (planned — Phase 4.5.3)
+│   └── trade_memory.py       # Trade history injection (planned — Phase 4.5.5)
 ├── execution/               # Key 4 — Bybit Executor
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market
 │   └── position_lifecycle.py # Trailing stop + performance checkpoints
 ├── risk/                     # Key 3 — 3-Layer Risk Gate
 │   ├── gates.py
-│   └── circuit_breaker.py
+│   ├── circuit_breaker.py
+│   └── sector_cap.py         # Sector diversity cap (planned — Phase 4.5.6)
 ├── watchdog/                 # Key 6
 │   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
 │   └── dead_mans_switch.py     # External health ping
@@ -100,7 +106,7 @@ Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
 
 ## 6. Do NOT
 
-- Do not add Redis, Grafana, a microservice split, or an LLM in the hot execution path — all explicitly OUT OF SCOPE per `MVP_SCOPE.md` §4, regardless of how convenient it seems for the task at hand. (Redis specifically has an open question — see `CONTEXT.md` #1 — don't add code for it until that's resolved.) **AI is permitted in off-hot-path positions only** (pre-entry analyst, position judge) via 9router proxy.
+- Do not add Grafana, a microservice split, or an LLM in the hot execution path (SOR/risk gate). **AI is mandatory in two safe positions** (pre-entry CryptoAnalyst, post-entry PositionJudge) via 9router proxy — do not make it optional or skippable. See `docs/review/ai_layer_analysis.md` for the latency math.
 - Do not weaken or bypass the Kill Switch, Circuit Breakers, or Startup Reconciliation for convenience during development (e.g., "just comment this out for local testing"). If it needs a dev-mode bypass, that bypass must be explicit, logged, and never the default.
 - Do not invent a Prometheus metric name, Postgres column, or Pydantic field that isn't in `DATA_MODEL.md` or `DEFINITION_OF_DONE.md` §4 without flagging it as a new addition for review.
 - Do not mark something "done" without walking the actual `DEFINITION_OF_DONE.md` checklist for that component — not just "tests pass."
@@ -109,4 +115,4 @@ Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
 
 ## 7. Conflict Resolution Protocol
 
-If you (Codex) find a requirement that contradicts another doc — including the five already logged in `CONTEXT.md` §7 — do not guess which one wins based on which seems more recent or more detailed. State the conflict plainly, cite both sources, and ask. This has already happened twice in this doc set (drawdown threshold, Redis scope) — it will happen again as the docs evolve, and picking silently is how a 2%-vs-3% typo becomes a real drawdown incident.
+If you (Codex) find a requirement that contradicts another doc — including the ones already logged in `CONTEXT.md` §7 — do not guess which one wins based on which seems more recent or more detailed. State the conflict plainly, cite both sources, and ask. This has already happened in this doc set (drawdown threshold, Redis scope) — it will happen again as the docs evolve, and picking silently is how a numeric typo becomes a real drawdown incident.

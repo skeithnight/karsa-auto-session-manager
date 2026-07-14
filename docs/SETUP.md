@@ -70,6 +70,47 @@ Additionally, `entrypoint.sh` writes `nameserver 127.0.0.1` to `/etc/resolv.conf
 
 ---
 
+## 3B. 9router AI Proxy Setup
+
+The 9router container is a mandatory dependency for AI-powered signal generation and position judging. It provides an OpenAI-compatible API endpoint that proxies requests to Anthropic's Claude models.
+
+### Docker Compose Service
+The 9router service is defined in `docker-compose.yml` and shares gluetun's network namespace (same as the main app). It runs on port 20129.
+
+### Environment Variables (AI-specific)
+| Variable | Example | Notes |
+| :--- | :--- | :--- |
+| `ANTHROPIC_API_KEY` | — | Required. Your Anthropic API key for Claude access |
+| `NINE_ROUTER_BASE_URL` | `http://127.0.0.1:20129` | Default. Points to 9router container via gluetun network |
+| `NINE_ROUTER_MODEL` | `claude-haiku-3-5` | Default model for analyst and cheap judge tier |
+
+### Model Configuration
+- **Pre-entry CryptoAnalyst:** `claude-haiku-3-5` (~400ms latency, ~$0.50-1.00/day at 5 symbols)
+- **Position Judge (cheap tier):** `claude-haiku-3-5` (~200ms latency)
+- **Position Judge (escalated tier):** `claude-sonnet-4-5` (~800ms latency, only when cheap tier is ambiguous)
+
+### Health Check
+```bash
+# Verify 9router is running
+curl http://127.0.0.1:20129/health
+# Expect: {"status": "ok"}
+
+# Test AI call (from inside app container)
+curl -X POST http://127.0.0.1:20129/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model": "claude-haiku-3-5", "messages": [{"role": "user", "content": "ping"}]}'
+# Expect: JSON response with AI reply
+```
+
+### Failure Behavior
+AI is **mandatory** — if 9router is unavailable:
+- Signal generation halts (signals rejected, not bypassed)
+- Position judge returns conservative HOLD (don't exit without AI)
+- Circuit breaker "AI Unavailable" triggers after 3 consecutive failures
+- Telegram alert: *"AI offline, signals halted"*
+
+---
+
 ## 4. Environment Variables
 
 Copy `.env.example` → `.env` and fill in the following. Per `DEFINITION_OF_DONE.md` §4, none of these may ever be hardcoded in source — they're loaded exclusively via `app/core/config.py`'s Pydantic `Settings`.
@@ -152,7 +193,7 @@ curl -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=karsa_regim
 
 ---
 
-## 8. Common Setup Issues
+## 9. Common Setup Issues
 
 | Symptom | Likely Cause | Fix |
 | :--- | :--- | :--- |
@@ -166,7 +207,7 @@ curl -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=karsa_regim
 
 ---
 
-## 8. Security Notes
+## 10. Security Notes
 
 - Never commit `.env` — confirm it's in `.gitignore` before first commit.
 - Bybit API key should be scoped to **trading only** — disable withdrawal permissions entirely, and use an IP allowlist if your Bybit tier supports it.

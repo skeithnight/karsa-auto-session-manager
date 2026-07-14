@@ -146,7 +146,15 @@ confidence = regime_mult × (w_skew × S_skew + w_lead_lag × S_lead_lag + w_fun
 
 **Direction logic:** AND-gate for MVP (all 3 directional signals agree). Loosened to majority-vote in V1.1.
 **Minimum confidence gate:** `0.65`
-**Status:** Proposed in execution plan Phase 2. Calibration ceilings need testnet data.
+
+**AI-Mandatory Final Confidence:**
+The deterministic composite above produces `quant_confidence`. The AI CryptoAnalyst then produces `ai_confidence` (0–100, normalized to 0.0–1.0). Final confidence:
+```
+final_confidence = quant_confidence × 0.5 + ai_confidence × 0.5
+```
+Gate: `final_confidence >= 0.65` → signal fires. **If AI call fails, signal is rejected** (mandatory means mandatory — no bypass).
+
+**Status:** Implemented. AI is mandatory, not optional. See `docs/review/ai_layer_analysis.md`.
 
 ---
 
@@ -167,3 +175,57 @@ A weighted/majority-vote scheme can replace this in V1.1 once there's enough log
 ## 9. Test Fixture Requirement
 
 Every formula above needs at least one hand-calculated static JSON fixture in `tests/fixtures/alpha/` (see `TESTING_STRATEGY.md` §3/§8) before the corresponding code is considered done, per `DEFINITION_OF_DONE.md` §2.
+
+---
+
+## 10. AI Layer Integration (Mandatory)
+
+**Reference:** `docs/review/ai_layer_analysis.md` for latency math and safe-position rationale.
+
+### 10.1 Two Safe Positions
+
+| Position | When | Model | Latency | Failure Mode |
+| :--- | :--- | :--- | :--- | :--- |
+| **Pre-Entry CryptoAnalyst** | After deterministic signal, before risk gate | `claude-haiku-3-5` | ~400ms | Signal **rejected** |
+| **Position Judge (cheap)** | Every 5min in ambiguous zone | `claude-haiku-3-5` | ~200ms | Escalate to Tier 2 |
+| **Position Judge (escalated)** | After 2× cheap HOLD on losing position | `claude-sonnet-4-5` | ~800ms | Conservative HOLD |
+
+### 10.2 Pre-Entry CryptoAnalyst Prompt Structure
+
+Input to 9router (`app/core/ai_client.py`):
+- TA indicators: RSI(14), BB(20), MACD, ATR(14), EMA(20/50) — computed by `ta_tools.py`
+- Regime state (TREND_BULL/BEAR/MEAN_REVERSION)
+- GlobalState: VWAP, skew, lead-lag delta, funding rate, OI change
+- Trade memory context (last 3 similar trades — see §10.4)
+- Confidence threshold: 0.65
+
+Output: JSON `{direction: LONG|SHORT|FLAT, confidence: 0-100, reasoning: "..."}`
+
+### 10.3 Position Judge Prompt Structure
+
+Input: position metadata (entry price, current PnL, hold duration, ATR, checkpoint state). No TA tools in cheap pass. Escalated pass includes live market data.
+
+Output: JSON `{action: HOLD|EXIT|TIGHTEN_STOP, confidence: 0-100, reasoning: "..."}`
+
+Fail-safe: 3 consecutive HOLDs on losing position → forced EXIT regardless of AI verdict.
+
+### 10.4 Trade Memory Injection
+
+Storage: Redis sorted set `karsa:memory:{symbol}`, score=timestamp. Each entry:
+```json
+{"pnl_pct": 1.2, "hold_min": 45, "regime": "TREND_BULL", "exit": "trailing_stop", "confidence": 0.72}
+```
+Retrieval: last 3 trades matching same symbol + regime. Formatted as prompt prefix:
+```
+Recent trades for BTC/USDT in TREND_BULL:
+1. +1.2% (45min, trailing stop, conf=0.72)
+2. -0.8% (2h, hard fail, conf=0.68)
+3. +2.1% (3h, checkpoint, conf=0.81)
+```
+
+### 10.5 9router Proxy
+
+Endpoint: `http://127.0.0.1:20129/v1/chat/completions` (OpenAI-compatible).
+Client: `app/core/ai_client.py` — async HTTP with retry, 15s timeout.
+Cache: Analyst results cached in Redis `ai:cache:*` with 5min TTL.
+Cost estimate: ~$0.60–1.20/day at 5 symbols, 15-min scan cadence.

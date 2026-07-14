@@ -138,7 +138,42 @@ tests/
     └── test_watchdog.py
 ```
 
+Additional test files for 6-stage lifecycle:
+
+```text
+tests/unit/
+├── test_universe_scorer.py       # Scoring formula, sector cap, empty universe fallback
+├── test_sector_mapping.py        # All symbols classified, no unknowns
+├── test_sector_cap.py            # Cap enforcement, counting logic
+├── test_multi_tf.py              # 4H EMA, contradiction penalty, graceful degradation
+├── test_trade_memory.py          # Redis sorted set write/read, prompt formatting
+├── test_analyst.py               # Mock 9router, confidence blend, parse failure rejection
+├── test_position_judge.py        # 2-tier escalation, 3-HOLD exit, fail-safe
+└── test_executor_wiring.py       # Mock SOR, verify sor.execute() called, position store registration
+
+tests/integration/
+└── test_full_lifecycle.py        # End-to-end: mock exchanges → universe → regime → signal+AI → risk → executor → position lifecycle → exit
+```
+
 Use `pytest.mark.integration`, `pytest.mark.testnet`, `pytest.mark.chaos`, and `pytest.mark.soak` markers so CI stages can select subsets without maintaining separate test runners.
+
+### AI Testing Strategy
+
+AI components must be tested with **mocked 9router** — never call real Anthropic API in tests.
+
+- **Mock HTTP client:** Patch `AIClient.complete()` to return fixed JSON responses.
+- **Deterministic behavior:** Test confidence blend formula with known AI outputs.
+- **Failure modes to test:**
+  - 9router timeout (15s) → signal rejected (AI mandatory)
+  - Bad JSON response → signal rejected
+  - Empty response → signal rejected
+  - Network error → signal rejected
+  - AI returns FLAT when deterministic says LONG → signal rejected (blend drops below threshold)
+- **Edge cases:**
+  - AI confidence = 0 → `quant * 0.5 + 0 * 0.5` = half of deterministic
+  - AI confidence = 100 → maximum boost
+  - Position judge returns HOLD 3 times → forced EXIT
+  - Position judge returns EXIT on first call → immediate exit
 
 ---
 
@@ -157,7 +192,7 @@ Use `pytest.mark.integration`, `pytest.mark.testnet`, `pytest.mark.chaos`, and `
 
 ## 10. Open Testing Risks / Unknowns
 
-- **Redis is confirmed in scope** (see `CONTEXT.md` Issue #1 — resolved). Redis is already used for 7+ keys. `testcontainers-redis` integration tests needed for `GlobalStateCache`, `system:heartbeat`, `system:circuit_breaker`, and `position_store` (Phase 4) round-trips.
-- **Circuit breaker drawdown threshold conflict** (2% code vs 3% docs — see `CONTEXT.md` Issue #2, confirmed). Blocks writing `test_circuit_breaker_drawdown_hard_stop` with a concrete assertion value. Must be resolved before Phase 3 testing begins.
-- **Exchange-side SL not implemented** (see `verified_findings.md` §2). `test_sl_placed_atomically_with_fill` in §10 Traceability cannot pass until Phase 0B completes. This is the #1 safety gap.
-- **Regime classification does not exist** (see `verified_findings.md` §6). `system:config:regime` is a UI toggle only. Phase 1 builds actual classification from scratch.
+- **Redis is confirmed in scope** (see `CONTEXT.md` Issue #1 — resolved). Redis is already used for 7+ keys. `testcontainers-redis` integration tests needed for `GlobalStateCache`, `system:heartbeat`, `system:circuit_breaker`, and `position_store` round-trips.
+- **Circuit breaker drawdown threshold** — code uses 2% (`Decimal("-0.02")`). This is the authoritative value. Tests should assert against 2%.
+- **Exchange-side SL** — ✅ Implemented (`app/execution/bybit_client.py`). Phase 0B complete.
+- **Regime classification** — ✅ Implemented (`app/alpha/regime.py`). Hurst + ADX + EMA200 on BTC 1H. Phase 1 complete.

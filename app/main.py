@@ -99,6 +99,10 @@ from app.execution.position_lifecycle import TrailingStopManager, CheckpointMana
 from app.core.position_store import PositionStore
 from app.risk.gates import RiskGate
 from app.risk.circuit_breaker import CircuitBreaker
+from app.risk.sector_cap import SectorCap
+from app.alpha.multi_tf import MultiTFFilter
+from app.alpha.trade_memory import TradeMemory
+from app.data.universe_scorer import UniverseScorer
 from app.watchdog.monitor import Watchdog
 from app.watchdog.dead_mans_switch import DeadMansSwitch
 from app.bot.runner import run_bot
@@ -200,6 +204,8 @@ async def alpha_bridge_task(
     redis_client: RedisClient,
     symbols: list[str],
     signal_queue: asyncio.Queue,
+    multi_tf: MultiTFFilter,
+    crypto_analyst: Optional[CryptoAnalyst],
 ) -> None:
     """Key 2: Generate trading signals from market state."""
     logger.debug("alpha_bridge_task: entering")
@@ -260,6 +266,13 @@ async def alpha_bridge_task(
                         oi_change=oi_change,
                     )
                     if signal:
+                        # Multi-TF confirmation: 4H EMA penalty if contradicts
+                        if signal.direction in ("LONG", "SHORT"):
+                            mtf = await multi_tf.check(symbol, signal.direction)
+                            if mtf["penalty_applied"] < 1:
+                                signal.confidence *= float(mtf["penalty_applied"])
+                                logger.info(f"Multi-TF penalty {symbol}: {mtf['penalty_applied']}x → conf={signal.confidence:.3f}")
+
                         # AI analyst — ambiguous confidence zone only (0.55-0.85)
                         if crypto_analyst and 0.55 <= signal.confidence < 0.85:
                             analyst_result = await crypto_analyst.analyze(
@@ -376,6 +389,10 @@ async def executor_task(
     circuit_breaker: CircuitBreaker,
     risk_queue: asyncio.Queue,
     watchdog: Watchdog,
+    redis_client: RedisClient,
+    position_store: PositionStore,
+    sector_cap: SectorCap,
+    risk_pct: Decimal = Decimal("0.02"),
 ) -> None:
     """Key 4: Execute trades via Smart Order Router."""
     logger.debug("executor_task: entering")
@@ -392,6 +409,62 @@ async def executor_task(
         if generated_at:
             watchdog.record_latency(time.time() - generated_at)
 
+        # Skip FLAT signals
+        if signal.direction == "FLAT":
+            logger.debug(f"Skipping FLAT signal for {signal.symbol}")
+            continue
+
+        # Check duplicate position
+        side_str = "buy" if signal.direction == "LONG" else "sell"
+        if await position_store.has_position(signal.symbol, side_str):
+            logger.info(f"Already have {signal.direction} position in {signal.symbol}, skipping")
+            continue
+
+        # Sector diversity cap
+        if not await sector_cap.check(signal.symbol):
+            logger.warning(f"Sector cap reached for {signal.symbol}, skipping")
+            metrics.risk_gate_reject.labels(symbol=signal.symbol, reason="sector_cap").inc()
+            continue
+
+        # Get live price
+        price = await _get_price(redis_client, signal.symbol)
+        if price is None:
+            logger.warning(f"No live price for {signal.symbol}, skipping")
+            continue
+
+        # Position sizing: risk_pct of notional per trade
+        # ponytail: fixed risk_pct sizing, add dynamic sizing when account balance API wired
+        amount = risk_pct  # Will be refined with actual balance lookup
+
+        logger.info(f"Executing {signal.direction} {signal.symbol} @ {price}, amount={amount}")
+
+        try:
+            exec_start = time.time()
+            result = await sor.execute(
+                symbol=signal.symbol,
+                side=side_str,
+                amount=amount,
+                price=price,
+            )
+            exec_latency_ms = int((time.time() - exec_start) * 1000)
+
+            if result:
+                logger.info(f"SOR fill: {signal.symbol} {signal.direction} latency={exec_latency_ms}ms")
+                # Register position in store for trailing stop + checkpoint management
+                await position_store.save(
+                    symbol=signal.symbol,
+                    side=side_str,
+                    entry_price=price,
+                    amount=amount,
+                    sl_order_id=result.get("sl_order_id"),
+                )
+            else:
+                logger.warning(f"SOR returned no fill for {signal.symbol}")
+        except Exception as e:
+            logger.error(f"Executor SOR error {signal.symbol}: {e}")
+            logger.debug(f"executor_task: sor error={e}")
+
+        # Periodic reconciliation
         try:
             await state_manager.reconcile()
         except Exception as e:
@@ -405,6 +478,19 @@ async def watchdog_task(watchdog: Watchdog, redis_client: RedisClient) -> None:
     logger.debug("watchdog_task: entering")
     await watchdog.start()
     logger.debug("watchdog_task: returning None")
+
+
+async def universe_refresh_task(scorer: UniverseScorer, config_symbols: list[str], interval_hours: int = 4) -> None:
+    """Periodic universe scorer refresh. Falls back to static config on failure."""
+    logger.debug("universe_refresh_task: entering")
+    while not kill_switch.is_set():
+        try:
+            symbols = await scorer.refresh(config_symbols)
+            logger.info(f"Universe refresh complete: {len(symbols)} symbols")
+        except Exception as e:
+            logger.error(f"Universe refresh failed: {e}")
+        await asyncio.sleep(interval_hours * 3600)
+    logger.debug("universe_refresh_task: returning None")
 
 
 async def kill_switch_sequence(bybit_client: BybitClient, state_manager: StateManager, sor: SmartOrderRouter) -> None:
@@ -478,12 +564,19 @@ async def main() -> None:
         auth_token=settings.nine_router_auth_token,
         model=settings.nine_router_model,
     )
-    crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client) if settings.ai_analyst_enabled else None
-    position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client) if settings.ai_position_judge_enabled else None
+    # AI mandatory — always create (Issue #8: toggles removed)
+    crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client)
+    position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client)
 
     position_store = PositionStore(redis_client)
     trailing_stop = TrailingStopManager(position_store, bybit_client)
     checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge)
+
+    # Phase 4.5 modules
+    multi_tf = MultiTFFilter(ohlcv_fetcher)
+    trade_memory = TradeMemory(redis_client)
+    sector_cap = SectorCap(position_store)
+    universe_scorer = UniverseScorer(redis_client, ohlcv_fetcher, settings.symbols)
 
 
 
@@ -529,10 +622,11 @@ async def main() -> None:
     # Start all tasks
     tasks = [
         asyncio.create_task(data_engine_task(ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer, valid_symbols)),
-        asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, valid_symbols, signal_queue)),
+        asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, valid_symbols, signal_queue, multi_tf, crypto_analyst)),
         asyncio.create_task(risk_gate_task(risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue)),
-        asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog)),
+        asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog, redis_client, position_store, sector_cap)),
         asyncio.create_task(watchdog_task(watchdog, redis_client)),
+        asyncio.create_task(universe_refresh_task(universe_scorer, valid_symbols)),
         asyncio.create_task(dead_mans_switch.start()),
         asyncio.create_task(session_manager.run_loop()),
         asyncio.create_task(run_bot(redis_client, bybit_client, kill_switch, session_manager, db_engine)),
@@ -567,8 +661,7 @@ async def main() -> None:
     await db_engine.dispose()
 
     # Cleanup AI client
-    if crypto_analyst:
-        await ai_client.close()
+    await ai_client.close()
 
     logger.info("Shutdown complete")
     logger.debug("main: returning None")

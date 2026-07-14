@@ -22,7 +22,14 @@ Redis is used for high-speed state persistence, cross-component caching, and Wat
 | `global:state:{symbol}` | String | 60s | See `GlobalStateCache` below | Real-time aggregated market state per symbol |
 | `system:heartbeat` | String | 30s | `"2024-01-15T14:30:00Z"` | Watchdog liveness ping |
 | `system:circuit_breaker` | String | None | `{"status": "ACTIVE", "reason": null, "triggered_at": null}` | Global halt state |
-| `system:config:regime` | String | None | `{"timeframe": "15m", "max_leverage": 3, "session": "NY"}` | Dynamic strategy parameters |
+| `system:config:regime` | String | None | `{"regime": "TREND_BULL", "hurst": 0.58, "adx": 28.5}` | BTC regime classification output (Hurst + ADX) |
+| `system:universe:symbols` | String | None | `{"symbols": ["BTC/USDT", ...], "scores": {"BTC/USDT": 82, ...}, "updated_at": "..."}` | Universe scorer output — active tradeable symbols |
+| `system:heartbeats` | Hash | None | field=exchange, value=ISO timestamp | Per-exchange heartbeat timestamps |
+| `karsa:memory:{symbol}` | Sorted Set | None | score=UNIX timestamp, member=JSON string | Trade memory for AI context injection |
+| `karsa:sector:{sector_name}` | String | None | `"2"` | Active position count per sector |
+| `ai:cache:{hash}` | String | 300s | `{"direction": "LONG", "confidence": 72, "reasoning": "..."}` | AI analyst result cache (5min TTL) |
+| `karsa:position:{symbol}:{side}` | Hash | None | `{entry_price, peak_price, atr, sl_order_id, checkpoint, ...}` | Position lifecycle state |
+| `trade:{trade_id}` | Hash | None | `{symbol, side, entry_price, exit_price, pnl_usdt, status, ...}` | Per-trade lifecycle snapshot (State Manager owned) |
 
 ### `GlobalStateCache` Schema
 ```json
@@ -190,16 +197,74 @@ class TradeExecution(BaseModel):
     model_config = {"json_encoders": {Decimal: str}}
 ```
 
+### Pydantic Models — 6-Stage Lifecycle
+
+```python
+class UniverseCandidate(BaseModel):
+    """One symbol's score from Universe Scorer (Stage 1)."""
+    symbol: str = Field(..., description="CCXT format, e.g. 'BTC/USDT'")
+    volume_score: Decimal = Field(..., description="Aggregate 24h volume score (0-30)")
+    momentum_score: Decimal = Field(..., description="1H price change % score (0-40)")
+    overextension_penalty: Decimal = Field(..., description="Penalty for >30% 24h moves (-40 to 0)")
+    squeeze_score: Decimal = Field(..., description="BB width narrowing score (0-30)")
+    total_score: Decimal = Field(..., description="Sum of all components")
+    sector: str = Field(..., description="Sector from sector_mapping.py")
+
+class AnalystResult(BaseModel):
+    """AI CryptoAnalyst output (Stage 3, mandatory)."""
+    direction: Literal["LONG", "SHORT", "FLAT"] = Field(...)
+    ai_confidence: Decimal = Field(..., ge=0, le=100, description="AI confidence 0-100")
+    reasoning: str = Field(..., description="AI reasoning text")
+    model_used: str = Field(..., description="Model ID, e.g. 'claude-haiku-3-5'")
+    latency_ms: int = Field(..., description="9router call latency in ms")
+    cached: bool = Field(False, description="Whether result came from Redis cache")
+
+class JudgeVerdict(BaseModel):
+    """AI Position Judge output (Stage 6, mandatory in ambiguous zone)."""
+    action: Literal["HOLD", "EXIT", "TIGHTEN_STOP"] = Field(...)
+    confidence: Decimal = Field(..., ge=0, le=100)
+    reasoning: str = Field(...)
+    tier: Literal["cheap", "escalated"] = Field(..., description="Which tier produced verdict")
+    model_used: str = Field(...)
+    consecutive_holds: int = Field(0, description="Hold streak count for this position")
+
+class MultiTFResult(BaseModel):
+    """Multi-timeframe confirmation output."""
+    direction_agrees: bool = Field(..., description="4H trend agrees with 1H signal")
+    ema_4h: Decimal = Field(..., description="EMA(20) on 4H candles")
+    penalty_applied: Decimal = Field(Decimal("1.0"), description="0.5 if contradicts, 1.0 if agrees")
+    data_available: bool = Field(True, description="False if 4H OHLCV unavailable")
+
+class TradeMemoryEntry(BaseModel):
+    """One historical trade stored for AI context injection."""
+    symbol: str
+    pnl_pct: Decimal = Field(..., description="Trade PnL as percentage")
+    hold_duration_min: int = Field(..., description="Hold duration in minutes")
+    regime: str = Field(..., description="Regime at time of trade")
+    exit_reason: str = Field(..., description="trailing_stop/hard_fail/checkpoint/time_stop/ai_exit")
+    entry_confidence: Decimal = Field(..., description="Signal confidence at entry")
+    timestamp: float = Field(..., description="UNIX timestamp of trade close")
+```
+
 ---
 
 ## 5. Data Flow Mapping (Component to Model)
 
 | Component | Input Model | Output Model | Storage Target |
 | :--- | :--- | :--- | :--- |
+| **Universe Scorer** | `GlobalState` (all symbols) | `UniverseCandidate[]` | Redis (`system:universe:symbols`) |
+| **Regime Engine** | OHLCV candles (BTC 1H) | Regime string | Redis (`system:config:regime`) |
 | **CCXT Manager** | Raw WebSocket Dict | `GlobalState` | Redis (`global:state:{symbol}`) |
-| **Alpha Bridge** | `GlobalState` | `TradingSignal` | Postgres (`signals`) |
+| **Alpha Bridge** | `GlobalState` + Regime | `TradingSignal` | Postgres (`signals`) |
+| **Multi-TF Filter** | 4H OHLCV | `MultiTFResult` | In-memory (applied to signal) |
+| **AI CryptoAnalyst** | `TradingSignal` + TA + Memory | `AnalystResult` | Redis cache (`ai:cache:*`) |
 | **Risk Gate** | `TradingSignal` + `GlobalState` | `RiskDecision` | Postgres (`signals.risk_passed`) |
+| **Sector Cap** | `PositionStore.list_all()` | accept/reject | In-memory check |
 | **Bybit Executor** | `TradingSignal` + `RiskDecision` | `TradeExecution` | Postgres (`trades`) |
+| **Trailing Stop** | Price + Position state | Amended SL | Exchange (via BybitClient) |
+| **Checkpoint Manager** | Position PnL + ATR | Exit/Tighten/HOLD | Postgres (`trades`) |
+| **AI Position Judge** | Position metadata + TA | `JudgeVerdict` | In-memory (actioned by checkpoint) |
+| **Trade Memory** | `TradeExecution` (on exit) | `TradeMemoryEntry` | Redis (`karsa:memory:{symbol}`) |
 | **Watchdog** | System Events / Metrics | `system_events` Dict | Postgres (`system_events`) |
 
 ---

@@ -1,0 +1,7 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: "karsa"
+    static_configs:
+      - targets: ["gluetun:8001"]

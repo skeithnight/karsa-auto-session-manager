@@ -1,0 +1,545 @@
+"""Main entrypoint — asyncio loop starting all 6 Keys."""
+
+from __future__ import annotations
+
+# Bypass ISP (Telkomsel) DNS poisoning at Python level.
+# ponytail: queries 1.1.1.1 directly via UDP, bypasses system resolv.conf entirely.
+# Upgrade to DoH/DoT when infra supports it.
+import socket as _socket
+import struct as _struct
+
+def _dns_query(server, hostname):
+    """Query a DNS server directly via UDP. Returns list of IPs or empty list."""
+    txid = b'\xaa\xbb'
+    flags = b'\x01\x00'
+    counts = _struct.pack('>HHHH', 1, 0, 0, 0)
+    question = b''
+    for part in hostname.encode().split(b'.'):
+        question += bytes([len(part)]) + part
+    question += b'\x00' + _struct.pack('>HH', 1, 1)
+    packet = txid + flags + counts + question
+    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
+    sock.settimeout(2)
+    try:
+        sock.sendto(packet, (server, 53))
+        data, _ = sock.recvfrom(512)
+    finally:
+        sock.close()
+    offset = 12
+    while data[offset] != 0:
+        offset += data[offset] + 1
+    offset += 5
+    answers = _struct.unpack('>H', data[6:8])[0]
+    ips = []
+    for _ in range(answers):
+        if data[offset] & 0xC0:
+            offset += 2
+        else:
+            while data[offset] != 0:
+                offset += data[offset] + 1
+            offset += 1
+        rtype, rclass, ttl, rdlength = _struct.unpack('>HHIH', data[offset:offset+10])
+        offset += 10
+        if rtype == 1 and rdlength == 4:
+            ip = '.'.join(str(b) for b in data[offset:offset+4])
+            ips.append(ip)
+        offset += rdlength
+    return ips
+
+_orig_getaddrinfo = _socket.getaddrinfo
+def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
+    """Override socket.getaddrinfo — try gluetun DNS (external) then Docker DNS (internal)."""
+    # 1. Try gluetun DNS (127.0.0.1) — forwards to Cloudflare 1.1.1.1 via VPN tunnel (not poisoned)
+    try:
+        ips = _dns_query('127.0.0.1', host)
+        if ips:
+            af = _socket.AF_INET6 if ':' in ips[0] else _socket.AF_INET
+            return [(af, _socket.SOCK_STREAM, 0, '', (ips[0], port if isinstance(port, int) else 0))]
+    except Exception:
+        pass
+    # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
+    try:
+        ips = _dns_query('127.0.0.1', host)
+        if ips:
+            af = _socket.AF_INET6 if ':' in ips[0] else _socket.AF_INET
+            return [(af, _socket.SOCK_STREAM, 0, '', (ips[0], port if isinstance(port, int) else 0))]
+    except Exception:
+        pass
+    # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
+    try:
+        ips = _dns_query('127.0.0.11', host)
+        if ips:
+            af = _socket.AF_INET6 if ':' in ips[0] else _socket.AF_INET
+            return [(af, _socket.SOCK_STREAM, 0, '', (ips[0], port if isinstance(port, int) else 0))]
+    except Exception:
+        pass
+    # 3. Fallback to system resolver
+    return _orig_getaddrinfo(host, port, family, type, proto, flags)
+_socket.getaddrinfo = _bypass_getaddrinfo
+
+import asyncio
+import signal
+import sys
+import time
+from decimal import Decimal
+from typing import Optional
+
+from loguru import logger
+
+from app.core.config import get_settings
+from app.core.redis_client import RedisClient
+from app.core.state import StateManager
+from app.data.ccxt_manager import CCXTManager
+from app.data.filters import BadTickFilter
+from app.data.normalizer import Normalizer
+from app.alpha.metrics import AlphaMetrics
+from app.alpha.signals import SignalGenerator
+from app.alpha.regime import RegimeEngine
+from app.alpha.lead_lag_buffer import LeadLagBuffer
+from app.alpha.entry_filter import EntryFilter
+from app.alpha.analyst import CryptoAnalyst
+from app.alpha.position_judge import PositionJudge
+from app.core.ai_client import AIClient
+from app.data.ohlcv_fetcher import OHLCVFetcher
+from app.execution.bybit_client import BybitClient
+from app.execution.sor import SmartOrderRouter
+from app.execution.position_lifecycle import TrailingStopManager, CheckpointManager
+from app.core.position_store import PositionStore
+from app.risk.gates import RiskGate
+from app.risk.circuit_breaker import CircuitBreaker
+from app.watchdog.monitor import Watchdog
+from app.watchdog.dead_mans_switch import DeadMansSwitch
+from app.bot.runner import run_bot
+from app.core.session import AutonomousSessionManager
+from app.core.database import DatabaseEngine
+from app.core import metrics
+
+
+# Kill Switch event — global, set on SIGINT/SIGTERM
+kill_switch = asyncio.Event()
+alpha_paused = asyncio.Event()
+
+
+async def data_engine_task(
+    ccxt_manager: CCXTManager,
+    normalizer: Normalizer,
+    bad_tick_filter: BadTickFilter,
+    redis_client: RedisClient,
+    lead_lag_buffer: LeadLagBuffer,
+    symbols: list[str],
+) -> None:
+    """Key 1: Ingest global market data from exchanges."""
+    logger.debug("data_engine_task: entering")
+    logger.info("Data Engine starting...")
+    exchanges = ["binance", "okx", "bybit"]
+
+    while not kill_switch.is_set():
+        for symbol in symbols:
+            for exchange_id in exchanges:
+                try:
+                    orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
+                    metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
+                    await redis_client.set_exchange_heartbeat(exchange_id)
+                    exchange_data = normalizer.normalize_orderbook(orderbook, exchange_id, symbol)
+                    exchange_data = bad_tick_filter.filter_orderbook(exchange_data)
+                    if exchange_data.is_stale:
+                        metrics.bad_tick_rejected.labels(exchange=exchange_id, symbol=symbol).inc()
+                    metrics.orderbook_normalized.labels(exchange=exchange_id, symbol=symbol).inc()
+
+                    # Feed lead-lag buffer with mid price
+                    best_bid = max(exchange_data.bids, key=lambda x: x[0])[0] if exchange_data.bids else None
+                    best_ask = min(exchange_data.asks, key=lambda x: x[0])[0] if exchange_data.asks else None
+                    if best_bid and best_ask:
+                        mid = (float(best_bid) + float(best_ask)) / 2
+                        lead_lag_buffer.update(symbol, exchange_id, mid)
+
+                    if not exchange_data.is_stale:
+                        global_state = normalizer.build_global_state(symbol, [exchange_data])
+                        if global_state:
+                            await redis_client.set_global_state(symbol, {
+                                "global_vwap": str(global_state.global_vwap),
+                                "aggregate_skew": global_state.aggregate_skew,
+                                "best_bid": str(global_state.best_bid) if global_state.best_bid else None,
+                                "best_ask": str(global_state.best_ask) if global_state.best_ask else None,
+                                "total_volume": str(global_state.total_volume) if global_state.total_volume else None,
+                                "updated_at": global_state.updated_at.isoformat(),
+                            })
+                            metrics.global_state_written.labels(symbol=symbol).inc()
+                            if global_state.global_vwap is not None:
+                                metrics.vwap_value.labels(symbol=symbol).set(float(global_state.global_vwap))
+                            if global_state.aggregate_skew is not None:
+                                metrics.skew_value.labels(symbol=symbol).set(float(global_state.aggregate_skew))
+                except Exception as e:
+                    metrics.orderbook_errors.labels(exchange=exchange_id, symbol=symbol, error_type=type(e).__name__).inc()
+                    logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
+                    logger.debug(f"data_engine_task: error={e}")
+                    await asyncio.sleep(1)
+    logger.debug("data_engine_task: returning None")
+
+
+async def alpha_bridge_task(
+    alpha_metrics: AlphaMetrics,
+    signal_generator: SignalGenerator,
+    lead_lag_buffer: LeadLagBuffer,
+    entry_filter: EntryFilter,
+    redis_client: RedisClient,
+    symbols: list[str],
+    signal_queue: asyncio.Queue,
+) -> None:
+    """Key 2: Generate trading signals from market state."""
+    logger.debug("alpha_bridge_task: entering")
+    logger.info("Alpha Bridge starting...")
+
+    while not kill_switch.is_set():
+        if alpha_paused.is_set():
+            logger.warning("Alpha Bridge paused — stale data")
+            await asyncio.sleep(5)
+            continue
+        for symbol in symbols:
+            try:
+                state = await redis_client.get_global_state(symbol)
+                if state:
+                    raw_vwap = state.get("global_vwap")
+                    vwap = Decimal(str(raw_vwap)) if raw_vwap and str(raw_vwap) not in ("None", "null") else None
+                    raw_skew = state.get("aggregate_skew")
+                    skew = float(raw_skew) if raw_skew is not None and str(raw_skew) not in ("None", "null") else 0.0
+
+                    # Read regime from Redis (set by regime_engine_task)
+                    regime = await redis_client.get_session_config()
+
+                    # Entry quality filter (Phase 3)
+                    best_bid = state.get("best_bid")
+                    best_ask = state.get("best_ask")
+                    spread_pct = None
+                    if best_bid and best_ask:
+                        bid_f = float(best_bid)
+                        ask_f = float(best_ask)
+                        mid = (bid_f + ask_f) / 2
+                        if mid > 0:
+                            spread_pct = (ask_f - bid_f) / mid
+
+                    entry_ok, entry_reason = entry_filter.check(
+                        regime=regime,
+                        spread_pct=spread_pct,
+                    )
+                    if not entry_ok:
+                        metrics.signals_skipped.labels(symbol=symbol, reason=f"entry_filter:{entry_reason}").inc()
+                        logger.debug(f"Entry filtered {symbol}: {entry_reason}")
+                        continue
+
+                    # Multi-signal inputs (Phase 2)
+                    lead_lag_delta = lead_lag_buffer.get_lead_lag_delta(symbol)
+                    funding_rate = await alpha_metrics.get_funding_rate(symbol)
+                    funding_float = float(funding_rate) if funding_rate is not None else None
+                    oi_val = await alpha_metrics.get_open_interest(symbol)
+                    oi_prev = alpha_metrics._oi_cache.get(symbol)
+                    oi_change = None
+                    if oi_val is not None and oi_prev is not None:
+                        oi_change = float(oi_val - oi_prev[1])
+
+                    signal = signal_generator.generate(
+                        symbol, vwap, skew,
+                        regime=regime,
+                        lead_lag_delta=lead_lag_delta,
+                        funding_rate=funding_float,
+                        oi_change=oi_change,
+                    )
+                    if signal:
+                        # AI analyst — ambiguous confidence zone only (0.55-0.85)
+                        if crypto_analyst and 0.55 <= signal.confidence < 0.85:
+                            analyst_result = await crypto_analyst.analyze(
+                                symbol=signal.symbol,
+                                direction=signal.direction,
+                                confidence=signal.confidence,
+                                regime=regime or "UNKNOWN",
+                                spread_pct=spread_pct if spread_pct is not None else 0.0,
+                                funding_rate=funding_float if funding_float is not None else 0.0,
+                                oi_change=oi_change if oi_change is not None else 0.0,
+                                price=Decimal(str(state.get("global_vwap", "0"))),
+                            )
+                            if analyst_result:
+                                # Blend: 50% deterministic + 50% AI
+                                final_conf = signal.confidence * 0.5 + (analyst_result.ai_confidence / 100.0) * 0.5
+                                if final_conf < 0.65:
+                                    logger.info(f"AI analyst rejected {symbol}: {analyst_result.reasoning}")
+                                    metrics.signals_skipped.labels(symbol=symbol, reason="ai_rejected").inc()
+                                    continue
+                                signal.confidence = final_conf
+                                signal.metrics["ai_analyst"] = analyst_result.direction
+                                signal.metrics["ai_confidence"] = analyst_result.ai_confidence
+
+                        metrics.signals_generated.labels(symbol=symbol, direction=signal.direction).inc()
+                        metrics.signal_confidence.labels(symbol=symbol).observe(float(signal.confidence))
+                        signal._generated_at = time.time()
+                        await signal_queue.put(signal)
+                    else:
+                        metrics.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
+            except Exception as e:
+                logger.error(f"Alpha Bridge error {symbol}: {e}")
+                logger.debug(f"alpha_bridge_task: error={e}")
+
+        await asyncio.sleep(1)
+    logger.debug("alpha_bridge_task: returning None")
+
+
+async def risk_gate_task(
+    risk_gate: RiskGate,
+    circuit_breaker: CircuitBreaker,
+    redis_client: RedisClient,
+    signal_queue: asyncio.Queue,
+    risk_queue: asyncio.Queue,
+) -> None:
+    """Key 3: Gate signals through risk checks."""
+    logger.debug("risk_gate_task: entering")
+    logger.info("Risk Gate starting...")
+
+    while not kill_switch.is_set():
+        try:
+            signal = await asyncio.wait_for(signal_queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+
+        if circuit_breaker.is_halted() or circuit_breaker.is_paused():
+            logger.warning("Signal rejected — circuit breaker active")
+            continue
+
+        # Pull live market data from Redis global state
+        state = await redis_client.get_global_state(signal.symbol)
+        if not state or not state.get("best_bid") or not state.get("best_ask"):
+            logger.warning(f"Signal rejected — no live state for {signal.symbol}")
+            continue
+
+        decision = risk_gate.evaluate(
+            volume_24h=Decimal(state["total_volume"]) if state.get("total_volume") else Decimal("0"),
+            bid_price=Decimal(state["best_bid"]),
+            ask_price=Decimal(state["best_ask"]),
+        )
+
+        if decision["passed"]:
+            metrics.risk_gate_pass.labels(symbol=signal.symbol).inc()
+            await risk_queue.put(signal)
+        else:
+            metrics.risk_gate_reject.labels(symbol=signal.symbol, reason=decision["failed_gate"]).inc()
+            logger.warning(f"Signal rejected: {decision['failed_gate']}")
+    logger.debug("risk_gate_task: returning None")
+
+
+async def regime_engine_task(
+    regime_engine: RegimeEngine,
+    ohlcv_fetcher: OHLCVFetcher,
+    redis_client: RedisClient,
+) -> None:
+    """Regime Engine: classify market regime from BTC 1H OHLCV every 15 min."""
+    logger.debug("regime_engine_task: entering")
+    logger.info("Regime Engine starting...")
+
+    while not kill_switch.is_set():
+        try:
+            candles = await ohlcv_fetcher.fetch("BTC/USDT", "1h", 200, ttl_seconds=900)
+            if candles and len(candles) >= 200:
+                regime = regime_engine.classify(candles)
+                await redis_client.set_session_config(regime)
+
+                # Update Prometheus metrics
+                regime_map = {"CHOP": 0, "MEAN_REVERSION": 1, "TREND_BEAR": 2, "TREND_BULL": 3}
+                metrics.regime_state.set(regime_map.get(regime, 0))
+                logger.info(f"Regime updated: {regime}")
+            else:
+                logger.warning(f"Insufficient candles for regime: {len(candles)}")
+        except Exception as e:
+            logger.error(f"Regime Engine error: {e}")
+
+        await asyncio.sleep(900)  # 15 min
+    logger.debug("regime_engine_task: returning None")
+
+
+async def executor_task(
+    sor: SmartOrderRouter,
+    state_manager: StateManager,
+    circuit_breaker: CircuitBreaker,
+    risk_queue: asyncio.Queue,
+    watchdog: Watchdog,
+) -> None:
+    """Key 4: Execute trades via Smart Order Router."""
+    logger.debug("executor_task: entering")
+    logger.info("Executor starting...")
+
+    while not kill_switch.is_set():
+        try:
+            signal = await asyncio.wait_for(risk_queue.get(), timeout=1.0)
+        except asyncio.TimeoutError:
+            continue
+
+        # Record execution latency
+        generated_at = getattr(signal, "_generated_at", None)
+        if generated_at:
+            watchdog.record_latency(time.time() - generated_at)
+
+        try:
+            await state_manager.reconcile()
+        except Exception as e:
+            logger.error(f"Executor reconciliation error: {e}")
+            logger.debug(f"executor_task: error={e}")
+    logger.debug("executor_task: returning None")
+
+
+async def watchdog_task(watchdog: Watchdog, redis_client: RedisClient) -> None:
+    """Key 6: Watchdog health monitor."""
+    logger.debug("watchdog_task: entering")
+    await watchdog.start()
+    logger.debug("watchdog_task: returning None")
+
+
+async def kill_switch_sequence(bybit_client: BybitClient, state_manager: StateManager, sor: SmartOrderRouter) -> None:
+    """Execute graceful shutdown sequence."""
+    logger.debug("kill_switch_sequence: entering")
+    try:
+        await sor.cancel_all_positions()
+        logger.info("Kill switch sequence complete")
+    except Exception as e:
+        logger.error(f"Kill switch error: {e}")
+        logger.debug(f"kill_switch_sequence: error={e}")
+    logger.debug("kill_switch_sequence: returning None")
+
+
+async def _get_price(redis_client: RedisClient, symbol: str) -> Optional[Decimal]:
+    """Helper: get mid price from Redis global state for lifecycle managers."""
+    state = await redis_client.get_global_state(symbol)
+    if not state:
+        return None
+    best_bid = state.get("best_bid")
+    best_ask = state.get("best_ask")
+    if best_bid and best_ask:
+        bid = Decimal(str(best_bid))
+        ask = Decimal(str(best_ask))
+        return (bid + ask) / 2
+    return None
+
+
+async def main() -> None:
+    """Initialize all components and run the main event loop."""
+    logger.debug("main: entering")
+    settings = get_settings()
+    logger.info("Karsa Auto Session Manager starting...")
+
+    # Initialize components
+    redis_client = RedisClient()
+    await redis_client.connect()
+
+    db_engine = DatabaseEngine()
+    await db_engine.connect(settings.postgres_url)
+
+    ccxt_manager = CCXTManager()
+    await ccxt_manager.start()
+    normalizer = Normalizer()
+    bad_tick_filter = BadTickFilter()
+    alpha_metrics = AlphaMetrics()
+    signal_generator = SignalGenerator()
+    regime_engine = RegimeEngine()
+
+    # Prometheus metrics HTTP endpoint — start early so metrics available even if Bybit fails
+    from prometheus_client import start_http_server
+    start_http_server(8001)
+    logger.info("Prometheus metrics server on :8001")
+
+    bybit_client = BybitClient()
+    await bybit_client.connect()
+    sor = SmartOrderRouter(bybit_client)
+    risk_gate = RiskGate()
+    circuit_breaker = CircuitBreaker()
+    state_manager = StateManager(redis_client, bybit_client)
+    watchdog = Watchdog(redis_client, alpha_paused=alpha_paused, sor=sor, kill_switch=kill_switch)
+    dead_mans_switch = DeadMansSwitch()
+    session_manager = AutonomousSessionManager(redis_client, kill_switch)
+    ohlcv_fetcher = OHLCVFetcher(ccxt_manager.exchanges["binance"])
+    lead_lag_buffer = LeadLagBuffer()
+    entry_filter = EntryFilter()
+
+    # AI client + analyst (off hot-path, safe per CLAUDE.md Rule 7)
+    ai_client = AIClient(
+        router_url=settings.nine_router_base_url,
+        auth_token=settings.nine_router_auth_token,
+        model=settings.nine_router_model,
+    )
+    crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client) if settings.ai_analyst_enabled else None
+    position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client) if settings.ai_position_judge_enabled else None
+
+    position_store = PositionStore(redis_client)
+    trailing_stop = TrailingStopManager(position_store, bybit_client)
+    checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge)
+
+
+
+
+    # Startup reconciliation — trust nothing
+    try:
+        reconciled = await state_manager.reconcile()
+        if not reconciled:
+            logger.critical("Reconciliation failed — cannot start. Check Bybit connection.")
+            sys.exit(1)
+    except Exception as e:
+        logger.critical(f"Reconciliation failed — cannot start. Check Bybit connection. {e}")
+        sys.exit(1)
+
+    signal_queue: asyncio.Queue = asyncio.Queue()
+    risk_queue: asyncio.Queue = asyncio.Queue()
+
+    # Graceful shutdown on SIGINT/SIGTERM
+    def handle_shutdown(signum: int, frame: object) -> None:
+        logger.info(f"Received signal {signum}, initiating shutdown")
+        kill_switch.set()
+
+    signal.signal(signal.SIGINT, handle_shutdown)
+    signal.signal(signal.SIGTERM, handle_shutdown)
+
+    # Start all tasks
+    tasks = [
+        asyncio.create_task(data_engine_task(ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer, settings.symbols)),
+        asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, settings.symbols, signal_queue)),
+        asyncio.create_task(risk_gate_task(risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue)),
+        asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog)),
+        asyncio.create_task(watchdog_task(watchdog, redis_client)),
+        asyncio.create_task(dead_mans_switch.start()),
+        asyncio.create_task(session_manager.run_loop()),
+        asyncio.create_task(run_bot(redis_client, bybit_client, kill_switch, session_manager, db_engine)),
+        asyncio.create_task(regime_engine_task(regime_engine, ohlcv_fetcher, redis_client)),
+        asyncio.create_task(trailing_stop.run(kill_switch, lambda s: _get_price(redis_client, s))),
+        asyncio.create_task(checkpoint_mgr.run(kill_switch, lambda s: _get_price(redis_client, s), state_manager)),
+    ]
+
+    # Log if any task dies
+    for t in tasks:
+        t.add_done_callback(lambda f: logger.error(f"Task died: {f.exception()}") if f.exception() else None)
+
+    logger.info(f"All components started. Monitoring {len(settings.symbols)} symbols.")
+
+    # Wait for kill switch
+    await kill_switch.wait()
+
+    # Cancel all tasks
+    for task in tasks:
+        task.cancel()
+
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+    # Execute kill switch sequence
+    await kill_switch_sequence(bybit_client, state_manager, sor)
+
+    # Cleanup
+    await dead_mans_switch.stop()
+    await redis_client.disconnect()
+    await ccxt_manager.close()
+    await bybit_client.disconnect()
+    await db_engine.dispose()
+
+    # Cleanup AI client
+    if crypto_analyst:
+        await ai_client.close()
+
+    logger.info("Shutdown complete")
+    logger.debug("main: returning None")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

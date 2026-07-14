@@ -1,0 +1,15 @@
+.git
+.github
+__pycache__
+*.pyc
+*.pyo
+.env
+.env.*
+!.env.example
+tests/
+docs/
+monitoring/
+graphify-out/
+.claude/
+*.md
+!pyproject.toml

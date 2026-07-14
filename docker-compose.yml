@@ -1,0 +1,130 @@
+services:
+  app:
+    build: .
+    container_name: karsa-app
+    restart: unless-stopped
+    env_file: .env
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
+      - db
+      - redis
+      - 9router
+
+
+  9router:
+    image: 9router:latest
+    container_name: karsa-9router
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "127.0.0.1:20129:20128"
+    volumes:
+      - 9router_data:/app/data
+    networks:
+      - karsa
+
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: karsa-gluetun
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - VPN_ENDPOINT_IP=${VPN_ENDPOINT_IP}
+      - VPN_ENDPOINT_PORT=${VPN_ENDPOINT_PORT}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - FIREWALL_OUTBOUND_SUBNETS=${BACKEND_SUBNET}
+      - DNS_ADDRESS=1.1.1.1
+      - DNS_KEEP_NAMESERVER=on
+      - DOT=off
+      - HEALTH_VPN_DURATION_INITIAL=999999
+    ports:
+      - "8000:8000"
+      - "8001:8001"
+    healthcheck:
+      disable: true
+    restart: unless-stopped
+    sysctls:
+      - net.ipv4.conf.all.src_valid_mark=1
+      - net.ipv4.ip_forward=1
+    volumes:
+      - gluetun_data:/gluetun
+    networks:
+      - karsa
+
+  db:
+    image: postgres:16-alpine
+    container_name: karsa-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: karsa
+      POSTGRES_PASSWORD: karsa
+      POSTGRES_DB: karsa
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - karsa
+
+  redis:
+    image: redis:7-alpine
+    container_name: karsa-redis
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - karsa
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: karsa-prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    networks:
+      - karsa
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: karsa-grafana
+    restart: unless-stopped
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: karsa
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/signal-confidence.json
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    networks:
+      - karsa
+
+networks:
+  karsa:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
+  9router_data:
+  gluetun_data:

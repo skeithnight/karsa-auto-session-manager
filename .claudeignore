@@ -1,0 +1,37 @@
+# Dependencies & build artifacts
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+
+# Docker volumes / data (if bind-mounted into repo)
+postgres-data/
+redis-data/
+
+# Generated / large reference outputs — query via graphify instead of reading directly
+graphify-out/graph.json
+
+# Historical / archival docs — read on demand, not every session
+docs/archive/
+
+# Monitoring provisioning JSON (large, rarely edited) — reference via docs/reference/MONITORING.md instead
+monitoring/grafana/provisioning/
+monitoring/grafana-dashboard.json
+monitoring/asm-dashboard.json
+
+# Logs
+*.log
+logs/
+
+# Env files with secrets (never want these read into context accidentally)
+.env
+.env.*
+!.env.example
+
+# Git internals
+.git/

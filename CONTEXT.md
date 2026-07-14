@@ -129,19 +129,19 @@ Code authoritative at **-2%** (`Decimal("-0.02")`). All docs now updated to matc
 
 ## 8. Current Status
 
-- **Phase:** Phase 4.5 complete. Full 6-stage lifecycle with mandatory AI now wired.
-- **Verified findings:** Full codebase audit completed. See `docs/review/verified_findings.md` for details.
-- **Test suite:** 191 tests passing (3 pre-existing failures: regime tuple mismatch, Bybit unreachable in test env).
-- **AI Layer:** MANDATORY. Pre-entry CryptoAnalyst + post-entry PositionJudge via 9router proxy. Not optional toggles. See `docs/review/ai_layer_analysis.md`.
-- **Multi-exchange:** Binance + OKX + Bybit via CCXT Pro WebSocket. Cross-exchange VWAP + lead-lag are ASM's structural edge over single-exchange systems.
-- **Full trade lifecycle (6 stages):** Universe Selection → Regime Detection → Signal Generation (with AI) → Risk Gate → SOR Execution → Post-Entry (trailing stop + checkpoints + AI judge). **Lifecycle gating:** Data pipeline (stages 1-3) always runs when app starts. ASM session gates execution (stages 5-6). System is always "warm" — no cold-start delay.
-- **Watchdog:** Per-exchange heartbeat tracking, execution latency tracker with SOR switching, event loop lag with position flatten, Dead Man's Switch wired as task. All Prometheus metrics wired.
-- **Phase 4.5 modules (all wired into main.py):**
-  - `app/data/universe_scorer.py` — Dynamic symbol scoring (Volume + Momentum + Squeeze + Overextension), top 15 above score 55, sector cap 2, 4-hour refresh
-  - `app/alpha/multi_tf.py` — 4H EMA(20) trend confirmation, 0.5x penalty on contradiction, graceful degradation
-  - `app/alpha/trade_memory.py` — Redis sorted set per symbol, max 20 entries, last 3 injected into AI prompt
-  - `app/risk/sector_cap.py` — Max 2 positions per sector, counted from position_store
-  - `app/data/sector_mapping.py` — Static sector classification for 70+ symbols across 13 sectors
-- **Next step:** Run 72h Testnet validation for Phase 5 graduation gate. Production hardening.
-- **Blocking items:** None. All doc and code issues resolved.
-- **Resolved this session:** Issue #2 (drawdown — code 2% is authoritative), Issue #3 (Coinbase removed), Issue #4 (ROADMAP populated), Issue #6 (60 symbols confirmed), Issue #7 (Decimal fixed), Issue #8 (AI toggles removed), Issue #9 (executor wired to SOR). Phase 4.5 sub-phases 4.5.2, 4.5.3, 4.5.5, 4.5.6 all complete.
+- **Phase:** Phase 5 code complete. Testnet skipped — deploying to live Bybit with $1 max loss cap per position.
+- **Test suite:** 222 tests passing, 0 failures.
+- **AI Layer:** MANDATORY. Pre-entry CryptoAnalyst + post-entry PositionJudge via 9router proxy. Not optional toggles.
+- **Multi-exchange:** Binance + OKX + Bybit via CCXT Pro WebSocket. Cross-exchange VWAP + lead-lag are ASM's structural edge.
+- **Full trade lifecycle (6 stages):** Universe Selection → Regime Detection → Signal Generation (with AI) → Risk Gate → SOR Execution → Post-Entry (trailing stop + checkpoints + AI judge).
+- **Watchdog:** Per-exchange heartbeat, execution latency tracker, event loop lag monitor, Dead Man's Switch.
+- **Phase 5 additions:**
+  - `scripts/init_db.sql` — trades + ai_decisions Postgres tables
+  - `app/core/trade_store.py` — Postgres CRUD for trade history + AI audit trail
+  - `BYBIT_TESTNET` config flag — BybitClient + CCXTManager sandbox mode
+  - Position sizing: balance-based (available * risk_pct / price)
+  - SL hard cap: $1 max loss per position (SL price = fill_price +/- $1/amount)
+  - Trade store wired into executor_task + CheckpointManager
+  - PositionStore uses json.loads/dumps (replaced ast.literal_eval)
+- **Next step:** Deploy via `docker compose up -d`. Monitor first hour.
+- **Blocking items:** None.

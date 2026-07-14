@@ -53,7 +53,7 @@ Purpose: transform ASM from a rule-based system into a KCT-equivalent AI-augment
 
 ### Gate to Phase 5
 
-- Full 6-stage pipeline runs for 72h on Testnet without AI-related crashes
+- Full 6-stage pipeline runs for 72h on Testnet without AI-related crashes *(skipped — testnet unavailable)*
 - AI analyst p95 latency < 2s
 - AI position judge correctly identifies HARD_FAIL positions in test scenarios
 - Universe scorer produces sensible top-15 list on testnet data
@@ -65,17 +65,34 @@ Purpose: transform ASM from a rule-based system into a KCT-equivalent AI-augment
 
 Purpose: a formal, deliberate checkpoint between "paper trading works" and "real money is at risk" — not an automatic transition.
 
-**Exit criteria (proposed, pending conflict resolution above):**
-- 30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence (stricter duration of the two conflicting specs)
-- Win rate > 52% **and** R:R > 1.2 **and** Sharpe > 1.5 over that period (union of both specs' bars, not either alone)
-- Circuit breaker intentionally triggered at least once during the period and verified to flatten + halt correctly
-- AI analyst p95 latency consistently < 2s (no degradation over 30 days)
-- AI position judge correctly handled at least 5 ambiguous-zone positions (HOLD/EXIT/TIGHTEN decisions logged)
-- Universe scorer produced sensible results throughout (no empty-universe fallbacks triggering)
-- Full 6-stage lifecycle ran without AI-related crashes for the entire 30-day period
-- Manual review sign-off by the operator, referencing `RISK_AND_RUNBOOK.md` §6 (Operations Runbook Matrix) — confirm every alert type has actually fired and been handled at least once in Testnet, not just theorized
+**Status:** Code complete. Testnet skipped — deploying to live Bybit with $1 max loss per position SL hard cap. Operator decision (no testnet API access available).
 
-**If criteria aren't met:** return to Phase 3/4 with a documented list of what failed — this is not a one-shot gate.
+**Phase 5 code additions (committed):**
+- `scripts/init_db.sql` — `trades` + `ai_decisions` Postgres tables, auto-created on first `docker compose up`
+- `app/core/trade_store.py` — Postgres CRUD: `record_entry()`, `close_trade()`, `get_history()`, `record_ai_decision()`
+- `app/core/config.py` — `bybit_testnet: bool = False` toggle
+- `app/execution/bybit_client.py` — pybit `HTTP(testnet=...)` pass-through
+- `app/data/ccxt_manager.py` — `exchange.set_sandbox_mode(True)` when testnet enabled
+- `app/execution/sor.py` — `$1 SL cap`: SL price = `fill_price +/- (max_loss_usd / amount)`, adapts distance to position size
+- `app/execution/position_lifecycle.py` — `CheckpointManager._exit_position()` writes to trade store
+- `app/core/position_store.py` — `json.dumps`/`json.loads` replaces `ast.literal_eval`/`str(dict)`
+- `app/main.py` — balance-based position sizing (`available * risk_pct / price`), trade store wiring
+- `.env.testnet` — template with `BYBIT_TESTNET=true` and WireGuard guidance
+
+**Original exit criteria (for reference — testnet phase skipped per operator decision):**
+- 30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence
+- Win rate > 52% **and** R:R > 1.2 **and** Sharpe > 1.5 over that period
+- Circuit breaker intentionally triggered at least once and verified to flatten + halt correctly
+- AI analyst p95 latency consistently < 2s
+- AI position judge correctly handled at least 5 ambiguous-zone positions
+- Manual review sign-off by the operator, referencing `RISK_AND_RUNBOOK.md` §6
+
+**What replaces testnet gate for live deployment:**
+- $1 hard cap per position (exchange-side SL, survives crash)
+- Circuit breaker -2% daily drawdown (existing)
+- Consecutive loss pause (existing, 3 losses → 60 min pause)
+- $100 max position size (existing config default)
+- Daily manual review per `RISK_AND_RUNBOOK.md` §6
 
 ---
 

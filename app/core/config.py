@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     # Bybit API credentials
     bybit_api_key: str
     bybit_api_secret: str
+    bybit_testnet: bool = False
 
     # PostgreSQL
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"

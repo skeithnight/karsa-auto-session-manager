@@ -42,9 +42,11 @@ class BybitClient:
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
             api_secret=self.settings.bybit_api_secret,
+            testnet=self.settings.bybit_testnet,
         )
         self.connected = True
-        logger.info("Bybit connected via pybit")
+        mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
+        logger.info(f"Bybit connected via pybit ({mode})")
         logger.debug("connect: returning None")
 
     async def disconnect(self) -> None:

@@ -70,8 +70,10 @@ services:
       - "127.0.0.1:5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - ./scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
     networks:
       - karsa
+    # init_db.sql creates trades + ai_decisions tables on first start
 
   redis:
     image: redis:7-alpine

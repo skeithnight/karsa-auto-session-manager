@@ -1,0 +1,160 @@
+"""Trade Store — Postgres-backed trade history and AI audit trail.
+
+ponytail: raw SQL via SQLAlchemy text(), no ORM. Matches init_db.sql schema.
+Callers: main.py (instantiates), CheckpointManager._exit_position (close_trade).
+Schema: trades + ai_decisions tables from scripts/init_db.sql.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
+
+from loguru import logger
+from sqlalchemy import text
+
+from app.core.database import DatabaseEngine
+
+
+class TradeStore:
+    """Postgres CRUD for trade history + AI decisions."""
+
+    def __init__(self, db: DatabaseEngine) -> None:
+        self.db = db
+
+    async def record_entry(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        entry_price: Decimal,
+        regime: Optional[str] = None,
+        ai_confidence: Optional[int] = None,
+    ) -> int:
+        """Record trade entry. Returns trade id."""
+        now = datetime.now(timezone.utc)
+        async with self.db.engine.connect() as conn:
+            result = await conn.execute(
+                text(
+                    """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence)
+                    VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence)
+                    RETURNING id"""
+                ),
+                {
+                    "symbol": symbol,
+                    "side": side,
+                    "amount": str(amount),
+                    "entry_price": str(entry_price),
+                    "regime": regime,
+                    "entry_time": now,
+                    "ai_confidence": ai_confidence,
+                },
+            )
+            await conn.commit()
+            row = result.fetchone()
+            trade_id = row[0] if row else 0
+            logger.info(f"Trade recorded: {symbol} {side} id={trade_id}")
+            return trade_id
+
+    async def close_trade(
+        self,
+        symbol: str,
+        exit_price: Decimal,
+        pnl: Decimal,
+        exit_reason: str,
+    ) -> None:
+        """Close most recent open trade for symbol."""
+        now = datetime.now(timezone.utc)
+        async with self.db.engine.connect() as conn:
+            await conn.execute(
+                text(
+                    """UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
+                    exit_reason = :exit_reason, exit_time = :exit_time
+                    WHERE id = (
+                        SELECT id FROM trades
+                        WHERE symbol = :symbol AND exit_time IS NULL
+                        ORDER BY entry_time DESC LIMIT 1
+                    )"""
+                ),
+                {
+                    "symbol": symbol,
+                    "exit_price": str(exit_price),
+                    "pnl": str(pnl),
+                    "exit_reason": exit_reason,
+                    "exit_time": now,
+                },
+            )
+            await conn.commit()
+            logger.info(f"Trade closed: {symbol} pnl={pnl} reason={exit_reason}")
+
+    async def get_history(
+        self, page: int = 1, per_page: int = 20
+    ) -> Tuple[List[Dict[str, Any]], int, int, int, Decimal]:
+        """Get paginated trade history. Returns (trades, total, wins, losses, net_pnl)."""
+        offset = (page - 1) * per_page
+        async with self.db.engine.connect() as conn:
+            count_result = await conn.execute(
+                text("SELECT COUNT(*) FROM trades WHERE exit_time IS NOT NULL")
+            )
+            total = count_result.scalar() or 0
+
+            rows = await conn.execute(
+                text(
+                    """SELECT symbol, side, amount, entry_price, exit_price, pnl,
+                    regime, entry_time, exit_time, exit_reason, ai_confidence
+                    FROM trades WHERE exit_time IS NOT NULL
+                    ORDER BY exit_time DESC LIMIT :limit OFFSET :offset"""
+                ),
+                {"limit": per_page, "offset": offset},
+            )
+            trades = [
+                {
+                    "symbol": r[0], "side": r[1], "amount": r[2],
+                    "entry_price": r[3], "exit_price": r[4], "pnl": r[5],
+                    "regime": r[6], "entry_time": r[7], "exit_time": r[8],
+                    "exit_reason": r[9], "ai_confidence": r[10],
+                }
+                for r in rows.fetchall()
+            ]
+
+            stats = await conn.execute(
+                text(
+                    "SELECT COUNT(*) FILTER (WHERE pnl > 0), "
+                    "COUNT(*) FILTER (WHERE pnl <= 0), "
+                    "COALESCE(SUM(pnl), 0) FROM trades WHERE exit_time IS NOT NULL"
+                )
+            )
+            row = stats.fetchone()
+            wins = row[0] or 0
+            losses = row[1] or 0
+            net_pnl = Decimal(str(row[2])) if row[2] else Decimal("0")
+
+        return trades, total, wins, losses, net_pnl
+
+    async def record_ai_decision(
+        self,
+        symbol: str,
+        decision_type: str,
+        model: Optional[str] = None,
+        input_hash: Optional[str] = None,
+        output_json: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+    ) -> None:
+        """Record AI decision for audit trail."""
+        async with self.db.engine.connect() as conn:
+            await conn.execute(
+                text(
+                    """INSERT INTO ai_decisions (symbol, decision_type, model, input_hash, output_json, latency_ms)
+                    VALUES (:symbol, :decision_type, :model, :input_hash, :output_json, :latency_ms)"""
+                ),
+                {
+                    "symbol": symbol,
+                    "decision_type": decision_type,
+                    "model": model,
+                    "input_hash": input_hash,
+                    "output_json": output_json,
+                    "latency_ms": latency_ms,
+                },
+            )
+            await conn.commit()

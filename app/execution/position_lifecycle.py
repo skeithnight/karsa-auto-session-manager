@@ -142,7 +142,9 @@ class CheckpointManager:
         hard_fail_ever_pct: Decimal = Decimal("-0.03"),
         clear_win_atr_mult: Decimal = Decimal("3"),
         position_judge: Optional[PositionJudge] = None,
+        trade_store: Optional[Any] = None,
     ) -> None:
+        """Callers: main.py (passes trade_store). No schema change."""
         logger.debug("CheckpointManager.__init__: entering")
         self.store = position_store
         self.client = bybit_client
@@ -150,6 +152,7 @@ class CheckpointManager:
         self.hard_fail_ever = hard_fail_ever_pct
         self.clear_win_atr_mult = clear_win_atr_mult
         self.position_judge = position_judge
+        self.trade_store = trade_store
         logger.debug("CheckpointManager.__init__: returning")
 
     async def run(
@@ -265,6 +268,15 @@ class CheckpointManager:
                 await self.client.create_market_order(symbol, close_side, amount)
             await self.store.remove(symbol, side)
             logger.info(f"Position exited: {symbol} {side}")
+            # Record trade exit in Postgres
+            if self.trade_store:
+                try:
+                    entry_price = Decimal(pos.get("entry_price", "0"))
+                    exit_price = Decimal(pos.get("current_price", entry_price))
+                    pnl = (exit_price - entry_price) * amount if side == "buy" else (entry_price - exit_price) * amount
+                    await self.trade_store.close_trade(symbol, exit_price, pnl, pos.get("exit_reason", "checkpoint"))
+                except Exception as te:
+                    logger.error(f"Trade store close_trade failed: {te}")
         except Exception as e:
             logger.error(f"Exit failed: {symbol} {side}: {e}")
 

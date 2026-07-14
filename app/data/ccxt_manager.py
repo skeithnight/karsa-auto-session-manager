@@ -22,8 +22,9 @@ class CCXTManager:
         self.stale_threshold_seconds: int = 15
         logger.debug("CCXTManager.__init__: returning")
 
-    async def start(self) -> None:
-        """Initialize exchanges, load markets, and start WebSocket streams."""
+    async def start(self, testnet: bool = False) -> None:
+        """Initialize exchanges, load markets, and start WebSocket streams.
+        Callers: main.py (passes settings.bybit_testnet). No schema change."""
         logger.debug("start: entering")
         # Binance — spot only
         binance = ccxt_pro.binance({
@@ -48,6 +49,9 @@ class CCXTManager:
             "enableRateLimit": True,
         })
         bybit.options["defaultType"] = "swap"
+        if testnet:
+            bybit.set_sandbox_mode(True)
+            logger.info("Bybit CCXT set to sandbox/testnet mode")
         self.exchanges["bybit"] = bybit
 
         logger.info(f"Initialized exchanges: {list(self.exchanges.keys())}")

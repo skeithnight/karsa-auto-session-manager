@@ -97,6 +97,7 @@ from app.execution.bybit_client import BybitClient
 from app.execution.sor import SmartOrderRouter
 from app.execution.position_lifecycle import TrailingStopManager, CheckpointManager
 from app.core.position_store import PositionStore
+from app.core.trade_store import TradeStore
 from app.risk.gates import RiskGate
 from app.risk.circuit_breaker import CircuitBreaker
 from app.risk.sector_cap import SectorCap
@@ -392,6 +393,8 @@ async def executor_task(
     redis_client: RedisClient,
     position_store: PositionStore,
     sector_cap: SectorCap,
+    bybit_client: BybitClient,
+    trade_store: TradeStore,
     risk_pct: Decimal = Decimal("0.02"),
 ) -> None:
     """Key 4: Execute trades via Smart Order Router."""
@@ -432,9 +435,17 @@ async def executor_task(
             logger.warning(f"No live price for {signal.symbol}, skipping")
             continue
 
-        # Position sizing: risk_pct of notional per trade
-        # ponytail: fixed risk_pct sizing, add dynamic sizing when account balance API wired
-        amount = risk_pct  # Will be refined with actual balance lookup
+        # Position sizing: risk_pct of available balance / entry price
+        try:
+            wallet = await bybit_client.get_wallet_balance()
+            available = wallet.get("available", Decimal("0"))
+            if available <= 0:
+                logger.warning(f"No available balance, skipping {signal.symbol}")
+                continue
+            amount = (available * risk_pct) / price
+        except Exception as e:
+            logger.error(f"Balance lookup failed: {e}, skipping {signal.symbol}")
+            continue
 
         logger.info(f"Executing {signal.direction} {signal.symbol} @ {price}, amount={amount}")
 
@@ -457,6 +468,16 @@ async def executor_task(
                     entry_price=price,
                     amount=amount,
                     sl_order_id=result.get("sl_order_id"),
+                )
+                # Record trade entry in Postgres
+                regime_data = await redis_client.get_session_config()
+                regime = regime_data.get("regime", "UNKNOWN") if regime_data else "UNKNOWN"
+                await trade_store.record_entry(
+                    symbol=signal.symbol,
+                    side=signal.direction,
+                    amount=amount,
+                    entry_price=price,
+                    regime=regime,
                 )
             else:
                 logger.warning(f"SOR returned no fill for {signal.symbol}")
@@ -533,7 +554,7 @@ async def main() -> None:
     await db_engine.connect(settings.postgres_url)
 
     ccxt_manager = CCXTManager()
-    await ccxt_manager.start()
+    await ccxt_manager.start(testnet=settings.bybit_testnet)
     normalizer = Normalizer()
     bad_tick_filter = BadTickFilter()
     alpha_metrics = AlphaMetrics()
@@ -569,8 +590,9 @@ async def main() -> None:
     position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client)
 
     position_store = PositionStore(redis_client)
+    trade_store = TradeStore(db_engine)
     trailing_stop = TrailingStopManager(position_store, bybit_client)
-    checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge)
+    checkpoint_mgr = CheckpointManager(position_store, bybit_client, position_judge=position_judge, trade_store=trade_store)
 
     # Phase 4.5 modules
     multi_tf = MultiTFFilter(ohlcv_fetcher)
@@ -624,7 +646,7 @@ async def main() -> None:
         asyncio.create_task(data_engine_task(ccxt_manager, normalizer, bad_tick_filter, redis_client, lead_lag_buffer, valid_symbols)),
         asyncio.create_task(alpha_bridge_task(alpha_metrics, signal_generator, lead_lag_buffer, entry_filter, redis_client, valid_symbols, signal_queue, multi_tf, crypto_analyst)),
         asyncio.create_task(risk_gate_task(risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue)),
-        asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog, redis_client, position_store, sector_cap)),
+        asyncio.create_task(executor_task(sor, state_manager, circuit_breaker, risk_queue, watchdog, redis_client, position_store, sector_cap, bybit_client, trade_store)),
         asyncio.create_task(watchdog_task(watchdog, redis_client)),
         asyncio.create_task(universe_refresh_task(universe_scorer, valid_symbols)),
         asyncio.create_task(dead_mans_switch.start()),

@@ -97,10 +97,11 @@ A quick-reference guide for the operator when alerts fire.
 | :--- | :--- | :--- |
 | **🚨 KILL SWITCH ACTIVATED** | Flattened all, bot stopped. | Investigate why it was triggered. Check Bybit UI to confirm flat. Restart bot manually when ready. |
 | **🛑 Daily Drawdown > 3%** | Flattened all, bot stopped. | Review trade logs in Postgres. Analyze if market regime changed. Reset daily equity tracker tomorrow. |
-| **⚠️ WARP Proxy Degraded** | Canceled orders, paused trading. | Check host machine WARP client. Restart WARP if necessary. Monitor Telegram for "Reconnected" message. |
-| **📉 Stale Data (>15s)** | Paused new entries. | Check internet connection. Check if Binance/OKX are experiencing global outages (check their status pages). |
-| **⏳ Execution Latency > 1500ms** | Paused new entries. | Check Docker resource usage (is Prometheus eating CPU?). Check WARP node routing. |
-| **💀 Postgres Connection Failed** | Rebuilt state from Bybit, continued. | Check Docker logs for Postgres container. Restart Postgres container (`docker-compose restart db`). |
+| **⚠️ VPN Tunnel Down** | Paused trading, stale data warnings. | Check `docker logs karsa-gluetun`. Verify WireGuard server is running on droplet. Check DO Cloud Firewall allows UDP 51820. |
+| **📉 Stale Data (>15s)** | Paused new entries. | Check VPN tunnel. Check if Binance/OKX are experiencing global outages. |
+| **⏳ Execution Latency > 1500ms** | Paused new entries. | Check Docker resource usage. Check VPN routing. |
+| **💀 Postgres Connection Failed** | Rebuilt state from Bybit, continued. | Check Docker logs for Postgres container. Restart Postgres container (`docker compose restart db`). |
+| **⚠️ Reconciliation Degraded** | Startup continues in degraded mode (data engine + alpha bridge run). | Check Bybit API key permissions ("Asset" read required). Verify VPN tunnel is up. Positions cannot be verified until Bybit reachable. |
 | **🔄 State Divergence Detected** | Canceled orphaned orders, synced DB. | Review `CRITICAL` logs. This indicates a bug in the execution logic or a missed WebSocket message. |
 
 ---

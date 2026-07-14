@@ -1,113 +1,167 @@
 # Local Development Setup
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft — Proposed
-**Purpose:** Get a working local Docker environment running against Bybit Testnet, with WARP proxy correctly routed, per `ARCHITECTURE.md` §9.
+**Purpose:** Get a working local Docker environment running with WireGuard VPN, Prometheus metrics, and Grafana dashboards.
 
 ---
 
 ## 1. Prerequisites
 
-- Docker & Docker Compose (v2+)
+- Docker & Docker Compose (v2+) — Rancher Desktop or Docker Desktop
 - Python 3.11+ (for running tests/tools outside Docker)
-- A Bybit account with **Testnet API keys** (create at the Bybit Testnet portal — separate credentials from mainnet)
-- A Telegram bot token + chat ID (for the Kill Switch and alerts per `RISK_AND_RUNBOOK.md` §1)
-- (Optional but recommended) A Healthchecks.io account or equivalent for the Dead Man's Switch (`RISK_AND_RUNBOOK.md` §1)
+- A Bybit account with API keys (mainnet — asset read permission required for reconciliation)
+- A Telegram bot token + chat ID (for alerts per `RISK_AND_RUNBOOK.md` §1)
+- A DigitalOcean droplet (or equivalent) running WireGuard VPN server
 
 ---
 
-## 2. WARP Proxy Setup (Docker Service)
+## 2. VPN Setup (WireGuard via Gluetun)
 
-The WARP proxy runs as a Docker service (`karsa-warp`) in the same compose stack. No host-machine install needed.
+All outbound traffic routes through a WireGuard VPN tunnel via the `gluetun` Docker service.
 
+### Server (DigitalOcean droplet)
 ```bash
-# WARP starts automatically with the stack. To start only WARP:
-docker compose up -d warp
+# Install WireGuard
+apt install wireguard -y
 
-# Verify WARP is connected:
-docker logs karsa-warp
-# Expect: "WARP proxy started on port 1080"
+# Generate server keys
+wg genkey | tee /etc/wireguard/server_private | wg pubkey > /etc/wireguard/server_public
+
+# Configure /etc/wireguard/wg0.conf
+# Address = 10.10.0.1/24, ListenPort = 51820
+# Peer: client public key, AllowedIPs = 10.10.0.2/32
+# PostUp/PostDown: iptables MASQUERADE on eth0
+
+# Enable and start
+wg-quick up wg0 && systemctl enable wg-quick@wg0
+
+# Firewall: allow UDP 51820
+ufw allow 51820/udp
+# Also add rule in DigitalOcean Cloud Firewall (Networking → Firewalls)
 ```
 
-**Verify the proxy is live** before using the app:
+### Client (.env)
 ```bash
-docker compose exec warp warp-cli status
-# Expect: Status: Connected
+WIREGUARD_PRIVATE_KEY=<client_private_key>
+WIREGUARD_PUBLIC_KEY=<server_public_key>
+WIREGUARD_ADDRESSES=10.10.0.2/32
+VPN_ENDPOINT_IP=<droplet_ip>
+VPN_ENDPOINT_PORT=51820
+BACKEND_SUBNET=172.28.0.0/16
+```
+
+### Verify VPN
+```bash
+docker logs karsa-gluetun
+# Expect: "Public IP address is <droplet_ip>"
+# Expect: "ready and using plain DNS resolvers: [1.1.1.1:53]"
 ```
 
 ---
 
-## 3. Environment Variables
+## 3. DNS Bypass (ISP Poisoning)
+
+Some ISPs (e.g. Telkomsel) poison DNS for crypto exchange domains. The app includes a Python-level DNS bypass (`app/main.py`) that queries:
+1. **Gluetun DNS (127.0.0.1)** — forwards to Cloudflare 1.1.1.1 via VPN (not poisoned)
+2. **Docker DNS (127.0.0.11)** — resolves internal names (db, redis, 9router)
+3. **System resolver** — fallback
+
+Additionally, `entrypoint.sh` writes `nameserver 127.0.0.1` to `/etc/resolv.conf` at container startup.
+
+---
+
+## 4. Environment Variables
 
 Copy `.env.example` → `.env` and fill in the following. Per `DEFINITION_OF_DONE.md` §4, none of these may ever be hardcoded in source — they're loaded exclusively via `app/core/config.py`'s Pydantic `Settings`.
 
 | Variable | Example | Notes |
 | :--- | :--- | :--- |
-| `WARP_PROXY_URL` | `socks5h://warp:1080` | Per `ARCHITECTURE.md` §9 — points to WARP Docker service |
-| `BYBIT_API_KEY` | — | **Testnet** key — never use a mainnet key locally |
-| `BYBIT_API_SECRET` | — | Testnet secret |
-| `BYBIT_TESTNET` | `true` | Explicit flag so the client never silently points at mainnet |
-| `POSTGRES_HOST` | `db` | Docker Compose service name |
-| `POSTGRES_PORT` | `5432` | |
-| `POSTGRES_DB` | `karsa` | |
-| `POSTGRES_USER` | — | |
-| `POSTGRES_PASSWORD` | — | |
-| `TELEGRAM_BOT_TOKEN` | — | Used for Kill Switch commands and alerts |
-| `TELEGRAM_CHAT_ID` | — | Authorized chat only — Kill Switch must ignore commands from any other chat |
-| `HEALTHCHECKS_PING_URL` | — | Dead Man's Switch external ping target |
-| `KILL_SWITCH_FILE_PATH` | `/tmp/KILL_KARSA` | Backup local kill trigger per `RISK_AND_RUNBOOK.md` §1 |
-| `PROMETHEUS_PORT` | `9090` | `/metrics` exposure port |
-| `LOG_LEVEL` | `INFO` | |
-| `REDIS_URL` | *(unset)* | **Do not set unless `CONTEXT.md` Open Issue #1 (Redis scope) is resolved** — leave blank/commented in `.env.example` for now |
+| `BYBIT_API_KEY` | — | Mainnet key — needs "Asset" read permission for reconciliation |
+| `BYBIT_API_SECRET` | — | Mainnet secret |
+| `POSTGRES_URL` | `postgresql+asyncpg://karsa:karsa@db:5432/karsa` | Async PostgreSQL |
+| `REDIS_URL` | `redis://redis:6379/0` | In-memory state store |
+| `TELEGRAM_BOT_TOKEN` | — | Used for alerts |
+| `TELEGRAM_CHAT_ID` | — | Authorized chat only |
+| `DEAD_MANS_SWITCH_URL` | — | External health ping target |
+| `9ROUTER_BASE_URL` | `http://127.0.0.1:20129` | AI proxy for analyst/judge |
+| `9ROUTER_AUTH_TOKEN` | — | 9router auth |
+| `9ROUTER_MODEL` | `claude-haiku-3-5` | AI model for off-hot-path analysis |
+| `WIREGUARD_PRIVATE_KEY` | — | Client WireGuard key |
+| `WIREGUARD_PUBLIC_KEY` | — | Server WireGuard public key |
+| `WIREGUARD_ADDRESSES` | `10.10.0.2/32` | Client tunnel IP |
+| `VPN_ENDPOINT_IP` | — | Droplet IP |
+| `VPN_ENDPOINT_PORT` | `51820` | WireGuard port |
+| `BACKEND_SUBNET` | `172.28.0.0/16` | Docker network subnet |
 
 ---
 
-## 4. First-Time Bring-Up
+## 5. First-Time Bring-Up
 
 ```bash
-# 1. Build and start the stack
-docker compose build
-docker compose up -d
+# 1. Build and start the full stack
+docker compose up -d --build
 
-# 2. Confirm containers are healthy
+# 2. Confirm all containers running
 docker compose ps
+# Expect: karsa-app, karsa-gluetun, karsa-db, karsa-redis, karsa-prometheus, karsa-grafana, karsa-9router
 
-# 3. Apply DB schema (matches DATA_MODEL.md §3 exactly — trades, signals, system_events)
-docker compose exec app python -m app.core.migrations   # or your chosen migration tool
+# 3. Verify VPN tunnel
+docker logs karsa-gluetun | grep "Public IP"
+# Expect: Public IP address is <droplet_ip>
 
-# 4. Confirm Postgres schema landed correctly
-docker compose exec db psql -U $POSTGRES_USER -d $POSTGRES_DB -c '\dt'
+# 4. Verify Prometheus scraping
+curl -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=up{job="karsa"}'
+# Expect: value "1"
+
+# 5. Open Grafana
+open http://localhost:3000
+# Default dashboards: data-ingestion, operations, signal-confidence
 ```
 
 ---
 
-## 5. Verifying WARP Routing From Inside the Container
-
-This is the single most important check before doing anything with real (even testnet) orders — a misconfigured proxy fails silently in exactly the way `DEFINITION_OF_DONE.md` §4 anti-pattern #6 warns about ("guessing" instead of verifying).
+## 6. Verifying VPN Routing
 
 ```bash
-docker compose exec app curl -x socks5h://warp:1080 \
-  https://www.cloudflare.com/cdn-cgi/trace/ | grep warp
-# Expect: warp=on (or warp=plus)
+# Check public IP through VPN
+docker exec karsa-gluetun wget -q -O- --timeout=10 http://ifconfig.me
+# Expect: <droplet_ip>, NOT your local ISP IP
+
+# Check DNS resolution (should NOT return Telkomsel captive portal IP)
+docker exec karsa-app python3 -c "import socket; print(socket.getaddrinfo('api.binance.com', 443)[:1])"
+# Expect: real Binance IP (e.g. 108.158.x.x), not 202.3.218.137
 ```
 
 ---
 
-## 6. Smoke Test (Phase 1 Deliverable per `MVP_SCOPE.md` §5)
+## 7. Smoke Test
 
 ```bash
-docker compose exec app python -m app.main --dry-run
+# Check data ingestion metrics
+curl -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=karsa_orderbook_received_total'
+# Expect: non-zero values per exchange/symbol
+
+# Check alpha metrics
+curl -G 'http://127.0.0.1:9090/api/v1/query' --data-urlencode 'query=karsa_regime_state'
+# Expect: regime value (0=CHOP, 1=MR, 2=BEAR, 3=BULL)
+
+# Check Grafana dashboards
+# Navigate to http://localhost:3000/d/karsa-data-ingestion/
+# Verify: VWAP, Skew, Heartbeat panels show real data
 ```
-Expected: continuous console output of normalized Global VWAP/Skew for BTC/ETH/SOL/BNB/XRP, and the process survives a WARP container restart (`docker compose restart warp`) without crashing — this is the actual bar from `MVP_SCOPE.md` Phase 1, not just "it started."
 
 ---
 
-## 7. Common Setup Issues
+## 8. Common Setup Issues
 
 | Symptom | Likely Cause | Fix |
 | :--- | :--- | :--- |
-| `curl` to Cloudflare trace endpoint hangs or times out | WARP container not connected | `docker logs karsa-warp`; restart with `docker compose restart warp` |
-| Bybit REST calls return `401`/`403` | Testnet key used against mainnet endpoint, or vice versa | Confirm `BYBIT_TESTNET=true` and the key was generated on the Testnet portal, not mainnet |
-| `Decimal` vs `float` errors on startup | `.env` numeric values being parsed as `float` by a misconfigured Pydantic field | Check `app/core/config.py` — all price/size settings must type as `Decimal`, per `DATA_MODEL.md` §1 |
+| App crashes with DNS errors | ISP DNS poisoning (Telkomsel) | Verify `entrypoint.sh` is in Dockerfile; check gluetun DNS is running |
+| Gluetun in restart loop | WireGuard handshake failing | Check AllowedIPs match client address; verify DO Cloud Firewall allows UDP 51820 |
+| Exchange API SSL errors | DNS returning wrong IP (ISP captive portal) | DNS bypass should handle this; check `docker logs karsa-gluetun` for DNS status |
+| Prometheus `up=0` | Port mismatch | App uses port 8001 (not 8000); verify `prometheus.yml` targets `gluetun:8001` |
+| `Bybit connected` but reconciliation fails | API key lacks "Asset" permission | Edit API key in Bybit → enable "Asset" read permission |
+| `Decimal` vs `float` errors | `.env` numeric values parsed as float | Check `app/core/config.py` — all price/size settings must type as `Decimal` |
 | Postgres container healthy but app can't connect | `POSTGRES_HOST` set to `localhost` instead of the Compose service name | Use the Docker Compose service name (e.g. `db`), not `localhost`, from inside the app container |
 
 ---

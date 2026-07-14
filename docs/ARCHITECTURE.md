@@ -330,8 +330,11 @@ karsa-auto-session-manager/
 │       └── test_decimal_safety.py
 │
 ├── docs/                           # All documentation (PRD, MVP, etc.)
-├── docker-compose.yml              # App, Postgres, Prometheus
-├── Dockerfile                      # Python 3.11 slim image
+├── docker-compose.yml              # Full stack: app, gluetun, db, redis, prometheus, grafana, 9router
+├── Dockerfile                      # Python 3.11 slim image + entrypoint.sh DNS fix
+├── entrypoint.sh                   # Writes gluetun DNS to /etc/resolv.conf at container startup
+├── prometheus.yml                  # Scrapes gluetun:8001 (app metrics proxy)
+├── grafana/                        # Dashboards: data-ingestion, operations, signal-confidence
 ├── requirements.txt                # Python dependencies
 ├── .env.example                    # Template for secrets
 └── README.md                       # Project overview
@@ -339,13 +342,15 @@ karsa-auto-session-manager/
 
 ---
 
-## 9. Deployment & Proxy Configuration
-*   **Local Dev:** The WARP client runs on the host machine (Mac/Windows/Linux). The Docker container accesses it via the special DNS name `host.docker.internal` on port `1080` (or the port configured in WARP).
-*   **Environment Variable:** `WARP_PROXY_URL=socks5h://host.docker.internal:1080`
-*   **CCXT Implementation:** Passed directly into the CCXT Pro initialization:
+## 9. Deployment & VPN Configuration
+*   **VPN:** All outbound traffic routes through a WireGuard VPN tunnel via the `gluetun` Docker service. The app shares gluetun's network namespace (`network_mode: "service:gluetun"`).
+*   **Server:** DigitalOcean droplet running WireGuard (port 51820). Config in `.env`: `WIREGUARD_*`, `VPN_ENDPOINT_*`.
+*   **DNS:** ISP DNS poisoning bypassed via Python-level DNS override in `app/main.py`. Queries gluetun DNS (127.0.0.1 → Cloudflare 1.1.1.1) for external domains, Docker DNS (127.0.0.11) for internal names.
+*   **Prometheus:** App exposes metrics on port 8001 (not 8000 — gluetun uses 8000). Prometheus scrapes `gluetun:8001`.
+*   **CCXT Implementation:** Direct connection through VPN tunnel (no explicit proxy config needed):
     ```python
     exchange = ccxt.pro.bybit({
-        'aiohttp_proxy': settings.warp_proxy_url,
-        'ws_proxy': settings.warp_proxy_url
+        'enableRateLimit': True,
+        'options': {'defaultType': 'swap'},
     })
     ```

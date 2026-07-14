@@ -136,6 +136,20 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
     )
 
 
+def format_entry_alert(symbol: str, side: str, price: float, amount: float, sl_price: float) -> str:
+    """Format a trade entry + SL placed alert message.
+    Caller: SOR._place_sl_after_fill(). No schema change."""
+    return fmt(
+        bold("✅ ENTRY FILLED"), "\n",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
+        bold("Symbol: "), f"{symbol} ({side})", "\n",
+        bold("Price: "), f"${format_price(price)}", "\n",
+        bold("Amount: "), f"{amount}", "\n",
+        bold("Stop Loss: "), f"${format_price(sl_price)}", "\n",
+        bold("Max Loss: "), "$1.00",
+    )
+
+
 # Paginated trade history formatter
 from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
 
@@ -146,5 +160,6 @@ __all__ = [
     "get_regime_display",
     "format_tp_alert",
     "format_sl_alert",
+    "format_entry_alert",
     "TradeHistoryFormatter",
 ]

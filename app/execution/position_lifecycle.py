@@ -15,7 +15,9 @@ from typing import Any, Callable, Coroutine, Optional
 
 from loguru import logger
 
+from app.core import metrics
 from app.alpha.position_judge import JudgeVerdict, PositionJudge
+from app.core import metrics
 from app.core.position_store import PositionStore
 from app.execution.bybit_client import BybitClient
 
@@ -143,8 +145,9 @@ class CheckpointManager:
         clear_win_atr_mult: Decimal = Decimal("3"),
         position_judge: Optional[PositionJudge] = None,
         trade_store: Optional[Any] = None,
+        alert_service: Optional[Any] = None,
     ) -> None:
-        """Callers: main.py (passes trade_store). No schema change."""
+        """Callers: main.py (passes trade_store, alert_service). No schema change."""
         logger.debug("CheckpointManager.__init__: entering")
         self.store = position_store
         self.client = bybit_client
@@ -153,6 +156,7 @@ class CheckpointManager:
         self.clear_win_atr_mult = clear_win_atr_mult
         self.position_judge = position_judge
         self.trade_store = trade_store
+        self.alert_service = alert_service
         logger.debug("CheckpointManager.__init__: returning")
 
     async def run(
@@ -192,11 +196,19 @@ class CheckpointManager:
         if current_price is None:
             return
 
+        # Update position gauges
+        amount = Decimal(pos.get("amount", "0"))
+        metrics.position_size.labels(symbol=symbol).set(float(amount))
+        metrics.position_entry_price.labels(symbol=symbol).set(float(entry))
+        metrics.position_duration.labels(symbol=symbol).set(elapsed)
+
         # Calculate PnL %
         if side == "buy":
             pnl_pct = (current_price - entry) / entry
         else:
             pnl_pct = (entry - current_price) / entry
+        pnl_usdt = float(pnl_pct * amount * entry)
+        metrics.position_unrealized_pnl.labels(symbol=symbol).set(pnl_usdt)
 
         # HARD_FAIL checks
         if elapsed < 1800 and pnl_pct <= self.hard_fail_30min:  # 30 min
@@ -267,6 +279,12 @@ class CheckpointManager:
             else:
                 await self.client.create_market_order(symbol, close_side, amount)
             await self.store.remove(symbol, side)
+            # Record lifecycle duration
+            entered_str = pos.get("entered_at", "")
+            if entered_str:
+                entered_at = datetime.fromisoformat(entered_str)
+                duration = (datetime.now(timezone.utc) - entered_at).total_seconds()
+                metrics.position_lifecycle_duration.observe(duration)
             logger.info(f"Position exited: {symbol} {side}")
             # Record trade exit in Postgres
             if self.trade_store:
@@ -277,6 +295,17 @@ class CheckpointManager:
                     await self.trade_store.close_trade(symbol, exit_price, pnl, pos.get("exit_reason", "checkpoint"))
                 except Exception as te:
                     logger.error(f"Trade store close_trade failed: {te}")
+            # Push exit alert to Telegram
+            if self.alert_service:
+                try:
+                    from app.bot.utils.formatters import format_tp_alert, format_sl_alert
+                    pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
+                    if pnl >= 0:
+                        await self.alert_service.send(format_tp_alert(symbol, side, exit_price, float(pnl), float(pnl_pct)))
+                    else:
+                        await self.alert_service.send(format_sl_alert(symbol, side, exit_price, float(pnl), float(pnl_pct)))
+                except Exception as ae:
+                    logger.error(f"Exit alert failed: {ae}")
         except Exception as e:
             logger.error(f"Exit failed: {symbol} {side}: {e}")
 

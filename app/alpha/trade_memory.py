@@ -13,6 +13,7 @@ from typing import List, Optional
 
 from loguru import logger
 
+from app.core import metrics
 from app.core.redis_client import RedisClient
 
 MAX_ENTRIES_PER_SYMBOL = 20
@@ -55,6 +56,7 @@ class TradeMemory:
             await self.redis.redis.zadd(key, {json.dumps(entry): score})
             # FIFO eviction: keep only latest MAX_ENTRIES
             await self.redis.redis.zremrangebyrank(key, 0, -(MAX_ENTRIES_PER_SYMBOL + 1))
+            metrics.trade_memory_stored.labels(symbol=symbol).inc()
             logger.info(f"Trade memory: stored {symbol} pnl={pnl_pct}% exit={exit_reason}")
         except Exception as e:
             logger.error(f"Trade memory store failed for {symbol}: {e}")
@@ -108,4 +110,6 @@ class TradeMemory:
     async def get_prompt_context(self, symbol: str, regime: Optional[str] = None) -> str:
         """Convenience: fetch + format in one call."""
         trades = await self.get_recent(symbol, regime=regime)
+        if trades:
+            metrics.trade_memory_injected.labels(symbol=symbol).inc()
         return self.format_prompt(symbol, trades)

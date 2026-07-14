@@ -42,6 +42,7 @@ class RedisClient:
             self.settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
+            max_connections=256,
         )
         logger.info(f"Connected to Redis: {self.settings.redis_url}")
         logger.debug("connect: returning None")

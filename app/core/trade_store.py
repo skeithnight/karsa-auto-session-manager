@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from sqlalchemy import text
 
+from app.core import metrics
 from app.core.database import DatabaseEngine
 
 
@@ -34,28 +35,33 @@ class TradeStore:
     ) -> int:
         """Record trade entry. Returns trade id."""
         now = datetime.now(timezone.utc)
-        async with self.db.engine.connect() as conn:
-            result = await conn.execute(
-                text(
-                    """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence)
-                    VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence)
-                    RETURNING id"""
-                ),
-                {
-                    "symbol": symbol,
-                    "side": side,
-                    "amount": str(amount),
-                    "entry_price": str(entry_price),
-                    "regime": regime,
-                    "entry_time": now,
-                    "ai_confidence": ai_confidence,
-                },
-            )
-            await conn.commit()
-            row = result.fetchone()
-            trade_id = row[0] if row else 0
-            logger.info(f"Trade recorded: {symbol} {side} id={trade_id}")
-            return trade_id
+        try:
+            async with self.db.engine.connect() as conn:
+                result = await conn.execute(
+                    text(
+                        """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence)
+                        VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence)
+                        RETURNING id"""
+                    ),
+                    {
+                        "symbol": symbol,
+                        "side": side,
+                        "amount": str(amount),
+                        "entry_price": str(entry_price),
+                        "regime": regime,
+                        "entry_time": now,
+                        "ai_confidence": ai_confidence,
+                    },
+                )
+                await conn.commit()
+                row = result.fetchone()
+                trade_id = row[0] if row else 0
+                logger.info(f"Trade recorded: {symbol} {side} id={trade_id}")
+                return trade_id
+        except Exception as e:
+            metrics.postgres_write_errors.labels(table="trades").inc()
+            logger.error(f"record_entry failed: {e}")
+            raise
 
     async def close_trade(
         self,
@@ -66,27 +72,32 @@ class TradeStore:
     ) -> None:
         """Close most recent open trade for symbol."""
         now = datetime.now(timezone.utc)
-        async with self.db.engine.connect() as conn:
-            await conn.execute(
-                text(
-                    """UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
-                    exit_reason = :exit_reason, exit_time = :exit_time
-                    WHERE id = (
-                        SELECT id FROM trades
-                        WHERE symbol = :symbol AND exit_time IS NULL
-                        ORDER BY entry_time DESC LIMIT 1
-                    )"""
-                ),
-                {
-                    "symbol": symbol,
-                    "exit_price": str(exit_price),
-                    "pnl": str(pnl),
-                    "exit_reason": exit_reason,
-                    "exit_time": now,
-                },
-            )
-            await conn.commit()
-            logger.info(f"Trade closed: {symbol} pnl={pnl} reason={exit_reason}")
+        try:
+            async with self.db.engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        """UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
+                        exit_reason = :exit_reason, exit_time = :exit_time
+                        WHERE id = (
+                            SELECT id FROM trades
+                            WHERE symbol = :symbol AND exit_time IS NULL
+                            ORDER BY entry_time DESC LIMIT 1
+                        )"""
+                    ),
+                    {
+                        "symbol": symbol,
+                        "exit_price": str(exit_price),
+                        "pnl": str(pnl),
+                        "exit_reason": exit_reason,
+                        "exit_time": now,
+                    },
+                )
+                await conn.commit()
+                logger.info(f"Trade closed: {symbol} pnl={pnl} reason={exit_reason}")
+        except Exception as e:
+            metrics.postgres_write_errors.labels(table="trades").inc()
+            logger.error(f"close_trade failed: {e}")
+            raise
 
     async def get_history(
         self, page: int = 1, per_page: int = 20
@@ -142,19 +153,24 @@ class TradeStore:
         latency_ms: Optional[int] = None,
     ) -> None:
         """Record AI decision for audit trail."""
-        async with self.db.engine.connect() as conn:
-            await conn.execute(
-                text(
-                    """INSERT INTO ai_decisions (symbol, decision_type, model, input_hash, output_json, latency_ms)
-                    VALUES (:symbol, :decision_type, :model, :input_hash, :output_json, :latency_ms)"""
-                ),
-                {
-                    "symbol": symbol,
-                    "decision_type": decision_type,
-                    "model": model,
-                    "input_hash": input_hash,
-                    "output_json": output_json,
-                    "latency_ms": latency_ms,
-                },
+        try:
+            async with self.db.engine.connect() as conn:
+                await conn.execute(
+                    text(
+                        """INSERT INTO ai_decisions (symbol, decision_type, model, input_hash, output_json, latency_ms)
+                        VALUES (:symbol, :decision_type, :model, :input_hash, :output_json, :latency_ms)"""
+                    ),
+                    {
+                        "symbol": symbol,
+                        "decision_type": decision_type,
+                        "model": model,
+                        "input_hash": input_hash,
+                        "output_json": output_json,
+                        "latency_ms": latency_ms,
+                    },
             )
             await conn.commit()
+        except Exception as e:
+            metrics.postgres_write_errors.labels(table="ai_decisions").inc()
+            logger.error(f"record_ai_decision failed: {e}")
+            raise

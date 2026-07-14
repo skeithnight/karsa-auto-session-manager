@@ -98,10 +98,11 @@ services:
       - karsa
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:11.6.0
     container_name: karsa-grafana
     restart: unless-stopped
     environment:
+      GF_PLUGINS_PREINSTALL: grafana-postgresql-datasource
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: karsa
       GF_USERS_ALLOW_SIGN_UP: "false"

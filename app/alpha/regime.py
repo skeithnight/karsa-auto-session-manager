@@ -39,20 +39,20 @@ class RegimeEngine:
     ponytail: all math is pure Python, no numpy/pandas dependency.
     """
 
-    def classify(self, ohlcv: list[list]) -> str:
+    def classify(self, ohlcv: list[list]) -> tuple[str, float, float]:
         """Classify market regime from OHLCV candles.
 
         Args:
             ohlcv: list of [timestamp, open, high, low, close, volume]
 
         Returns:
-            One of: TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP
+            Tuple of (regime, hurst, adx) — regime is one of TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP.
         """
         logger.debug(f"classify: entering candles={len(ohlcv)}")
         if len(ohlcv) < 200:
             logger.warning(f"Not enough candles for regime classification: {len(ohlcv)} < 200")
             logger.debug("classify: returning CHOP (insufficient data)")
-            return REGIME_CHOP
+            return REGIME_CHOP, 0.0, 0.0
 
         closes = [float(c[4]) for c in ohlcv]
         highs = [float(c[2]) for c in ohlcv]
@@ -80,7 +80,7 @@ class RegimeEngine:
 
         logger.info(f"Regime classified: {regime}")
         logger.debug(f"classify: returning {regime}")
-        return regime
+        return regime, hurst, adx
 
     def _hurst(self, prices: list[float]) -> float:
         """Compute Hurst Exponent using R/S method.

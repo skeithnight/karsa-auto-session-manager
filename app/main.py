@@ -59,14 +59,6 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
         pass
     # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
     try:
-        ips = _dns_query('127.0.0.1', host)
-        if ips:
-            af = _socket.AF_INET6 if ':' in ips[0] else _socket.AF_INET
-            return [(af, _socket.SOCK_STREAM, 0, '', (ips[0], port if isinstance(port, int) else 0))]
-    except Exception:
-        pass
-    # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
-    try:
         ips = _dns_query('127.0.0.11', host)
         if ips:
             af = _socket.AF_INET6 if ':' in ips[0] else _socket.AF_INET
@@ -360,13 +352,15 @@ async def regime_engine_task(
         try:
             candles = await ohlcv_fetcher.fetch("BTC/USDT", "1h", 200, ttl_seconds=900)
             if candles and len(candles) >= 200:
-                regime = regime_engine.classify(candles)
+                regime, hurst, adx = regime_engine.classify(candles)
                 await redis_client.set_session_config(regime)
 
                 # Update Prometheus metrics
                 regime_map = {"CHOP": 0, "MEAN_REVERSION": 1, "TREND_BEAR": 2, "TREND_BULL": 3}
                 metrics.regime_state.set(regime_map.get(regime, 0))
-                logger.info(f"Regime updated: {regime}")
+                metrics.regime_hurst.set(hurst)
+                metrics.regime_adx.set(adx)
+                logger.info(f"Regime updated: {regime} (hurst={hurst:.4f} adx={adx:.2f})")
             else:
                 logger.warning(f"Insufficient candles for regime: {len(candles)}")
         except Exception as e:

@@ -1,0 +1,36 @@
+Dockerfile
+  855c66ad61ddbda9 11-12,14
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "9bd48fe0e8e6b70baa83a68cd14dd428a2e49e45",
+  "prompts": {
+    "855c66ad61ddbda9": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5f88-a55c-7c73-a751-1e7ef5e8b861",
+        "model": "gpt-5.4"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 3,
+      "total_deletions": 2,
+      "accepted_lines": 3,
+      "overriden_lines": 0
+    },
+    "ea8a432db030f552": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019f5f88-e6b8-7cb3-8efe-6a5b924a5954",
+        "model": "unknown"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 2,
+      "total_deletions": 2,
+      "accepted_lines": 0,
+      "overriden_lines": 0
+    }
+  }
+}

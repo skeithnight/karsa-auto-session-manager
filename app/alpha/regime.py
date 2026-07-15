@@ -39,19 +39,22 @@ class RegimeEngine:
     ponytail: all math is pure Python, no numpy/pandas dependency.
     """
 
-    def classify(self, ohlcv: list[list]) -> tuple[str, float, float]:
+    def classify(
+        self, ohlcv: list[list], min_candles: int = 200
+    ) -> tuple[str, float, float]:
         """Classify market regime from OHLCV candles.
 
         Args:
             ohlcv: list of [timestamp, open, high, low, close, volume]
+            min_candles: minimum candles required (200 for 1H, 50 for 4H)
 
         Returns:
             Tuple of (regime, hurst, adx) — regime is one of TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP.
         """
         logger.debug(f"classify: entering candles={len(ohlcv)}")
-        if len(ohlcv) < 200:
+        if len(ohlcv) < min_candles:
             logger.warning(
-                f"Not enough candles for regime classification: {len(ohlcv)} < 200"
+                f"Not enough candles for regime classification: {len(ohlcv)} < {min_candles}"
             )
             logger.debug("classify: returning CHOP (insufficient data)")
             return REGIME_CHOP, 0.0, 0.0
@@ -62,7 +65,8 @@ class RegimeEngine:
 
         hurst = self._hurst(closes[-100:])
         adx = self._adx(highs, lows, closes, period=14)
-        ema200 = self._ema(closes, period=200)
+        ema_period = min(200, len(closes) - 1)
+        ema200 = self._ema(closes, period=ema_period)
         current_price = closes[-1]
 
         logger.info(
@@ -104,7 +108,7 @@ class RegimeEngine:
             )
             return regime_1h, hurst, adx
 
-        regime_4h, _, _ = self.classify(ohlcv_4h)
+        regime_4h, _, _ = self.classify(ohlcv_4h, min_candles=50)
 
         # AND-gate: either CHOP → CHOP
         if regime_1h == REGIME_CHOP or regime_4h == REGIME_CHOP:

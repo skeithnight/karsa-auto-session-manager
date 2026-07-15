@@ -497,6 +497,10 @@ class TradeReconciler:
             if d.kind in ("missing_entry", "missing_exit") and not d.repaired
         ]
         if not repairable:
+            kinds = {}
+            for d in discrepancies:
+                kinds[d.kind] = kinds.get(d.kind, 0) + 1
+            logger.info(f"Trade reconciler: 0 repairable — breakdown: {kinds}")
             return 0
 
         if len(repairable) > self.MAX_REPAIRS_PER_CYCLE:
@@ -514,6 +518,7 @@ class TradeReconciler:
                 if d.kind == "missing_entry":
                     price = _safe_decimal(d.bybit_data.get("price", "0"))
                     if amount <= 0 or price <= 0:
+                        logger.warning(f"Trade reconciler: skip missing_entry {d.symbol} — amount={amount} price={price}")
                         continue
                     await self.store.record_entry(
                         symbol=d.symbol,
@@ -533,6 +538,7 @@ class TradeReconciler:
                     exit_price = _safe_decimal(d.bybit_data.get("avg_exit_price", "0"))
                     pnl = _safe_decimal(d.bybit_data.get("closed_pnl", "0"))
                     if amount <= 0 or exit_price <= 0:
+                        logger.warning(f"Trade reconciler: skip missing_exit {d.symbol} — amount={amount} exit_price={exit_price}")
                         continue
                     if d.local_trade_id:
                         # Close existing open trade — no duplicate

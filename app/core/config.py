@@ -34,27 +34,23 @@ class Settings(BaseSettings):
 
     # Trading
     symbols: List[str] = [
-        # Tier 1 — majors
-        "BTC/USDT", "ETH/USDT",
-        # Tier 2 — large/mid caps
-        "SOL/USDT", "BNB/USDT", "XRP/USDT",
-        "AVAX/USDT", "LINK/USDT", "SUI/USDT", "NEAR/USDT",
-        "APT/USDT", "ARB/USDT", "OP/USDT", "INJ/USDT", "TIA/USDT", "ATOM/USDT",
-        "UNI/USDT", "AAVE/USDT", "LTC/USDT", "ETC/USDT", "BCH/USDT",
-        "FET/USDT", "WLD/USDT", "RNDR/USDT", "TAO/USDT", "MKR/USDT",
-        # Tier 3 — high volume
-        "ADA/USDT", "DOGE/USDT", "DOT/USDT", "TRX/USDT",
-        "FIL/USDT", "ICP/USDT", "XLM/USDT", "HBAR/USDT",
-        "CRV/USDT", "RUNE/USDT", "PENDLE/USDT", "SEI/USDT",
-        # Tier 4 — meme / trending / defi
-        "PEPE/USDT", "SHIB/USDT", "WIF/USDT", "BONK/USDT", "FLOKI/USDT",
-        "ONDO/USDT", "PYTH/USDT", "JUP/USDT", "ENA/USDT", "BOME/USDT",
-        "MATIC/USDT", "FTM/USDT", "GALA/USDT", "LDO/USDT", "ORDI/USDT",
-        # Tier 5 — high liquidity & top gainers
-        "TON/USDT", "STX/USDT", "KAS/USDT", "MNT/USDT", "STRK/USDT",
-        "DYDX/USDT", "W/USDT", "BLUR/USDT", "IMX/USDT", "GRT/USDT",
-        "SNX/USDT", "TRB/USDT", "CFX/USDT", "YGG/USDT", "NOT/USDT",
-        "IO/USDT", "ZK/USDT", "MANA/USDT", "SAND/USDT", "VET/USDT",
+        # Tier 1 — majors ($100M+ daily turnover on Bybit)
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
+        # Tier 2 — large caps ($20M+)
+        "BNB/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT",
+        "SUI/USDT", "NEAR/USDT", "WLD/USDT", "TAO/USDT", "AAVE/USDT",
+        "ENA/USDT", "LTC/USDT", "APT/USDT", "ARB/USDT", "BCH/USDT",
+        "UNI/USDT", "ONDO/USDT",
+        # Tier 3 — mid caps ($5M+)
+        "OP/USDT", "INJ/USDT", "ATOM/USDT", "DOT/USDT",
+        "FIL/USDT", "ICP/USDT", "CRV/USDT", "PENDLE/USDT", "SEI/USDT",
+        "ETC/USDT", "TIA/USDT", "RUNE/USDT", "XLM/USDT", "HBAR/USDT",
+        "JUP/USDT", "GALA/USDT", "LDO/USDT", "ORDI/USDT",
+        "DYDX/USDT", "STX/USDT", "KAS/USDT", "MNT/USDT", "STRK/USDT",
+        "BLUR/USDT", "IMX/USDT", "GRT/USDT", "SNX/USDT", "TRB/USDT",
+        "NOT/USDT", "MANA/USDT", "SAND/USDT", "VET/USDT",
+        # Tier 4 — new/trending high-volume
+        "FARTCOIN/USDT", "KAITO/USDT", "DEXE/USDT", "VANRY/USDT",
     ]
 
     # Circuit breaker
@@ -66,7 +62,7 @@ class Settings(BaseSettings):
 
     # 9router AI proxy (supports both 9ROUTER_* and nine_router_* env vars)
     nine_router_base_url: str = Field(
-        default="http://127.0.0.1:20129",
+        default="http://127.0.0.1:20128",
         validation_alias=AliasChoices("9ROUTER_BASE_URL", "nine_router_base_url"),
     )
     nine_router_auth_token: str = Field(
@@ -74,7 +70,7 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("9ROUTER_AUTH_TOKEN", "nine_router_auth_token"),
     )
     nine_router_model: str = Field(
-        default="claude-haiku-3-5",
+        default="karsa-combo",
         validation_alias=AliasChoices("9ROUTER_MODEL", "nine_router_model"),
     )
     # AI mandatory — toggles removed per CONTEXT.md Issue #8

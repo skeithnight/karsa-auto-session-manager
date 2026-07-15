@@ -559,7 +559,7 @@ async def executor_task(
     sector_cap: SectorCap,
     bybit_client: BybitClient,
     trade_store: TradeStore,
-    risk_pct: Decimal = Decimal("0.02"),
+    risk_pct: Decimal = Decimal("0.03"),
 ) -> None:
     """Key 4: Execute trades via Smart Order Router."""
     logger.debug("executor_task: entering")
@@ -579,6 +579,21 @@ async def executor_task(
         # Skip FLAT signals
         if signal.direction == "FLAT":
             logger.debug(f"Skipping FLAT signal for {signal.symbol}")
+            continue
+
+        # Max open positions check (from Telegram settings)
+        try:
+            max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
+        except Exception:
+            max_pos = 5
+        open_positions = await position_store.list_all()
+        if len(open_positions) >= max_pos:
+            logger.warning(
+                f"Max positions ({max_pos}) reached, skipping {signal.symbol}"
+            )
+            metrics.signals_skipped.labels(
+                symbol=signal.symbol, reason="max_positions"
+            ).inc()
             continue
 
         # Check duplicate position

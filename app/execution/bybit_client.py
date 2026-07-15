@@ -379,6 +379,7 @@ class BybitClient:
         symbol: Optional[str] = None,
         limit: int = 50,
         cursor: Optional[str] = None,
+        order_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Fetch order history from Bybit.
 
@@ -390,6 +391,8 @@ class BybitClient:
         params: Dict[str, Any] = {"category": "linear", "limit": limit}
         if symbol:
             params["symbol"] = self._to_bybit_symbol(symbol)
+        if order_id:
+            params["orderId"] = order_id
         if cursor:
             params["cursor"] = cursor
         result = await self._execute(self.session.get_order_history, **params)

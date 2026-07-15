@@ -402,7 +402,24 @@ class CheckpointManager:
 
         try:
             order = await self.client.create_market_order(symbol, close_side, amount)
-            exit_price = Decimal(str(order.get("average", order.get("price", 0))))
+            order_id = order.get("orderId")
+            exit_price = Decimal("0")
+            
+            if order_id:
+                await asyncio.sleep(0.5)  # Wait for fill to settle
+                try:
+                    history = await self.client.get_order_history(symbol=symbol, order_id=order_id)
+                    orders = history.get("orders", [])
+                    if orders:
+                        avg_price = orders[0].get("avgPrice")
+                        if avg_price and float(avg_price) > 0:
+                            exit_price = Decimal(str(avg_price))
+                except Exception as e:
+                    logger.warning(f"Could not fetch exit price for {order_id}: {e}")
+                    
+            if exit_price == 0:
+                exit_price = Decimal(str(order.get("average", order.get("price", 0))))
+                
             if state_manager and exit_price > 0:
                 state_manager.close_position(symbol, exit_price)
             await self.store.remove(symbol, side)
@@ -450,11 +467,11 @@ class CheckpointManager:
                     from app.bot.utils.formatters import format_tp_alert, format_sl_alert, format_breakeven_alert
                     pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
                     if pnl > 0:
-                        await self.alert_service.send(format_tp_alert(symbol, side, exit_price, float(pnl), float(pnl_pct)))
+                        await self.alert_service.send(format_tp_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
                     elif pnl < 0:
-                        await self.alert_service.send(format_sl_alert(symbol, side, exit_price, float(pnl), float(pnl_pct)))
+                        await self.alert_service.send(format_sl_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
                     else:
-                        await self.alert_service.send(format_breakeven_alert(symbol, side, float(exit_price)))
+                        await self.alert_service.send(format_breakeven_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
                 except Exception as ae:
                     logger.error(f"Exit alert failed: {ae}")
         except Exception as e:

@@ -56,7 +56,7 @@ class SignalGenerator:
     def __init__(
         self,
         min_skew: float = 0.3,
-        min_confidence: float = 0.72,
+        min_confidence: float = 0.6,
         position_size: Decimal = Decimal("0.001"),
     ) -> None:
         logger.debug("SignalGenerator.__init__: entering")

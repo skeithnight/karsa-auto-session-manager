@@ -173,7 +173,7 @@ class CryptoAnalyst:
         return result
 
     def _parse_response(self, response: str) -> Optional[AnalystResult]:
-        """Parse AI JSON response into AnalystResult."""
+        """Parse AI JSON response into AnalystResult. Handles both JSON and free-form text."""
         try:
             text = response.strip()
             if text.startswith("```"):
@@ -182,10 +182,37 @@ class CryptoAnalyst:
                     text = text[:-3]
                 text = text.strip()
 
-            data = json.loads(text)
-            direction = data.get("direction", "FLAT").upper()
-            confidence = int(data.get("confidence", 0))
-            reasoning = data.get("reasoning", "")
+            # Try JSON parse first
+            try:
+                data = json.loads(text)
+                direction = data.get("direction", "FLAT").upper()
+                confidence = int(data.get("confidence", 0))
+                reasoning = data.get("reasoning", "")
+            except json.JSONDecodeError:
+                # Reasoning model: extract from free-form text
+                import re
+                direction = "FLAT"
+                confidence = 50
+                reasoning = text[:500]
+
+                text_upper = text.upper()
+                if re.search(r'\b(LONG|BULLISH|BUY)\b', text_upper):
+                    direction = "LONG"
+                elif re.search(r'\b(SHORT|BEARISH|SELL)\b', text_upper):
+                    direction = "SHORT"
+
+                conf_match = re.search(r'confidence[:\s]*(\d+)', text_upper)
+                if conf_match:
+                    confidence = int(conf_match.group(1))
+                else:
+                    if any(w in text_upper for w in ['STRONG', 'HIGH', 'VERY']):
+                        confidence = 70
+                    elif any(w in text_upper for w in ['WEAK', 'LOW', 'UNCERTAIN']):
+                        confidence = 35
+                    elif direction == "FLAT":
+                        confidence = 40
+
+                logger.info(f"Analyst: parsed from reasoning text — dir={direction} conf={confidence}")
 
             if direction not in ("LONG", "SHORT", "FLAT"):
                 direction = "FLAT"
@@ -197,6 +224,6 @@ class CryptoAnalyst:
                 reasoning=reasoning,
                 model_used=self.ai_client.model,
             )
-        except (json.JSONDecodeError, ValueError, KeyError) as e:
+        except (ValueError, KeyError) as e:
             logger.error(f"Analyst parse error: {e}")
             return None

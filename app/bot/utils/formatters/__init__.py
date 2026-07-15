@@ -169,7 +169,7 @@ def get_regime_display(regime: str) -> str:
         return f"{regime} 🟡"
 
 
-def format_tp_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_pct: float) -> str:
+def format_tp_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
     """Format a Take Profit hit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -177,6 +177,7 @@ def format_tp_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
         f"{'Metric':<12} Value\n"
         f"{_sep}\n"
         f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Entry Price':<12} ${format_price(entry_price)}\n"
         f"{'Exit Price':<12} ${format_price(exit_price)}\n"
         f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
@@ -188,7 +189,7 @@ def format_tp_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
     )
 
 
-def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_pct: float) -> str:
+def format_sl_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
     """Format a Stop Loss hit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -196,6 +197,7 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
         f"{'Metric':<12} Value\n"
         f"{_sep}\n"
         f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Entry Price':<12} ${format_price(entry_price)}\n"
         f"{'Exit Price':<12} ${format_price(exit_price)}\n"
         f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
@@ -207,7 +209,7 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
     )
 
 
-def format_breakeven_alert(symbol: str, side: str, exit_price: float) -> str:
+def format_breakeven_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
     """Format a Breakeven / Flat exit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -215,8 +217,9 @@ def format_breakeven_alert(symbol: str, side: str, exit_price: float) -> str:
         f"{'Metric':<12} Value\n"
         f"{_sep}\n"
         f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Entry Price':<12} ${format_price(entry_price)}\n"
         f"{'Exit Price':<12} ${format_price(exit_price)}\n"
-        f"{'PnL':<12} $0.00 (+0.00%)"
+        f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
     return fmt(
         bold("\u2696\ufe0f POSITION CLOSED (BREAKEVEN)"), "\n",

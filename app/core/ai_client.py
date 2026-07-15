@@ -24,7 +24,7 @@ class AIClient:
         router_url: str,
         auth_token: str,
         model: str,
-        timeout_seconds: float = 30.0,
+        timeout_seconds: float = 60.0,
         max_retries: int = 2,
     ) -> None:
         self.router_url = router_url.rstrip("/")
@@ -73,7 +73,8 @@ class AIClient:
                         data = await resp.json()
                         choices = data.get("choices", [])
                         if choices:
-                            content = choices[0].get("message", {}).get("content", "")
+                            msg = choices[0].get("message", {})
+                            content = msg.get("content", "") or msg.get("reasoning_content", "")
                             metrics.ai_analyst_calls.labels(result="success").inc()
                             logger.debug(f"AI complete: model={self.model}")
                             return content

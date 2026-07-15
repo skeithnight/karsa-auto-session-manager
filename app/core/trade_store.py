@@ -285,7 +285,7 @@ class TradeStore:
     ) -> None:
         """Record AI decision for audit trail."""
         try:
-            async with self.db.engine.connect() as conn:
+            async with self.db.engine.begin() as conn:
                 await conn.execute(
                     text(
                         """INSERT INTO ai_decisions (symbol, decision_type, model, input_hash, output_json, latency_ms)
@@ -300,7 +300,6 @@ class TradeStore:
                         "latency_ms": latency_ms,
                     },
                 )
-            await conn.commit()
         except Exception as e:
             metrics.postgres_write_errors.labels(table="ai_decisions").inc()
             logger.error(f"record_ai_decision failed: {e}")

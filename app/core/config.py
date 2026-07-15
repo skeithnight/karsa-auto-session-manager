@@ -35,12 +35,13 @@ class Settings(BaseSettings):
     # Trading
     symbols: List[str] = [
         # Tier 1 — majors ($100M+ daily turnover on Bybit)
-        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT",
+        "BTC/USDT", "ETH/USDT", "SOL/USDT", "XRP/USDT", "TON/USDT",
         # Tier 2 — large caps ($20M+)
         "BNB/USDT", "ADA/USDT", "DOGE/USDT", "AVAX/USDT", "LINK/USDT",
         "SUI/USDT", "NEAR/USDT", "WLD/USDT", "TAO/USDT", "AAVE/USDT",
         "ENA/USDT", "LTC/USDT", "APT/USDT", "ARB/USDT", "BCH/USDT",
-        "UNI/USDT", "ONDO/USDT",
+        "UNI/USDT", "ONDO/USDT", "SHIB/USDT", "TRX/USDT", "PEPE/USDT",
+        "RENDER/USDT", "FET/USDT", "BONK/USDT",
         # Tier 3 — mid caps ($5M+)
         "OP/USDT", "INJ/USDT", "ATOM/USDT", "DOT/USDT",
         "FIL/USDT", "ICP/USDT", "CRV/USDT", "PENDLE/USDT", "SEI/USDT",
@@ -48,14 +49,22 @@ class Settings(BaseSettings):
         "JUP/USDT", "GALA/USDT", "LDO/USDT", "ORDI/USDT",
         "DYDX/USDT", "STX/USDT", "KAS/USDT", "MNT/USDT", "STRK/USDT",
         "BLUR/USDT", "IMX/USDT", "GRT/USDT", "SNX/USDT", "TRB/USDT",
-        "NOT/USDT", "MANA/USDT", "SAND/USDT", "VET/USDT",
+        "NOT/USDT", "MANA/USDT", "SAND/USDT", "VET/USDT", "WIF/USDT",
+        "JTO/USDT", "PYTH/USDT", "W/USDT", "FLOKI/USDT", "MEW/USDT",
+        "RONIN/USDT", "CAKE/USDT", "ALT/USDT", "PIXEL/USDT",
         # Tier 4 — new/trending high-volume
         "FARTCOIN/USDT", "KAITO/USDT", "DEXE/USDT", "VANRY/USDT",
+        "AKE/USDT", "US/USDT", "MAGMA/USDT", "B3/USDT", "PUMPFUN/USDT",
+        "PTB/USDT", "ARC/USDT", "1000XEC/USDT", "ALPINE/USDT", "CRWD/USDT",
+        "UB/USDT", "BOT/USDT", "FIGHT/USDT", "RAVE/USDT", "MET/USDT",
+        "ZEC/USDT", "VELO/USDT", "SKHY/USDT", "BMNR/USDT", "POPCAT/USDT",
+        "MOG/USDT", "MYRO/USDT", "SLERF/USDT", "TURBO/USDT", "NEIRO/USDT",
+        "GOAT/USDT", "ACT/USDT", "PNUT/USDT", "CHILLGUY/USDT",
     ]
 
     # Circuit breaker
     daily_drawdown_limit: str = "-0.02"  # -2%, stored as str for Decimal conversion
-    min_liquidity_usd: str = "500"  # $500 minimum L1 notional depth (L1 typically $200-1500)
+    min_liquidity_usd: str = "10000"  # $10K minimum L1 notional depth
 
     # Watchdog
     dead_mans_switch_url: str = ""

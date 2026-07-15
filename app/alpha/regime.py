@@ -15,8 +15,6 @@ Updates every 15 minutes. Stored in Redis system:config:regime.
 from __future__ import annotations
 
 import math
-from decimal import Decimal
-from typing import Optional
 
 from loguru import logger
 

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.alpha.position_judge import PositionJudge, JudgeVerdict
+from app.alpha.position_judge import PositionJudge
 
 
 @pytest.fixture

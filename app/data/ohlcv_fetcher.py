@@ -49,7 +49,13 @@ class OHLCVFetcher:
 
         # Fetch from exchange
         try:
-            candles = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+            target = symbol
+            if hasattr(self.exchange, "markets") and self.exchange.markets:
+                if symbol not in self.exchange.markets:
+                    swap_symbol = f"{symbol}:USDT"
+                    if swap_symbol in self.exchange.markets:
+                        target = swap_symbol
+            candles = await self.exchange.fetch_ohlcv(target, timeframe, limit=limit)
             self._cache[key] = (time.time(), candles)
             logger.info(f"OHLCV fetched: {symbol} {timeframe} {len(candles)} candles")
             logger.debug(f"fetch: returning list_len={len(candles)}")

@@ -9,18 +9,18 @@
 
 When docs disagree, resolve in this order. If the conflict is a **safety-critical numeric value** (thresholds, timeouts, %), do not pick one — stop and ask. See `CONTEXT.md` §7 for the currently known conflicts.
 
-1. `RISK_AND_RUNBOOK.md` — for anything runtime-safety related (kill switch, circuit breakers, failover, reconciliation behavior)
-2. `DEFINITION_OF_DONE.md` — for what "complete" means on any PR
-3. `DATA_MODEL.md` — for schemas, field names, types. **Never guess a field name or shape — if it's not in this doc, stop and ask rather than inventing it.**
-4. `ARCHITECTURE.md` — for structure, component boundaries, tech stack
-5. `MVP_SCOPE.md` — for what's actually in scope right now (overrides `PRD.md` when they conflict on scope)
-6. `PRD.md` — vision/rationale only; treat as aspirational for anything not also in `MVP_SCOPE.md`
+1. `docs/RISK_AND_RUNBOOK.md` — for anything runtime-safety related (kill switch, circuit breakers, failover, reconciliation behavior)
+2. `docs/DEFINITION_OF_DONE.md` — for what "complete" means on any PR
+3. `docs/DATA_MODEL.md` — for schemas, field names, types. **Never guess a field name or shape — if it's not in this doc, stop and ask rather than inventing it.**
+4. `docs/ARCHITECTURE.md` — for structure, component boundaries, tech stack
+5. `docs/MVP_SCOPE.md` — for what's actually in scope right now (overrides `docs/PRD.md` when they conflict on scope)
+6. `docs/PRD.md` — vision/rationale only; treat as aspirational for anything not also in `docs/MVP_SCOPE.md`
 
 ---
 
 ## 2. Non-Negotiable Rules
 
-Straight from `DEFINITION_OF_DONE.md` §4 ("Definition of NOT Done"). Violating any of these is an automatic reject, not a style nit.
+Straight from `docs/DEFINITION_OF_DONE.md` §4 ("Definition of NOT Done"). Violating any of these is an automatic reject, not a style nit.
 
 | Rule | Detail |
 | :--- | :--- |
@@ -29,7 +29,7 @@ Straight from `DEFINITION_OF_DONE.md` §4 ("Definition of NOT Done"). Violating 
 | No silent failures | `except: pass` is banned. Every caught exception either re-raises, degrades explicitly, or logs to Postgres/Telegram. |
 | No blocking the event loop | `time.sleep()` and blocking `requests` calls are banned inside `asyncio` code. Use `await asyncio.sleep()` / async HTTP clients. |
 | Every position gets an exchange-side SL | The Bybit Executor must place a hard Stop-Loss on the exchange server immediately on fill — not "eventually," not "if convenient." This is the single most safety-critical line of code in the repo. |
-| No guessing field names | Use the strict Pydantic models in `DATA_MODEL.md`. No raw `data['price']`-style dict access outside `app/data/normalizer.py`. |
+| No guessing field names | Use the strict Pydantic models in `docs/DATA_MODEL.md`. No raw `data['price']`-style dict access outside `app/data/normalizer.py`. |
 | AI mandatory in safe positions | Pre-entry CryptoAnalyst and post-entry PositionJudge are not optional. LLM calls only via 9router proxy — never in the execution path (SOR/risk gate). See `docs/review/ai_layer_analysis.md`. |
 
 ---
@@ -94,20 +94,20 @@ tests/                        # see TESTING_STRATEGY.md for full layout
 
 ## 4. Before Writing Any Code
 
-1. Identify which of the 6 Keys (or `core/`) the change touches — read that component's section in `ARCHITECTURE.md` and its checklist in `DEFINITION_OF_DONE.md` §3.
-2. If the change touches a Pydantic model or DB table, cross-check `DATA_MODEL.md` field-for-field. Don't extrapolate a shape.
-3. If the change touches execution, risk gates, or the watchdog, re-read the relevant section of `RISK_AND_RUNBOOK.md` — these are the parts of the system where a plausible-looking shortcut can lose real money.
+1. Identify which of the 6 Keys (or `core/`) the change touches — read that component's section in `docs/ARCHITECTURE.md` and its checklist in `docs/DEFINITION_OF_DONE.md` §3.
+2. If the change touches a Pydantic model or DB table, cross-check `docs/DATA_MODEL.md` field-for-field. Don't extrapolate a shape.
+3. If the change touches execution, risk gates, or the watchdog, re-read the relevant section of `docs/RISK_AND_RUNBOOK.md` — these are the parts of the system where a plausible-looking shortcut can lose real money.
 4. Check `CONTEXT.md` §7 for whether this area of the system has an open doc conflict. If yes, do not silently resolve it — ask.
 
 ---
 
 ## 5. Testing Requirements
 
-Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
+Full detail in `docs/TESTING_STRATEGY.md`. Minimum bar for any PR:
 
 - New logic in `app/alpha/`, `app/risk/`, `app/data/normalizer.py`, or `app/data/filters.py` → unit tests with >90% coverage, including the mandatory edge cases (divide-by-zero, missing exchange, bad tick, empty book).
-- New DB writes → integration test asserting the row matches `DATA_MODEL.md` schema exactly.
-- Anything touching kill switch, circuit breakers, reconciliation, or proxy failover → a corresponding test from `TESTING_STRATEGY.md` §5 must exist and pass. If no such test exists yet for the behavior you're adding, write it — don't skip it.
+- New DB writes → integration test asserting the row matches `docs/DATA_MODEL.md` schema exactly.
+- Anything touching kill switch, circuit breakers, reconciliation, or proxy failover → a corresponding test from `docs/TESTING_STRATEGY.md` §5 must exist and pass. If no such test exists yet for the behavior you're adding, write it — don't skip it.
 - Run locally before claiming done: `pytest`, `ruff check .`, `black --check .`, `mypy --strict app/`.
 
 ---
@@ -116,8 +116,8 @@ Full detail in `TESTING_STRATEGY.md`. Minimum bar for any PR:
 
 - Do not add Grafana, a microservice split, or an LLM in the hot execution path (SOR/risk gate). **AI is mandatory in two safe positions** (pre-entry CryptoAnalyst, post-entry PositionJudge) via 9router proxy — do not make it optional or skippable. See `docs/review/ai_layer_analysis.md` for the latency math.
 - Do not weaken or bypass the Kill Switch, Circuit Breakers, or Startup Reconciliation for convenience during development (e.g., "just comment this out for local testing"). If it needs a dev-mode bypass, that bypass must be explicit, logged, and never the default.
-- Do not invent a Prometheus metric name, Postgres column, or Pydantic field that isn't in `DATA_MODEL.md` or `DEFINITION_OF_DONE.md` §4 without flagging it as a new addition for review.
-- Do not mark something "done" without walking the actual `DEFINITION_OF_DONE.md` checklist for that component — not just "tests pass."
+- Do not invent a Prometheus metric name, Postgres column, or Pydantic field that isn't in `docs/DATA_MODEL.md` or `docs/DEFINITION_OF_DONE.md` §4 without flagging it as a new addition for review.
+- Do not mark something "done" without walking the actual `docs/DEFINITION_OF_DONE.md` checklist for that component — not just "tests pass."
 
 ---
 

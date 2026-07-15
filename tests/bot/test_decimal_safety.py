@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from decimal import Decimal
-import pytest
 
 from app.bot.utils.formatters import format_price, format_position_card
 

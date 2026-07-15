@@ -207,6 +207,25 @@ def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_p
     )
 
 
+def format_breakeven_alert(symbol: str, side: str, exit_price: float) -> str:
+    """Format a Breakeven / Flat exit alert message."""
+    _dash = "\u2500"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block = (
+        f"{'Metric':<12} Value\n"
+        f"{_sep}\n"
+        f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Exit Price':<12} ${format_price(exit_price)}\n"
+        f"{'PnL':<12} $0.00 (+0.00%)"
+    )
+    return fmt(
+        bold("\u2696\ufe0f POSITION CLOSED (BREAKEVEN)"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(block), "\n\n",
+        italic("\U0001f7e4 Position closed with no net profit/loss."),
+    )
+
+
 def format_entry_alert(symbol: str, side: str, price: float, amount: float, sl_price: float) -> str:
     """Format a trade entry + SL placed alert message."""
     _dash = "\u2500"
@@ -239,6 +258,7 @@ __all__ = [
     "get_regime_display",
     "format_tp_alert",
     "format_sl_alert",
+    "format_breakeven_alert",
     "format_entry_alert",
     "TradeHistoryFormatter",
 ]

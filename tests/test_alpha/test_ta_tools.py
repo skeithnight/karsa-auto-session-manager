@@ -1,7 +1,6 @@
 """Tests for TA Tools — deterministic indicators."""
 
 from decimal import Decimal
-import pytest
 from app.alpha.ta_tools import (
     calculate_rsi,
     calculate_bollinger_bands,

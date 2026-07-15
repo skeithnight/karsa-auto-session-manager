@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from decimal import Decimal
 from typing import Dict
 
 import ccxt.pro as ccxt_pro
@@ -83,25 +82,45 @@ class CCXTManager:
 
         logger.debug("start: returning None")
 
-    def get_valid_universe(self, target_symbols: list[str]) -> list[str]:
-        """Return only symbols present on ALL exchanges that loaded markets.
+    def _resolve_symbol(self, symbol: str, exchange_id: str) -> str:
+        """Resolve config symbol (BTC/USDT) to CCXT market symbol (BTC/USDT or BTC/USDT:USDT)."""
+        exchange = self.exchanges.get(exchange_id)
+        if not exchange:
+            return symbol
+        if symbol in exchange.markets:
+            return symbol
+        swap_symbol = f"{symbol}:USDT"
+        if swap_symbol in exchange.markets:
+            return swap_symbol
+        return symbol
 
-        Must be called after start() so markets are loaded.
-        Only validates against exchanges in self.markets_loaded.
+    def get_bybit_universe(self, target_symbols: list[str]) -> list[str]:
+        """Return symbols present on Bybit (authoritative trading venue).
+        Binance/OKX absence does NOT exclude a symbol — they are reference data only.
         """
-        if not self.markets_loaded:
-            logger.error("No exchanges have loaded markets — cannot validate symbols")
+        if "bybit" not in self.markets_loaded:
+            logger.warning("Bybit markets not loaded — cannot validate. Returning all config symbols.")
+            return target_symbols
+        valid = []
+        for symbol in target_symbols:
+            resolved = self._resolve_symbol(symbol, "bybit")
+            if resolved in self.exchanges["bybit"].markets:
+                valid.append(symbol)
+            else:
+                logger.debug(f"Symbol {symbol} not on Bybit, skipping")
+        return valid
+
+    def get_reference_symbols(self, target_symbols: list[str], exchange_id: str) -> list[str]:
+        """Return subset of symbols that also exist on a reference exchange (Binance/OKX).
+        Used by the data engine to know which streams to open for cross-exchange analysis.
+        """
+        if exchange_id not in self.markets_loaded:
             return []
         valid = []
         for symbol in target_symbols:
-            if all(symbol in self.exchanges[eid].markets for eid in self.markets_loaded):
+            resolved = self._resolve_symbol(symbol, exchange_id)
+            if resolved in self.exchanges[exchange_id].markets:
                 valid.append(symbol)
-            else:
-                missing = [
-                    eid for eid in self.markets_loaded
-                    if symbol not in self.exchanges[eid].markets
-                ]
-                logger.debug(f"Symbol {symbol} missing from {missing}, skipping")
         return valid
 
     async def watch_orderbook(self, symbol: str, exchange_id: str) -> dict:
@@ -112,7 +131,8 @@ class CCXTManager:
             raise ValueError(f"Unknown exchange: {exchange_id}")
 
         try:
-            orderbook = await exchange.watch_order_book(symbol)
+            target = self._resolve_symbol(symbol, exchange_id)
+            orderbook = await exchange.watch_order_book(target)
             self.last_update[exchange_id] = datetime.now(timezone.utc)
             logger.debug("watch_orderbook: returning dict")
             return orderbook
@@ -130,7 +150,8 @@ class CCXTManager:
             raise ValueError(f"Unknown exchange: {exchange_id}")
 
         try:
-            trades = await exchange.watch_trades(symbol)
+            target = self._resolve_symbol(symbol, exchange_id)
+            trades = await exchange.watch_trades(target)
             self.last_update[exchange_id] = datetime.now(timezone.utc)
             logger.debug("watch_trades: returning list")
             return trades

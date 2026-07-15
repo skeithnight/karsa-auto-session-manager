@@ -2,9 +2,8 @@
 
 from decimal import Decimal
 
-import pytest
 
-from app.data.normalizer import Normalizer, ExchangeData, GlobalState
+from app.data.normalizer import Normalizer, ExchangeData
 
 
 class TestNormalizer:

@@ -8,7 +8,7 @@
 
 ## 1. Source-of-Truth Order
 
-When docs disagree: `RISK_AND_RUNBOOK.md` > `DEFINITION_OF_DONE.md` > `DATA_MODEL.md` > `ARCHITECTURE.md` > `MVP_SCOPE.md` > `PRD.md`. Safety-critical numeric conflicts → stop and ask. See `CONTEXT.md` §7.
+When docs disagree: `docs/RISK_AND_RUNBOOK.md` > `docs/DEFINITION_OF_DONE.md` > `docs/DATA_MODEL.md` > `docs/ARCHITECTURE.md` > `docs/MVP_SCOPE.md` > `docs/PRD.md`. Safety-critical numeric conflicts → stop and ask. See `CONTEXT.md` §7.
 
 ---
 
@@ -21,7 +21,7 @@ When docs disagree: `RISK_AND_RUNBOOK.md` > `DEFINITION_OF_DONE.md` > `DATA_MODE
 | No silent failures | `except: pass` banned. Log or re-raise. |
 | No blocking event loop | `await asyncio.sleep()` / async HTTP only. |
 | Exchange-side SL on every fill | Immediate on fill — most safety-critical code. |
-| No guessing field names | Use `DATA_MODEL.md` Pydantic models. |
+| No guessing field names | Use `docs/DATA_MODEL.md` Pydantic models. |
 | AI mandatory in safe positions | CryptoAnalyst + PositionJudge via 9router. Not optional. Never in SOR/risk gate. |
 
 ---
@@ -36,9 +36,9 @@ pytest && ruff check . && black --check . && mypy --strict app/
 
 ## 4. Before Writing Code
 
-1. Identify component → read `ARCHITECTURE.md` + `DEFINITION_OF_DONE.md` checklist.
-2. Pydantic model or DB table → cross-check `DATA_MODEL.md` field-for-field.
-3. Execution/risk/watchdog → re-read `RISK_AND_RUNBOOK.md`.
+1. Identify component → read `docs/ARCHITECTURE.md` + `docs/DEFINITION_OF_DONE.md` checklist.
+2. Pydantic model or DB table → cross-check `docs/DATA_MODEL.md` field-for-field.
+3. Execution/risk/watchdog → re-read `docs/RISK_AND_RUNBOOK.md`.
 4. Check `CONTEXT.md` §7 for open conflicts in this area.
 
 ---
@@ -53,8 +53,8 @@ Minimum: >90% unit coverage for alpha/risk/data. Integration tests for DB writes
 
 - No LLM in hot execution path (SOR/risk gate). AI mandatory in safe positions only.
 - No weakening kill switch, circuit breakers, or reconciliation.
-- No inventing metric names/columns/fields not in `DATA_MODEL.md` or `METRICS_DICTIONARY.md`.
-- No marking "done" without walking `DEFINITION_OF_DONE.md` checklist.
+- No inventing metric names/columns/fields not in `docs/DATA_MODEL.md` or `docs/METRICS_DICTIONARY.md`.
+- No marking "done" without walking `docs/DEFINITION_OF_DONE.md` checklist.
 
 ---
 
@@ -67,11 +67,11 @@ Minimum: >90% unit coverage for alpha/risk/data. Integration tests for DB writes
 | `REDIS_OWNERSHIP.md` | Single-writer per key |
 | `AI_INTERFACE.md` | AI request/response schemas |
 | `CONFIGURATION.md` | Config hierarchy + reload semantics |
-| `DATA_RETENTION.md` | Storage lifecycle |
-| `OWNERSHIP.md` | Domain object ownership |
-| `ADR/` | Architecture decision records (8 ADRs) |
-| `METRICS_DICTIONARY.md` | Prometheus metric names |
-| `TELEGRAM_INTERFACE.md` | Bot commands + alerts |
+| `docs/DATA_RETENTION.md` | Storage lifecycle |
+| `docs/OWNERSHIP.md` | Domain object ownership |
+| `docs/ADR/` | Architecture decision records (8 ADRs) |
+| `docs/METRICS_DICTIONARY.md` | Prometheus metric names |
+| `docs/TELEGRAM_INTERFACE.md` | Bot commands + alerts |
 
 ## graphify
 

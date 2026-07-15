@@ -21,13 +21,12 @@ import json
 import logging
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
 from app.core.config import get_settings
-from app.bot.utils.format import HTML, bold, italic, code, pre, fmt, join
+from app.bot.utils.format import HTML, bold, italic, pre, fmt
 from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
 
 logger = logging.getLogger(__name__)
@@ -901,7 +900,7 @@ async def _move_sl_to_be(update: Update, context: ContextTypes.DEFAULT_TYPE, sym
     except Exception as exc:
         logger.error("move_sl_be_failed", extra={"symbol": symbol, "error": str(exc)})
         await _reply(update, f"❌ Move SL to BE failed: {exc}")
-    logger.debug(f"_move_sl_to_be: returning None")
+    logger.debug("_move_sl_to_be: returning None")
 
 
 async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, symbol: str):
@@ -928,13 +927,13 @@ async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, sy
         size = Decimal(str(pos.get("contracts", pos.get("size", 0))))
         close_side = "Sell" if side == "Buy" else "Buy"
 
-        await bybit.place_order(symbol=symbol, side=close_side, order_type="Market", qty=str(size))
+        await bybit.create_market_order(symbol=symbol, side=close_side, amount=size)
         await _reply(update, f"\U0001f3c3 <b>{symbol}</b> position closed (Market {close_side})", reply_markup=build_main_keyboard())
 
     except Exception as exc:
         logger.error("close_position_failed", extra={"symbol": symbol, "error": str(exc)})
         await _reply(update, f"\u274c Failed to close {symbol}: {exc}")
-    logger.debug(f"_close_position: returning None")
+    logger.debug("_close_position: returning None")
 
 
 

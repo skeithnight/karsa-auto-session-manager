@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 
 from app.bot.utils.format import bold, italic, code, pre, fmt, join, HTML
 

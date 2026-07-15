@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -83,8 +83,8 @@ class TestStateManager:
 
         result = await state_manager.reconcile()
 
-        # ponytail: allow startup without Bybit private API (return True, reconciled stays False)
-        assert result is True
+        # return False to prevent duplicate risk
+        assert result is False
         assert state_manager.reconciled is False
 
     def test_update_position_new(self, state_manager):

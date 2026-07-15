@@ -44,12 +44,16 @@ def _is_authorized(update: Update) -> bool:
 When no autonomous session is running:
 
 ```
-🤖 Karsa Auto Session Manager
+⚙️ SYSTEM DASHBOARD
 
-📊 System: Idle
-💰 Wallet: $10,000.00
-📈 Positions: 0
+DB 🟢   Redis 🟢   Bybit 🟢   VPN 🟢
 
+Balance   $ 10,000.00
+Available $ 10,000.00
+Deployed  $      0.00  [░░░░░░░░░░░░] 0.0%
+
+Session  ⚫ IDLE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [🚀 LAUNCH NEW SESSION]
 [📜 Trade History]  [⚙️ Settings]
 [🎛️ Control Panel]  [💼 Positions]
@@ -60,14 +64,16 @@ When no autonomous session is running:
 When autonomous session is running:
 
 ```
-🤖 Karsa Auto Session Manager
+⚙️ SYSTEM DASHBOARD
 
-📊 System: Running | Regime: TREND_BULL
-💰 Wallet: $10,142.50 (+1.43%)
-📈 Positions: 2 | Daily PnL: +$142.50
+DB 🟢   Redis 🟢   Bybit 🟢   VPN 🟢
 
-Session: 14h 32m remaining
+Balance   $ 10,142.50
+Available $  6,142.50
+Deployed  $  4,000.00  [█████░░░░░░░] 39.4%
 
+Session  🟢 ACTIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 [📊 Dashboard]  [📋 Activity]
 [💼 Portfolio]  [🎛️ Control Panel]
 [⚙️ Settings]   [📜 History]
@@ -121,17 +127,8 @@ Session: 14h 32m remaining
 ```
 🌐 Active Universe
 
-Last refresh: 3m ago
-Active symbols: 12 / 60
-
-Top 5 by score:
-  1. BTC/USDT  — 87 (vol:30 mom:25 sq:22 pen:0) [L1]
-  2. ETH/USDT  — 82 (vol:28 mom:22 sq:22 pen:0) [L1]
-  3. SOL/USDT  — 74 (vol:24 mom:20 sq:20 pen:0) [L2]
-  4. DOGE/USDT — 68 (vol:20 mom:18 sq:20 pen:0) [L3]
-  5. ARB/USDT  — 61 (vol:18 mom:15 sq:18 pen:0) [L4]
-
-Sectors: L1=2/2  L2=2/2  L3=1/2  L4=1/2
+BTC/USDT  ETH/USDT  SOL/USDT  DOGE/USDT ARB/USDT
+OP/USDT   LINK/USDT AVAX/USDT MATIC/USDT ADA/USDT
 
 [🔄 Force Refresh]  [🔙 Back to Dashboard]
 ```
@@ -153,34 +150,50 @@ Sectors: L1=2/2  L2=2/2  L3=1/2  L4=1/2
 
 ### 4.2 Activity Feed (`cmd_activity`)
 
-**Purpose:** Live feed of recent signals and closed trades.
-**Status:** Stub — requires signal/trade tables (pending DATA_MODEL.md §7 sign-off).
+**Purpose:** Live feed of recent signals and closed trades from Redis event stream.
 
-**Current behavior:** Shows placeholder message with back button.
+**Layout:**
+```
+📋 LIVE ACTIVITY FEED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Session  🟢 ACTIVE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📌 Last Events
+  • 10:24  AI Signal Rejected (Funding divergence)
+  • 10:22  Position Closed: ETH/USDT (+1.2%)
+  • 10:15  New Position: SOL/USDT (LONG)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️ Full event log active once trade tables are wired
+
+[🔄 Refresh]
+[💼 Positions] [📜 History]
+[🔙 Dashboard]
+```
 
 ---
 
 ### 4.3 Portfolio (`cmd_portfolio`)
 
 **Purpose:** Open positions fetched live from Bybit.
-**Data source:** `bybit.get_positions()` + `global:state:{symbol}` for current prices.
+**Data source:** `bybit.fetch_positions()` + `karsa:position:{symbol}:{side}` for duration.
 
 **Layout:**
 ```
-💼 Open Positions
+💼 POSITIONS  ·  2 open
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-┌─ BTC/USDT:USDT ─────────────┐
-│ Side: LONG                  │
-│ Size: 0.001 BTC             │
-│ Entry: $64,250.00           │
-│ Current: $64,890.00         │
-│ PnL: +$0.64 (+1.00%)       │
-│ SL: $64,100.00              │
-└─────────────────────────────┘
+Sym   Side  Qty    Entry     uPnL   Dur
+───────────────────────────────────────
+BTC   L     0.001  64,250.00 🟢$+0.64 2h
+ETH   S     0.5    3,450.00  🔴$-1.20 45m
 
-💰 Total Unrealized PnL: +$0.64
+Net uPnL  🔴 $-0.56
+Win Rate  [████████░░░░]  50.0%  1/2
 
-[🔙 Back to Dashboard]
+[📈 Position Detail] [🔄 Refresh]
+[🎛️ Control Panel] [📜 History]
+[🔙 Dashboard]
 ```
 
 ---
@@ -193,16 +206,23 @@ Sectors: L1=2/2  L2=2/2  L3=1/2  L4=1/2
 **Layout:**
 ```
 🎛️ DESK CONTROL PANEL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-System State:
-Global Halt: 🟢 INACTIVE
-Cooldown: 🟢 INACTIVE
-Trade Alerts: 🔔 ON
+System State
+Global Halt   🟢 INACTIVE
+Cooldown      🟢 INACTIVE
+Trade Alerts  🔔 ON
 
-Select an operation below.
+Risk Gates
+Max Positions  3
+Regime Filter  ON  ✅
+AI Analyst     MANDATORY 🔒
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚠️  Emergency actions below are IRREVERSIBLE
 
 [🚨 HALT]  [💸 SELL ALL]
-[▶️ RESUME]  [🔙 Back]
+[▶️ RESUME]  [⚙️ Settings]
 ```
 
 **Actions:**
@@ -221,18 +241,20 @@ Select an operation below.
 
 **Layout:**
 ```
-⚙️ Settings
+⚙️ BOT SETTINGS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Max Positions: 3
-Risk Profile: Conservative
-Regime Filter: ✅ Enabled
-Trade Alerts: 🔔 Enabled
+Parameter              Value  Cycle
+─────────────────────────────────────────────
+Max Open Positions     3      [3 · 5 · 8]
+Regime Filter          ON     [ON · OFF]
+Trade Alerts           ON     [ON · OFF]
 
-[Max Positions: 3 ▼]
-[Risk Profile ▼]
-[Regime Filter: ON]
-[Alerts: ON]
-[🔙 Back]
+Tap a button below to cycle the value.
+
+[📂 Max Pos: 3] [📊 Regime: ON]
+[🔔 Alerts: ON] [🎛️ Control Panel]
+[🔙 Dashboard]
 ```
 
 **Callback actions:**
@@ -250,13 +272,18 @@ Trade Alerts: 🔔 Enabled
 
 **Layout:**
 ```
-📜 Trade History
+📜 TRADE HISTORY  (Page 1/3)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-Page 1/3
+1. BTC/USDT (L)     🟢 $+12.50 (1.20%)
+   2h 15m           2026-07-15 14:30
+2. ETH/USDT (S)     🔴 $-5.30 (-0.87%)
+   45m              2026-07-15 11:20
 
-1. BTC/USDT LONG +$0.64 (1.00%) — 2h 15m
-2. ETH/USDT SHORT -$0.30 (-0.87%) — 45m
-3. SOL/USDT LONG +$1.20 (2.40%) — 3h 10m
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Trades    20W / 10L  ·  Total: 30
+Win Rate  [██████████░░░░░]  66.7%
+Net PnL   🟢 $+145.20  ·  Avg: $+4.84
 
 [◀️ Prev]  [Page 1/3]  [Next ▶️]
 [🔙 Back]
@@ -271,16 +298,28 @@ Page 1/3
 
 **Layout:**
 ```
-📈 Position Detail
+📈 POSITION DETAIL
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 Allocation
+Equity  $ 10,142.50  |  Positions: 2
+Cash    $  6,142.50  [█████████░░░░░░] 60.6%
+Deployed $  4,000.00  [██████░░░░░░░░░] 39.4%
 
-BTC/USDT:USDT LONG
-Entry: $64,250.00 | Current: $64,890.00
-PnL: +$0.64 (+1.00%)
-SL: $64,100.00 | TP: $65,500.00
-Duration: 2h 15m
+1. BTC/USDT (LONG) 🟢
+┣ Entry: $64,250.00 → Mark: $64,890.00
+┣ Size: 0.001  |  Liq: $0.00
+┗ PnL: 🟢 $+0.64 (+1.00%)
+  📊 Alloc: █████░░░░░ 25.0%
+  SL: $64,100.00  |  TP: $65,500.00
+  📉 Risk to SL: -0.23%  |  R:R: 1:8.3
 
-[Move SL to BE]  [Close Position]
-[🔙 Back]
+[🏃 Close BTC/USDT] [🛡️ SL→BE BTC/USDT]
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💡 SL→BE shifts Stop Loss to Entry Price — risk-free.
+
+[🔄 Refresh] [📊 Table View]
+[🔙 Dashboard]
 ```
 
 **Actions:**
@@ -325,24 +364,30 @@ Alerts are sent as standalone messages (not edits). Priority levels:
 
 ### 5.1 Trade Alerts
 
-**Position Opened:**
+**Position Opened (Entry Filled):**
 ```
-📈 Position Opened
-
-Symbol: BTC/USDT:USDT
-Side: LONG | Size: 0.001 BTC
-Entry: $64,250.00
-Confidence: 78.2%
-Latency: 342ms
+✅ ENTRY FILLED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Metric       Value
+────────────────────────────────
+Symbol       BTC/USDT (Buy)
+Fill Price   $64,250.00
+Size         0.001
+Stop Loss    $64,100.00
+Max Loss     $1.00
 ```
 
-**Position Closed:**
+**Position Closed (Take Profit / Stop Loss):**
 ```
-📉 Position Closed
+🎯 TAKE PROFIT HIT 🎯
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Metric       Value
+────────────────────────────────
+Symbol       BTC/USDT (Buy)
+Exit Price   $65,500.00
+PnL          $+1.25 (+1.95%)
 
-Symbol: BTC/USDT:USDT
-PnL: +$0.64 (+1.00%)
-Duration: 2h 15m
+🟢 Position closed in profit.
 ```
 
 ### 5.2 System Alerts

@@ -5,7 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 from datetime import datetime, timezone, timedelta
 
-import pytest
 
 from app.risk.circuit_breaker import CircuitBreaker
 

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.alpha.analyst import CryptoAnalyst, AnalystResult
+from app.alpha.analyst import CryptoAnalyst
 
 
 @pytest.fixture

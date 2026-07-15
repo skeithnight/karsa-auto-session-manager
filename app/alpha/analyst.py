@@ -25,7 +25,6 @@ from app.alpha.ta_tools import (
     calculate_atr,
     calculate_ema,
 )
-from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -95,7 +94,7 @@ class CryptoAnalyst:
         funding_rate: float,
         oi_change: float,
         price: Decimal,
-        redis_client: Any = None,
+        recent_trades: str = "",
     ) -> Optional[AnalystResult]:
         """Run AI analysis on an ambiguous signal. Returns None if unavailable."""
         cache_key = f"analyst:{symbol}:{int(time.time()) // self.cache_ttl}"
@@ -146,6 +145,8 @@ class CryptoAnalyst:
             funding_rate=funding_rate,
             oi_change=oi_change,
         )
+        if recent_trades:
+            prompt = recent_trades + "\n\n" + prompt
 
         response = await self.ai_client.complete(prompt, max_tokens=256)
         if not response:

@@ -40,6 +40,8 @@ class PositionStore:
         amount: Decimal,
         sl_order_id: Optional[str] = None,
         atr: Optional[Decimal] = None,
+        entry_confidence: Optional[float] = None,
+        regime: Optional[str] = None,
     ) -> None:
         """Save new position state."""
         key = self._key(symbol, side)
@@ -51,6 +53,8 @@ class PositionStore:
             "peak_price": str(entry_price),
             "sl_order_id": sl_order_id or "",
             "atr": str(atr) if atr else "",
+            "entry_confidence": str(entry_confidence) if entry_confidence is not None else "",
+            "regime": regime or "",
             "checkpoint": "OPEN",
             "entered_at": datetime.now(timezone.utc).isoformat(),
             "last_check_at": datetime.now(timezone.utc).isoformat(),

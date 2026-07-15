@@ -12,15 +12,28 @@ class TradeHistoryFormatter:
 
     @staticmethod
     def format_trade(trade) -> str:
-        """Format a single trade as pure Unicode text."""
-        pnl = float(trade.realized_pnl_pct or 0)
-        icon = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
-        pnl_str = f"+{pnl:.2f}%" if pnl >= 0 else f"{pnl:.2f}%"
-        ts = trade.exit_date.strftime("%m-%d %H:%M") if trade.exit_date else "?"
-        reason = str(trade.exit_reason or "N/A")
+        """Format a single trade dict as pure Unicode text."""
+        # Support both dict (from TradeStore.get_history) and object access
+        if isinstance(trade, dict):
+            pnl_raw = float(trade.get("pnl") or 0)
+            entry_price = float(trade.get("entry_price") or 0)
+            amount = float(trade.get("amount") or 0)
+            cost = entry_price * amount
+            pnl_pct = (pnl_raw / cost * 100) if cost > 0 else 0.0
+            symbol = trade.get("symbol", "?")
+            exit_time = trade.get("exit_time")
+            reason = str(trade.get("exit_reason") or "N/A")
+        else:
+            pnl_pct = float(getattr(trade, "realized_pnl_pct", 0) or 0)
+            symbol = getattr(trade, "ticker", "?")
+            exit_time = getattr(trade, "exit_date", None)
+            reason = str(getattr(trade, "exit_reason", None) or "N/A")
+        icon = "\U0001f7e2" if pnl_pct >= 0 else "\U0001f534"
+        pnl_str = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
+        ts = exit_time.strftime("%m-%d %H:%M") if exit_time else "?"
         if len(reason) > 100:
             reason = reason[:97] + "..."
-        return f"{icon} {trade.ticker:<10} {pnl_str:<8} {ts}\n   \u2514\u2500 {reason}"
+        return f"{icon} {symbol:<10} {pnl_str:<8} {ts}\n   \u2514\u2500 {reason}"
 
     @staticmethod
     def build_keyboard(current_page: int, total_pages: int) -> InlineKeyboardMarkup:

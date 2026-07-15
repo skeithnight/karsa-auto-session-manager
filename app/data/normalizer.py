@@ -60,7 +60,7 @@ class Normalizer:
                 asks=asks,
                 timestamp=datetime.now(timezone.utc),
             )
-            logger.debug(f"normalize_orderbook: returning ExchangeData")
+            logger.debug("normalize_orderbook: returning ExchangeData")
             return result
         except (InvalidOperation, TypeError) as e:
             logger.error(f"Failed to normalize orderbook from {exchange_id}: {e}")

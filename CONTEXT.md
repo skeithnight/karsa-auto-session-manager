@@ -8,7 +8,7 @@
 
 An autonomous crypto perpetuals trading bot that reads market data from multiple exchanges (Binance, OKX, Bybit) to build a "true" global price picture, but only ever *trades* on Bybit — because Bybit requires a proxy (geo-restriction) and multi-venue execution would compound that latency into a fatal flaw. To make the proxy latency irrelevant, the strategy trades 15m–4h swing/intraday structure instead of HFT. Everything runs as a single Python `asyncio` process (not microservices) specifically to avoid internal state-sync bugs on top of an already-fragile external proxy dependency.
 
-Currently: **design phase.** All seven core docs are marked "Approved/Locked" except `ROADMAP.md`, which is empty, and `PRD.md`, which is marked "Draft/Approved."
+Currently: **Phase 5 code complete.** Core docs in `docs/` are marked "Approved/Locked" except `ROADMAP.md`, which has a delivery plan, and `PRD.md`, which is marked "Draft/Approved."
 
 ---
 
@@ -70,15 +70,15 @@ Note: `app/core/session.py` (Session Orchestrator, UTC time-block regime logic) 
 
 | Doc | Purpose | Status |
 | :--- | :--- | :--- |
-| `PRD.md` | Product vision, full V1.0/V1.1 target state, "6 Keys" as originally conceived | Draft/Approved |
-| `ARCHITECTURE.md` | System design, component breakdown, tech stack, folder structure | Approved/Locked |
-| `DATA_MODEL.md` | Exact schemas — Postgres DDL, Redis keys, Pydantic models | Approved/Locked |
-| `MVP_SCOPE.md` | What's actually being built first, phased delivery plan, explicit out-of-scope list | Approved/Locked |
-| `DEFINITION_OF_DONE.md` | Quality gates every PR must pass | Approved/Locked |
-| `RISK_AND_RUNBOOK.md` | Kill switch, circuit breakers, failover, disaster recovery, operator playbook | Approved/Locked |
-| `ROADMAP.md` | Phased delivery plan (Phase 0–8), AI integration sub-phases | Draft |
-| `TELEGRAM_INTERFACE.md` | Telegram bot command specs, alert system, security model | Draft |
-| `TESTING_STRATEGY.md` | How each safety/behavior claim gets verified | Draft (this delivery) |
+| `docs/PRD.md` | Product vision, full V1.0/V1.1 target state, "6 Keys" as originally conceived | Draft/Approved |
+| `docs/ARCHITECTURE.md` | System design, component breakdown, tech stack, folder structure | Approved/Locked |
+| `docs/DATA_MODEL.md` | Exact schemas — Postgres DDL, Redis keys, Pydantic models | Approved/Locked |
+| `docs/MVP_SCOPE.md` | What's actually being built first, phased delivery plan, explicit out-of-scope list | Approved/Locked |
+| `docs/DEFINITION_OF_DONE.md` | Quality gates every PR must pass | Approved/Locked |
+| `docs/RISK_AND_RUNBOOK.md` | Kill switch, circuit breakers, failover, disaster recovery, operator playbook | Approved/Locked |
+| `docs/ROADMAP.md` | Phased delivery plan (Phase 0–8), AI integration sub-phases | Draft |
+| `docs/TELEGRAM_INTERFACE.md` | Telegram bot command specs, alert system, security model | Draft |
+| `docs/TESTING_STRATEGY.md` | How each safety/behavior claim gets verified | Draft (this delivery) |
 | `CLAUDE.md` | AI-agent working rules for this repo | Draft (this delivery) |
 
 ---
@@ -130,7 +130,7 @@ Code authoritative at **-2%** (`Decimal("-0.02")`). All docs now updated to matc
 ## 8. Current Status
 
 - **Phase:** Phase 5 code complete. Testnet skipped — deploying to live Bybit with $1 max loss cap per position.
-- **Test suite:** 222 tests passing, 0 failures.
+- **Test suite:** 250+ tests passing, 0 failures.
 - **AI Layer:** MANDATORY. Pre-entry CryptoAnalyst + post-entry PositionJudge via 9router proxy. Not optional toggles.
 - **Multi-exchange:** Binance + OKX + Bybit via CCXT Pro WebSocket. Cross-exchange VWAP + lead-lag are ASM's structural edge.
 - **Full trade lifecycle (6 stages):** Universe Selection → Regime Detection → Signal Generation (with AI) → Risk Gate → SOR Execution → Post-Entry (trailing stop + checkpoints + AI judge).

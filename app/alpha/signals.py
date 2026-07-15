@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from loguru import logger
 
-from app.alpha.metrics import AlphaMetrics
 from app.alpha.regime import REGIME_CHOP
 
 
@@ -57,7 +56,7 @@ class SignalGenerator:
     def __init__(
         self,
         min_skew: float = 0.3,
-        min_confidence: float = 0.5,
+        min_confidence: float = 0.72,
         position_size: Decimal = Decimal("0.001"),
     ) -> None:
         logger.debug("SignalGenerator.__init__: entering")
@@ -124,9 +123,11 @@ class SignalGenerator:
             s_funding = max(-1.0, min(1.0, -funding_rate / 0.0003))
 
         # OI: binary — rising = 1.0, falling = -1.0
+        # Dead-band: require meaningful OI change (>0.1% relative) to avoid noise
+        OI_DEAD_BAND = 0.001   # 0.1% minimum relative OI change
         s_oi = 0.0
-        if oi_change is not None:
-            s_oi = 1.0 if oi_change > 0 else -1.0 if oi_change < 0 else 0.0
+        if oi_change is not None and abs(oi_change) > OI_DEAD_BAND:
+            s_oi = 1.0 if oi_change > 0 else -1.0
 
         # --- Composite confidence (regime-dependent weights) ---
         w_skew, w_lead_lag, w_funding, w_oi = self.REGIME_WEIGHTS.get(
@@ -142,22 +143,43 @@ class SignalGenerator:
         confidence = abs(raw_score)
 
         # Direction from skew (primary), lead-lag contradiction penalizes (not kills)
+        LEAD_LAG_HARD_KILL = 0.5   # strong contradiction → no trade
+
         if s_skew > 0:
             direction = "LONG"
-            if s_lead_lag < -0.3:
+            if s_lead_lag < -LEAD_LAG_HARD_KILL:
+                from app.core import metrics as m
+                m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
+                logger.debug(f"Signal {symbol}: lead-lag KILL LONG (s_ll={s_lead_lag:.2f})")
+                return None
+            elif s_lead_lag < -0.3:
                 raw_score *= 0.7
                 logger.debug(
                     f"Signal {symbol}: lead-lag contradicts LONG — penalized 0.7x"
                 )
         elif s_skew < 0:
             direction = "SHORT"
-            if s_lead_lag > 0.3:
+            if s_lead_lag > LEAD_LAG_HARD_KILL:
+                from app.core import metrics as m
+                m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
+                logger.debug(f"Signal {symbol}: lead-lag KILL SHORT (s_ll={s_lead_lag:.2f})")
+                return None
+            elif s_lead_lag > 0.3:
                 raw_score *= 0.7
                 logger.debug(
                     f"Signal {symbol}: lead-lag contradicts SHORT — penalized 0.7x"
                 )
         else:
             direction = "FLAT"
+
+        # In MEAN_REVERSION: direction is contrarian to skew (buy exhaustion, sell euphoria)
+        if regime == "MEAN_REVERSION":
+            if s_skew < -0.3 and s_funding > 0.2:   # oversold + positive funding → LONG
+                direction = "LONG"
+            elif s_skew > 0.3 and s_funding < -0.2:  # overbought + negative funding → SHORT
+                direction = "SHORT"
+            else:
+                direction = "FLAT"   # insufficient conviction in MR → no trade
 
         # Apply regime multiplier
         regime_mult = self.REGIME_MULTIPLIERS.get(regime, 1.0) if regime else 1.0
@@ -199,5 +221,5 @@ class SignalGenerator:
         logger.info(
             f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}"
         )
-        logger.debug(f"generate: returning TradingSignal")
+        logger.debug("generate: returning TradingSignal")
         return signal

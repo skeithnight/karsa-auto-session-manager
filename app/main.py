@@ -98,7 +98,7 @@ import signal
 import sys
 import time
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -122,6 +122,7 @@ from app.execution.sor import SmartOrderRouter
 from app.execution.position_lifecycle import TrailingStopManager, CheckpointManager
 from app.core.position_store import PositionStore
 from app.core.trade_store import TradeStore
+from app.core.trade_reconciler import TradeReconciler
 from app.risk.gates import RiskGate
 from app.risk.circuit_breaker import CircuitBreaker
 from app.risk.sector_cap import SectorCap
@@ -243,15 +244,26 @@ async def data_engine_task(
 ) -> None:
     """Key 1: Ingest global market data from exchanges concurrently."""
     logger.debug("data_engine_task: entering")
-    exchanges = ["binance", "okx", "bybit"]
+    # Bybit: all valid symbols (authoritative)
+    bybit_symbols = symbols
+    # Binance/OKX: only symbols they also list (for lead-lag and skew enrichment)
+    binance_symbols = ccxt_manager.get_reference_symbols(symbols, "binance")
+    okx_symbols = ccxt_manager.get_reference_symbols(symbols, "okx")
+
+    streams = (
+        [(_s, "bybit") for _s in bybit_symbols] +
+        [(_s, "binance") for _s in binance_symbols] +
+        [(_s, "okx") for _s in okx_symbols]
+    )
     logger.info(
-        f"Data Engine starting — {len(symbols)} symbols × {len(exchanges)} exchanges = {len(symbols) * len(exchanges)} streams"
+        f"Data Engine starting — bybit={len(bybit_symbols)}, "
+        f"binance={len(binance_symbols)}, okx={len(okx_symbols)} streams"
     )
 
     await asyncio.gather(
         *[
             _stream_orderbook(
-                symbol,
+                sym,
                 eid,
                 ccxt_manager,
                 normalizer,
@@ -259,8 +271,7 @@ async def data_engine_task(
                 redis_client,
                 lead_lag_buffer,
             )
-            for symbol in symbols
-            for eid in exchanges
+            for sym, eid in streams
         ],
         return_exceptions=True,
     )
@@ -277,14 +288,32 @@ async def alpha_bridge_task(
     signal_queue: asyncio.Queue,
     multi_tf: MultiTFFilter,
     crypto_analyst: Optional[CryptoAnalyst],
-    ohlcv_fetcher: Optional[OHLCVFetcher] = None,
+    ohlcv_fetcher: Optional[Any] = None,
     position_store: Optional[PositionStore] = None,
+    trade_memory: Optional[Any] = None,
 ) -> None:
     """Key 2: Generate trading signals from market state."""
     logger.debug("alpha_bridge_task: entering")
     logger.info("Alpha Bridge starting...")
+    _signal_cooldown: dict[str, float] = {}
+    SIGNAL_COOLDOWN_SECONDS = 45
+    _loop_count = 0
 
     while not kill_switch.is_set():
+        _loop_count += 1
+        if _loop_count % 100 == 0:
+            try:
+                raw_univ = await redis_client.redis.get("system:universe:symbols")
+                if raw_univ:
+                    import json as _json
+                    universe_data = _json.loads(raw_univ)
+                    refreshed = universe_data.get("symbols", [])
+                    if refreshed:
+                        symbols = refreshed
+                        logger.info(f"Alpha bridge universe refreshed: {len(symbols)} symbols")
+            except Exception as _ue:
+                logger.warning(f"Universe refresh read failed: {_ue}")
+
         if alpha_paused.is_set():
             logger.warning("Alpha Bridge paused — stale data")
             await asyncio.sleep(5)
@@ -308,7 +337,15 @@ async def alpha_bridge_task(
                     )
 
                     # Read regime from Redis (set by regime_engine_task)
-                    regime = await redis_client.get_session_config()
+                    raw_regime = await redis_client.get_session_config()
+                    regime = "CHOP"
+                    if raw_regime:
+                        import json
+                        try:
+                            parsed_regime = json.loads(raw_regime)
+                            regime = parsed_regime.get("regime", "CHOP") if isinstance(parsed_regime, dict) else str(parsed_regime)
+                        except json.JSONDecodeError:
+                            regime = str(raw_regime)
 
                     # Entry quality filter (Phase 3)
                     best_bid = state.get("best_bid")
@@ -377,30 +414,32 @@ async def alpha_bridge_task(
                         signal.atr = atr_val
                     if signal:
                         metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
-                        # Multi-TF confirmation: 4H EMA penalty if contradicts
+                        # Multi-TF confirmation: hard block if 4H trend contradicts
                         if signal.direction in ("LONG", "SHORT"):
                             mtf = await multi_tf.check(symbol, signal.direction)
-                            if mtf["penalty_applied"] < 1:
+                            if mtf.get("blocked", False):
+                                logger.info(
+                                    f"Multi-TF BLOCK {symbol}: {signal.direction} contradicts 4H trend — skipping"
+                                )
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="multi_tf_blocked"
+                                ).inc()
+                                continue
+                            elif mtf["penalty_applied"] < 1:
                                 signal.confidence *= float(mtf["penalty_applied"])
                                 logger.info(
                                     f"Multi-TF penalty {symbol}: {mtf['penalty_applied']}x → conf={signal.confidence:.3f}"
                                 )
 
                         # AI analyst — ambiguous confidence zone only (0.55-0.85)
-                        if crypto_analyst and 0.55 <= signal.confidence < 0.85:
+                        if crypto_analyst and signal.confidence >= 0.55:
+                            logger.info(f"AI Analyst validating {signal.symbol} signal")
+                            trade_ctx = await trade_memory.get_prompt_context(symbol=signal.symbol, regime=regime or None)
                             analyst_result = await crypto_analyst.analyze(
                                 symbol=signal.symbol,
                                 direction=signal.direction,
                                 confidence=signal.confidence,
-                                regime=regime or "UNKNOWN",
-                                spread_pct=(
-                                    spread_pct if spread_pct is not None else 0.0
-                                ),
-                                funding_rate=(
-                                    funding_float if funding_float is not None else 0.0
-                                ),
-                                oi_change=oi_change if oi_change is not None else 0.0,
-                                price=Decimal(str(state.get("global_vwap", "0"))),
+                                recent_trades=trade_ctx,
                             )
                             if analyst_result:
                                 # Blend: 50% deterministic + 50% AI
@@ -428,8 +467,14 @@ async def alpha_bridge_task(
                         metrics.signal_confidence.labels(symbol=symbol).observe(
                             float(signal.confidence)
                         )
-                        signal._generated_at = time.time()
+                        now_ts = time.time()
+                        if now_ts - _signal_cooldown.get(signal.symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
+                            logger.debug(f"Signal cooldown active for {signal.symbol}, skipping")
+                            continue
+                        _signal_cooldown[signal.symbol] = now_ts
+                        signal._generated_at = now_ts
                         await signal_queue.put(signal)
+                        logger.debug(f"alpha_bridge_task: queued {signal.symbol}")
                     else:
                         metrics.signals_skipped.labels(
                             symbol=symbol, reason="low_confidence"
@@ -540,7 +585,7 @@ async def regime_engine_task(
                     f"Regime updated: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})"
                 )
             else:
-                logger.warning(f"Insufficient candles for regime: {len(candles)}")
+                logger.warning(f"Insufficient candles for regime: {len(candles_1h)}")
         except Exception as e:
             logger.error(f"Regime Engine error: {e}")
 
@@ -573,10 +618,16 @@ async def executor_task(
             continue
 
         # ASM gate — skip execution when no active session
+        dynamic_risk = risk_pct
         try:
             if not await session_manager.is_active():
                 logger.debug(f"ASM inactive — skipping signal {signal.symbol}")
                 continue
+
+            # Fetch dynamic risk from session config
+            config = await session_manager.get_config()
+            if config and "risk_pct" in config:
+                dynamic_risk = Decimal(str(config["risk_pct"])) / Decimal("100")
         except Exception as e:
             logger.warning(f"ASM check failed: {e} — skipping signal for safety")
             continue
@@ -628,14 +679,14 @@ async def executor_task(
             logger.warning(f"No live price for {signal.symbol}, skipping")
             continue
 
-        # Position sizing: risk_pct of available balance / entry price
+        # Position sizing: dynamic_risk of available balance / entry price
         try:
             wallet = await bybit_client.get_wallet_balance()
             available = wallet.get("available", Decimal("0"))
             if available <= 0:
                 logger.warning(f"No available balance, skipping {signal.symbol}")
                 continue
-            amount = (available * risk_pct) / price
+            amount = (available * dynamic_risk) / price
             # Enforce Bybit's $5 USDT minimum order value
             order_value = amount * price
             if order_value < Decimal("5"):
@@ -661,6 +712,7 @@ async def executor_task(
                 side=side_str,
                 amount=amount,
                 price=price,
+                price_tick=bybit_client._price_ticks.get(signal.symbol, Decimal("0.01")),
             )
             exec_latency_ms = int((time.time() - exec_start) * 1000)
 
@@ -669,6 +721,18 @@ async def executor_task(
                     f"SOR fill: {signal.symbol} {signal.direction} latency={exec_latency_ms}ms"
                 )
                 # Register position in store for trailing stop + checkpoint management
+                # Record trade entry in Postgres first to get regime
+                raw_regime_data = await redis_client.get_session_config()
+                regime = "UNKNOWN"
+                if raw_regime_data:
+                    import json
+                    try:
+                        parsed_regime_data = json.loads(raw_regime_data)
+                        regime = parsed_regime_data.get("regime", "UNKNOWN") if isinstance(parsed_regime_data, dict) else str(parsed_regime_data)
+                    except json.JSONDecodeError:
+                        regime = str(raw_regime_data)
+
+                # Save position to Redis
                 await position_store.save(
                     symbol=signal.symbol,
                     side=side_str,
@@ -676,11 +740,8 @@ async def executor_task(
                     amount=amount,
                     sl_order_id=result.get("sl_order_id"),
                     atr=getattr(signal, "atr", None),
-                )
-                # Record trade entry in Postgres
-                regime_data = await redis_client.get_session_config()
-                regime = (
-                    regime_data.get("regime", "UNKNOWN") if regime_data else "UNKNOWN"
+                    entry_confidence=signal.confidence,
+                    regime=regime,
                 )
                 await trade_store.record_entry(
                     symbol=signal.symbol,
@@ -709,6 +770,60 @@ async def watchdog_task(watchdog: Watchdog, redis_client: RedisClient) -> None:
     logger.debug("watchdog_task: entering")
     await watchdog.start()
     logger.debug("watchdog_task: returning None")
+
+
+async def position_reconciler_task(
+    bybit_client: BybitClient,
+    position_store: PositionStore,
+    interval_seconds: int = 300,
+) -> None:
+    """Periodic Bybit-Redis reconciliation. Removes stale Redis positions."""
+    logger.debug("position_reconciler_task: entering")
+    reverse_map = {v: k for k, v in bybit_client._symbol_map.items()}
+    while not kill_switch.is_set():
+        try:
+            bybit_positions = await bybit_client.fetch_positions()
+            bybit_set = set()
+            for p in bybit_positions:
+                ccxt_sym = reverse_map.get(p["symbol"], p["symbol"])
+                bybit_set.add(f"{ccxt_sym}:{p['side']}")
+
+            redis_positions = await position_store.list_all()
+            for pos in redis_positions:
+                key = f"{pos['symbol']}:{pos['side']}"
+                if key not in bybit_set:
+                    logger.warning(f"Reconciler: stale {key} — removing (not on Bybit)")
+                    await position_store.remove(pos["symbol"], pos["side"])
+                    metrics.reconciler_stale_removed.labels(symbol=pos["symbol"]).inc()
+                else:
+                    logger.debug(f"Reconciler: {key} OK")
+        except Exception as e:
+            logger.error(f"Position reconciler error: {e}")
+        await asyncio.sleep(interval_seconds)
+    logger.debug("position_reconciler_task: returning")
+
+
+async def trade_history_reconciler_task(
+    reconciler: TradeReconciler,
+    interval_seconds: int = 900,
+) -> None:
+    """Periodic trade history reconciliation with Bybit executions."""
+    logger.debug("trade_history_reconciler_task: entering")
+    await asyncio.sleep(60)  # Let bot settle after startup
+    while not kill_switch.is_set():
+        try:
+            report = await reconciler.reconcile()
+            metrics.trade_reconcile_cycles.inc()
+            metrics.trade_reconcile_fills_checked.inc(report.bybit_fills_checked)
+            for d in report.discrepancies:
+                metrics.trade_reconcile_discrepancies.labels(kind=d.kind).inc()
+                if d.repaired:
+                    metrics.trade_reconcile_repairs.labels(kind=d.kind).inc()
+        except Exception as e:
+            logger.error(f"Trade reconciler error: {e}")
+            metrics.trade_reconcile_errors.labels(error_type=type(e).__name__).inc()
+        await asyncio.sleep(interval_seconds)
+    logger.debug("trade_history_reconciler_task: returning")
 
 
 async def universe_refresh_task(
@@ -822,9 +937,12 @@ async def main() -> None:
     )
     dead_mans_switch = DeadMansSwitch()
     session_manager = AutonomousSessionManager(redis_client, kill_switch)
-    ohlcv_fetcher = OHLCVFetcher(ccxt_manager.exchanges["binance"])
+    ohlcv_fetcher = OHLCVFetcher(ccxt_manager.exchanges["bybit"])
     lead_lag_buffer = LeadLagBuffer()
-    entry_filter = EntryFilter()
+    entry_filter = EntryFilter(
+        min_atr=0.008,         # require real volatility, skip dead markets
+        max_spread_pct=0.001,  # 0.1% max spread — cuts micro-cap noise
+    )
 
     # AI client + analyst (off hot-path, safe per CLAUDE.md Rule 7)
     ai_client = AIClient(
@@ -838,13 +956,25 @@ async def main() -> None:
 
     position_store = PositionStore(redis_client)
     trade_store = TradeStore(db_engine)
-    trailing_stop = TrailingStopManager(position_store, bybit_client)
+    trade_memory = TradeMemory(redis_client)
+    trade_reconciler = TradeReconciler(bybit_client, trade_store, alert_service)
+    # Backfill trade history from Bybit on startup (one-time sync)
+    try:
+        backfilled = await trade_reconciler.backfill_from_bybit()
+        if backfilled:
+            logger.info(f"Backfilled {backfilled} trades from Bybit closed PnL")
+    except Exception as e:
+        logger.warning(f"Trade backfill failed (non-fatal): {e}")
+    trailing_stop = TrailingStopManager(position_store, bybit_client, max_loss_usd=Decimal("1.00"))
     checkpoint_mgr = CheckpointManager(
         position_store,
         bybit_client,
+        hard_fail_30min_pct=Decimal("-0.035"),
+        hard_fail_ever_pct=Decimal("-0.05"),
         position_judge=position_judge,
         trade_store=trade_store,
         alert_service=alert_service,
+        trade_memory=trade_memory,
     )
 
     # Phase 4.5 modules
@@ -894,6 +1024,18 @@ async def main() -> None:
                         amount=amount,
                     )
                     logger.info(f"Synced missing position to Redis: {ccxt_sym} {side}")
+                    # Record in Postgres so trade_store stays in sync
+                    try:
+                        await trade_store.record_entry(
+                            symbol=ccxt_sym,
+                            side=side,
+                            amount=amount,
+                            entry_price=entry_price,
+                        )
+                    except Exception as te:
+                        logger.warning(
+                            f"Trade store record_entry failed for synced {ccxt_sym}: {te}"
+                        )
     except Exception as e:
         logger.warning(f"Position sync failed (non-fatal): {e}")
 
@@ -902,17 +1044,17 @@ async def main() -> None:
 
     # Validate symbol universe — keep only symbols present on all 3 exchanges
     # Fall back to raw config if no exchange markets were loaded (VPN down etc.)
-    validated = ccxt_manager.get_valid_universe(settings.symbols)
+    validated = ccxt_manager.get_bybit_universe(settings.symbols)
     if validated:
         valid_symbols = validated
         dropped = len(settings.symbols) - len(valid_symbols)
         if dropped:
             logger.warning(
-                f"Dropped {dropped} symbols not available on all exchanges. {len(valid_symbols)} remaining."
+                f"Dropped {dropped} symbols not available on Bybit. {len(valid_symbols)} remaining."
             )
         else:
             logger.info(
-                f"All {len(valid_symbols)} symbols validated across all exchanges."
+                f"All {len(valid_symbols)} config symbols validated on Bybit."
             )
     else:
         valid_symbols = settings.symbols
@@ -967,6 +1109,7 @@ async def main() -> None:
                 crypto_analyst,
                 ohlcv_fetcher,
                 position_store,
+                trade_memory,
             )
         ),
         asyncio.create_task(
@@ -1014,6 +1157,12 @@ async def main() -> None:
                 kill_switch, lambda s: _get_price(redis_client, s), state_manager
             )
         ),
+        asyncio.create_task(
+            position_reconciler_task(bybit_client, position_store, interval_seconds=300)
+        ),
+        asyncio.create_task(
+            trade_history_reconciler_task(trade_reconciler, interval_seconds=900)
+        ),
     ]
 
     task_names = [
@@ -1029,6 +1178,8 @@ async def main() -> None:
         "regime_engine_task",
         "trailing_stop",
         "checkpoint_mgr",
+        "position_reconciler",
+        "trade_history_reconciler",
     ]
     for t, name in zip(tasks, task_names):
         t.set_name(name)

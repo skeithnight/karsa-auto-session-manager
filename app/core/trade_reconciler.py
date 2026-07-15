@@ -432,32 +432,64 @@ class TradeReconciler:
         for t in closed_trades:
             closed_index.setdefault(t["symbol"], []).append(t)
 
+        # Group Bybit closed PnL records by (symbol, position_side) to combine partial fills
+        grouped: Dict[str, List[Dict[str, Any]]] = {}
         for r in bybit_records:
             bybit_sym = r.get("symbol", "")
             ccxt_sym = reverse_map.get(bybit_sym, bybit_sym)
             if ccxt_sym.endswith("USDT") and "/" not in ccxt_sym:
                 ccxt_sym = ccxt_sym[:-4] + "/USDT"
 
-            bybit_pnl = _safe_decimal(r.get("closedPnl", "0"))
-            
             # Bybit closedPnl side is the closing order's side. Invert to get position side.
             closing_side = _normalize_side(r.get("side", ""))
             side = "Buy" if closing_side == "Sell" else "Sell"
+            
+            key = f"{ccxt_sym}:{side}"
+            grouped.setdefault(key, []).append(r)
+
+        matched_local_ids = set()
+
+        for key, records in grouped.items():
+            ccxt_sym, side = key.split(":")
+            
+            total_pnl = Decimal("0")
+            total_qty = Decimal("0")
+            weighted_entry = Decimal("0")
+            weighted_exit = Decimal("0")
+            
+            for r in records:
+                qty = _safe_decimal(r.get("qty", "0"))
+                pnl = _safe_decimal(r.get("closedPnl", "0"))
+                entry = _safe_decimal(r.get("avgEntryPrice", "0"))
+                exit_price = _safe_decimal(r.get("avgExitPrice", "0"))
+                
+                total_pnl += pnl
+                total_qty += qty
+                weighted_entry += qty * entry
+                weighted_exit += qty * exit_price
+                
+            if total_qty > 0:
+                avg_entry = weighted_entry / total_qty
+                avg_exit = weighted_exit / total_qty
+            else:
+                avg_entry = Decimal("0")
+                avg_exit = Decimal("0")
 
             # Check if there's an open local trade that should be closed
             open_candidates = open_index.get(ccxt_sym, [])
             for t in open_candidates:
-                if _normalize_side(t["side"]) == side:
+                if _normalize_side(t["side"]) == side and t.get("id") not in matched_local_ids:
+                    matched_local_ids.add(t.get("id"))
                     discrepancies.append(
                         Discrepancy(
                             kind="missing_exit",
                             symbol=ccxt_sym,
                             side=side,
                             bybit_data={
-                                "closed_pnl": str(bybit_pnl),
-                                "avg_entry_price": r.get("avgEntryPrice", ""),
-                                "avg_exit_price": r.get("avgExitPrice", ""),
-                                "qty": r.get("qty", ""),
+                                "closed_pnl": str(total_pnl),
+                                "avg_entry_price": str(avg_entry),
+                                "avg_exit_price": str(avg_exit),
+                                "qty": str(total_qty),
                             },
                             local_trade_id=t.get("id"),
                             severity="CRITICAL",
@@ -468,17 +500,21 @@ class TradeReconciler:
                 # No open trade found — check PnL match on closed trades
                 closed_candidates = closed_index.get(ccxt_sym, [])
                 for t in closed_candidates:
+                    if _normalize_side(t["side"]) != side or t.get("id") in matched_local_ids:
+                        continue
+                        
                     local_pnl = _safe_decimal(t.get("pnl", "0"))
-                    if bybit_pnl != Decimal("0") and local_pnl != Decimal("0"):
-                        diff = abs(local_pnl - bybit_pnl) / abs(bybit_pnl)
+                    if total_pnl != Decimal("0") and local_pnl != Decimal("0"):
+                        diff = abs(local_pnl - total_pnl) / abs(total_pnl)
                         if diff > self.PNL_TOLERANCE:
+                            matched_local_ids.add(t.get("id"))
                             discrepancies.append(
                                 Discrepancy(
                                     kind="pnl_mismatch",
                                     symbol=ccxt_sym,
                                     side=side,
                                     bybit_data={
-                                        "bybit_pnl": str(bybit_pnl),
+                                        "bybit_pnl": str(total_pnl),
                                         "local_pnl": str(local_pnl),
                                     },
                                     local_trade_id=t.get("id"),

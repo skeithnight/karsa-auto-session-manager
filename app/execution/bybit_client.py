@@ -22,6 +22,7 @@ from app.core.config import get_settings
 def _safe_decimal(value: Any, default: str = "0") -> Decimal:
     """Convert value to Decimal safely."""
     from decimal import DecimalException
+
     try:
         return Decimal(str(value)) if value is not None else Decimal(default)
     except (ValueError, TypeError, DecimalException):
@@ -37,10 +38,14 @@ class BybitClient:
         self.session: Optional[HTTP] = None
         self.connected: bool = False
         self._lock = asyncio.Lock()
+        self._symbol_map: Dict[str, str] = {}  # ccxt symbol → bybit symbol
+        self._lot_sizes: Dict[str, Decimal] = {}  # ccxt symbol → lot size step
+        self._min_qty: Dict[str, Decimal] = {}  # ccxt symbol → min order qty
+        self._price_ticks: Dict[str, Decimal] = {}  # ccxt symbol → price tick size
         logger.debug("BybitClient.__init__: returning")
 
     async def connect(self) -> None:
-        """Initialize pybit HTTP session."""
+        """Initialize pybit HTTP session and build symbol mapping."""
         logger.debug("connect: entering")
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
@@ -49,7 +54,43 @@ class BybitClient:
         )
         self.connected = True
         mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
-        logger.info(f"Bybit connected via pybit ({mode})")
+        # Build symbol map: ccxt "PEPE/USDT" → bybit "1000PEPEUSDT"
+        try:
+            resp = await asyncio.to_thread(
+                self.session.get_instruments_info, category="linear"
+            )
+            if resp.get("retCode") == 0:
+                for inst in resp["result"]["list"]:
+                    bybit_sym = inst["symbol"]
+                    if not bybit_sym.endswith("USDT"):
+                        continue  # skip PERP contracts
+                    base = bybit_sym.removesuffix("USDT")
+                    # Strip leading multiplier digits: 1000PEPE → PEPE
+                    i = 0
+                    while i < len(base) and base[i].isdigit():
+                        i += 1
+                    token = base[i:] if i > 0 else base
+                    if not token:  # skip pure-numeric symbols like "4USDT"
+                        continue
+                    ccxt_sym = f"{token}/USDT"
+                    self._symbol_map[ccxt_sym] = bybit_sym
+                    # Store lot size and min qty for order rounding
+                    lot_filter = inst.get("lotSizeFilter", {})
+                    ls = lot_filter.get("qtyStep", "1")
+                    mq = lot_filter.get("minOrderQty", "1")
+                    self._lot_sizes[ccxt_sym] = Decimal(str(ls))
+                    self._min_qty[ccxt_sym] = Decimal(str(mq))
+                    
+                    price_filter = inst.get("priceFilter", {})
+                    ts = price_filter.get("tickSize", "0.01")
+                    self._price_ticks[ccxt_sym] = Decimal(str(ts))
+                logger.info(
+                    f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped"
+                )
+            else:
+                logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
+        except Exception as e:
+            logger.warning(f"Symbol map fetch failed: {e}, using naive mapping")
         logger.debug("connect: returning None")
 
     async def disconnect(self) -> None:
@@ -59,6 +100,28 @@ class BybitClient:
         self.session = None
         logger.info("Bybit disconnected")
         logger.debug("disconnect: returning None")
+
+    def _to_bybit_symbol(self, symbol: str) -> str:
+        """Convert ccxt symbol to Bybit format (handles 1000x prefixes)."""
+        if symbol in self._symbol_map:
+            return self._symbol_map[symbol]
+        return symbol.replace("/", "")
+
+    def _round_qty(self, symbol: str, qty: Decimal) -> Decimal:
+        """Round quantity to Bybit's lot size step, enforce minimum."""
+        lot = self._lot_sizes.get(symbol, Decimal("1"))
+        min_q = self._min_qty.get(symbol, Decimal("1"))
+        if lot > 0:
+            qty = (qty / lot).to_integral_value() * lot
+        return max(qty, min_q)
+
+    def _round_price(self, symbol: str, price: Decimal) -> Decimal:
+        """Round price to Bybit's tick size."""
+        tick = self._price_ticks.get(symbol, Decimal("0.01"))
+        if tick > 0:
+            price = (price / tick).quantize(Decimal("1")) * tick
+            price = max(price, tick)
+        return price
 
     async def _execute(self, func, *args, **kwargs) -> dict:
         """Run sync pybit call in thread with retry and timeout."""
@@ -100,7 +163,7 @@ class BybitClient:
         result = await self._execute(
             self.session.set_leverage,
             category="linear",
-            symbol=symbol,
+            symbol=self._to_bybit_symbol(symbol),
             buyLeverage=str(leverage),
             sellLeverage=str(leverage),
         )
@@ -121,17 +184,19 @@ class BybitClient:
             raise RuntimeError("Bybit not connected")
         order_params = {
             "category": "linear",
-            "symbol": symbol,
+            "symbol": self._to_bybit_symbol(symbol),
             "side": side.capitalize(),
             "orderType": "Limit",
-            "qty": str(amount),
-            "price": str(price),
+            "qty": str(self._round_qty(symbol, amount)),
+            "price": str(self._round_price(symbol, price)),
             "timeInForce": "PostOnly",
         }
         if params:
             order_params.update(params)
         result = await self._execute(self.session.place_order, **order_params)
-        logger.info(f"Limit order placed: {result.get('orderId')} {side} {amount} @ {price}")
+        logger.info(
+            f"Limit order placed: {result.get('orderId')} {side} {amount} @ {price}"
+        )
         return result
 
     async def create_market_order(
@@ -147,10 +212,10 @@ class BybitClient:
             raise RuntimeError("Bybit not connected")
         order_params = {
             "category": "linear",
-            "symbol": symbol,
+            "symbol": self._to_bybit_symbol(symbol),
             "side": side.capitalize(),
             "orderType": "Market",
-            "qty": str(amount),
+            "qty": str(self._round_qty(symbol, amount)),
         }
         if params:
             order_params.update(params)
@@ -166,7 +231,7 @@ class BybitClient:
         result = await self._execute(
             self.session.cancel_order,
             category="linear",
-            symbol=symbol,
+            symbol=self._to_bybit_symbol(symbol),
             orderId=order_id,
         )
         logger.info(f"Order cancelled: {order_id}")
@@ -187,12 +252,12 @@ class BybitClient:
             raise ValueError("Price required for amend")
         params: Dict[str, Any] = {
             "category": "linear",
-            "symbol": symbol,
+            "symbol": self._to_bybit_symbol(symbol),
             "orderId": order_id,
-            "price": str(price),
+            "price": str(self._round_price(symbol, price)),
         }
         if amount is not None:
-            params["qty"] = str(amount)
+            params["qty"] = str(self._round_qty(symbol, amount))
         result = await self._execute(self.session.amend_order, **params)
         logger.info(f"Order amended: {order_id} -> {price}")
         return result
@@ -228,7 +293,9 @@ class BybitClient:
                 "balance": balance_data.get("total", Decimal("0")),
                 "available": balance_data.get("free", Decimal("0")),
             }
-            logger.info(f"get_wallet_balance: balance={result['balance']} available={result['available']}")
+            logger.info(
+                f"get_wallet_balance: balance={result['balance']} available={result['available']}"
+            )
             return result
         except Exception as e:
             logger.error(f"get_wallet_balance: error={e}")
@@ -282,6 +349,79 @@ class BybitClient:
         logger.debug(f"fetch_open_orders: returning list_len={len(orders)}")
         return orders
 
+    async def get_executions(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch execution/fill history from Bybit.
+
+        Returns {"executions": list[dict], "cursor": str|None}.
+        Each execution: execId, symbol, side, execPrice, execQty, execTime, orderId, execFee.
+        """
+        logger.debug(f"get_executions: entering symbol={symbol}")
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        params: Dict[str, Any] = {"category": "linear", "limit": limit}
+        if symbol:
+            params["symbol"] = self._to_bybit_symbol(symbol)
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._execute(self.session.get_executions, **params)
+        executions = result.get("list", [])
+        next_cursor = result.get("nextPageCursor") or None
+        logger.debug(f"get_executions: returning {len(executions)} fills")
+        return {"executions": executions, "cursor": next_cursor}
+
+    async def get_order_history(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch order history from Bybit.
+
+        Returns {"orders": list[dict], "cursor": str|None}.
+        """
+        logger.debug(f"get_order_history: entering symbol={symbol}")
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        params: Dict[str, Any] = {"category": "linear", "limit": limit}
+        if symbol:
+            params["symbol"] = self._to_bybit_symbol(symbol)
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._execute(self.session.get_order_history, **params)
+        orders = result.get("list", [])
+        next_cursor = result.get("nextPageCursor") or None
+        logger.debug(f"get_order_history: returning {len(orders)} orders")
+        return {"orders": orders, "cursor": next_cursor}
+
+    async def get_closed_pnl(
+        self,
+        symbol: Optional[str] = None,
+        limit: int = 50,
+        cursor: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Fetch closed PnL records from Bybit.
+
+        Returns {"closed_pnl": list[dict], "cursor": str|None}.
+        """
+        logger.debug(f"get_closed_pnl: entering symbol={symbol}")
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        params: Dict[str, Any] = {"category": "linear", "limit": limit}
+        if symbol:
+            params["symbol"] = self._to_bybit_symbol(symbol)
+        if cursor:
+            params["cursor"] = cursor
+        result = await self._execute(self.session.get_closed_pnl, **params)
+        records = result.get("list", [])
+        next_cursor = result.get("nextPageCursor") or None
+        logger.debug(f"get_closed_pnl: returning {len(records)} records")
+        return {"closed_pnl": records, "cursor": next_cursor}
+
     async def place_stop_loss(
         self,
         symbol: str,
@@ -293,19 +433,24 @@ class BybitClient:
 
         CLAUDE.md Rule 5: Every position MUST get an exchange-side SL immediately on fill.
         """
-        logger.debug(f"place_stop_loss: entering symbol={symbol} side={side} stop_price={stop_price}")
+        logger.debug(
+            f"place_stop_loss: entering symbol={symbol} side={side} stop_price={stop_price}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         close_side = "Sell" if side == "buy" else "Buy"
         result = await self._execute(
             self.session.place_order,
             category="linear",
-            symbol=symbol,
+            symbol=self._to_bybit_symbol(symbol),
             side=close_side,
             orderType="Market",
-            qty=str(amount),
-            stopLoss=str(stop_price),
+            qty=str(self._round_qty(symbol, amount)),
+            triggerPrice=str(self._round_price(symbol, stop_price)),
+            triggerDirection=2 if close_side == "Sell" else 1,
             tpslMode="Full",
+            reduceOnly=True,
+            timeInForce="GTC",
         )
         logger.info(f"Stop-loss placed: {result.get('orderId')} @ {stop_price}")
         return result
@@ -319,7 +464,9 @@ class BybitClient:
         amount: Decimal,
     ) -> Optional[Dict[str, Any]]:
         """Amend existing stop-loss order. Cancels old, places new."""
-        logger.debug(f"amend_stop_loss: entering order_id={order_id} new_price={new_price}")
+        logger.debug(
+            f"amend_stop_loss: entering order_id={order_id} new_price={new_price}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         try:
@@ -336,5 +483,7 @@ class BybitClient:
         Returns empty list; order tracking done via polling fetch_open_orders.
         """
         logger.debug(f"watch_orders: entering symbol={symbol}")
-        logger.warning("watch_orders: pybit HTTP does not support WebSocket order streaming; use fetch_open_orders polling")
+        logger.warning(
+            "watch_orders: pybit HTTP does not support WebSocket order streaming; use fetch_open_orders polling"
+        )
         return []

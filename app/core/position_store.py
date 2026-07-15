@@ -40,6 +40,8 @@ class PositionStore:
         amount: Decimal,
         sl_order_id: Optional[str] = None,
         atr: Optional[Decimal] = None,
+        entry_confidence: Optional[float] = None,
+        regime: Optional[str] = None,
     ) -> None:
         """Save new position state."""
         key = self._key(symbol, side)
@@ -51,6 +53,8 @@ class PositionStore:
             "peak_price": str(entry_price),
             "sl_order_id": sl_order_id or "",
             "atr": str(atr) if atr else "",
+            "entry_confidence": str(entry_confidence) if entry_confidence is not None else "",
+            "regime": regime or "",
             "checkpoint": "OPEN",
             "entered_at": datetime.now(timezone.utc).isoformat(),
             "last_check_at": datetime.now(timezone.utc).isoformat(),
@@ -124,3 +128,35 @@ class PositionStore:
                 except Exception:
                     pass
         return positions
+
+    async def cleanup_stale(self, exchange_symbols: set[str]) -> int:
+        """Remove position keys for symbols no longer held on exchange.
+
+        Args:
+            exchange_symbols: set of Bybit-format symbols (e.g. "BTCUSDT") from fetch_positions().
+
+        Returns:
+            Number of orphaned keys removed.
+        """
+        keys = await self.redis.redis.keys("karsa:position:*")
+        removed = 0
+        for key in keys:
+            key_str = key if isinstance(key, str) else key.decode()
+            raw = await self.redis.redis.get(key)
+            if not raw:
+                await self.redis.redis.delete(key_str)
+                removed += 1
+                continue
+            try:
+                pos = json.loads(raw)
+                sym = pos.get("symbol", "")
+                # Convert ccxt format (BTC/USDT) to Bybit format (BTCUSDT)
+                bybit_sym = sym.replace("/", "")
+                if bybit_sym not in exchange_symbols:
+                    await self.redis.redis.delete(key_str)
+                    logger.info(f"Cleaned orphaned position: {sym} {pos.get('side', '')}")
+                    removed += 1
+            except Exception:
+                await self.redis.redis.delete(key_str)
+                removed += 1
+        return removed

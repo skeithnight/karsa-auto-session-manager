@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import time
 
-import pytest
 
 from app.alpha.lead_lag_buffer import LeadLagBuffer
 

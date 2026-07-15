@@ -113,7 +113,11 @@ regime_hurst = Gauge(
 )
 regime_adx = Gauge(
     "karsa_regime_adx",
-    "ADX value",
+    "ADX value (1H)",
+)
+regime_adx_4h = Gauge(
+    "karsa_regime_adx_4h",
+    "ADX value (4H) — debug AND-gate visibility",
 )
 
 # ── Watchdog ────────────────────────────────────────────────
@@ -331,6 +335,13 @@ position_pnl = Histogram(
     buckets=[-50, -20, -10, -5, -1, 0, 1, 5, 10, 20, 50, 100],
 )
 
+# ── Critical Task Liveness ───────────────────────────────────
+critical_task_dead = Gauge(
+    "karsa_critical_task_dead",
+    "Critical task liveness (1=dead, 0=alive)",
+    ["task"],
+)
+
 # ── Circuit Breaker ──────────────────────────────────────────
 circuit_breaker_trips = Counter(
     "karsa_circuit_breaker_trips_total",
@@ -350,4 +361,36 @@ ai_call_latency = Histogram(
     "AI service call latency",
     ["service"],
     buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0],
+)
+
+# ── Position Reconciler ──────────────────────────────────────
+reconciler_stale_removed = Counter(
+    "karsa_reconciler_stale_removed_total",
+    "Stale positions removed by reconciler",
+    ["symbol"],
+)
+
+# ── Trade Reconciler ─────────────────────────────────────────
+trade_reconcile_cycles = Counter(
+    "karsa_trade_reconcile_cycles_total",
+    "Trade history reconciliation cycles completed",
+)
+trade_reconcile_fills_checked = Counter(
+    "karsa_trade_reconcile_fills_checked_total",
+    "Bybit fill records checked by reconciler",
+)
+trade_reconcile_discrepancies = Counter(
+    "karsa_trade_reconcile_discrepancies_total",
+    "Trade discrepancies found by reconciler",
+    ["kind"],
+)
+trade_reconcile_repairs = Counter(
+    "karsa_trade_reconcile_repairs_total",
+    "Trades auto-repaired by reconciler",
+    ["kind"],
+)
+trade_reconcile_errors = Counter(
+    "karsa_trade_reconcile_errors_total",
+    "Trade reconciliation cycle errors",
+    ["error_type"],
 )

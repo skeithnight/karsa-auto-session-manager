@@ -8,7 +8,6 @@ Runs in CheckpointManager when position is in ambiguous zone.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
@@ -23,7 +22,6 @@ from app.alpha.ta_tools import (
     calculate_atr,
     calculate_ema,
 )
-from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -121,6 +119,8 @@ class PositionJudge:
         elapsed_seconds: float,
         prev_action: str = "NONE",
         prev_conf: int = 0,
+        recent_trades: str = "",
+        is_checkpoint_review: bool = False,
     ) -> Optional[JudgeVerdict]:
         """Judge an open position. Returns None if AI unavailable."""
         pnl_pct = float((current_price - entry_price) / entry_price * 100)
@@ -130,8 +130,9 @@ class PositionJudge:
         hold_key = f"{symbol}:{side}"
         hold_count = self._hold_counters.get(hold_key, 0)
 
-        # Forced exit after 3 consecutive HOLDs on loser
-        if hold_count >= 3 and pnl_pct < 0:
+        max_holds = 2 if is_checkpoint_review else 3
+        # Forced exit after consecutive HOLDs on loser
+        if hold_count >= max_holds and pnl_pct < 0:
             metrics.ai_consecutive_hold_exits.inc()
             metrics.ai_judge_verdict.labels(symbol=symbol, verdict="EXIT", tier="forced").inc()
             logger.warning(f"PositionJudge: forced EXIT {symbol} {side} after {hold_count} HOLDs, pnl={pnl_pct:.2f}%")
@@ -162,7 +163,7 @@ class PositionJudge:
 
         escalated = await self._escalated_pass(
             symbol, side, entry_price, current_price, peak_price, atr, regime,
-            elapsed_seconds, prev_action, prev_conf, hold_count,
+            elapsed_seconds, prev_action, prev_conf, hold_count, recent_trades,
         )
 
         if escalated:
@@ -215,7 +216,7 @@ class PositionJudge:
 
     async def _escalated_pass(
         self, symbol, side, entry_price, current_price, peak_price, atr, regime,
-        elapsed_seconds, prev_action, prev_conf, hold_count,
+        elapsed_seconds, prev_action, prev_conf, hold_count, recent_trades="",
     ) -> Optional[JudgeVerdict]:
         """Full TA pass with escalated model."""
         candles = await self.fetcher.fetch(symbol, "1h", 200)
@@ -284,6 +285,8 @@ class PositionJudge:
             prev_conf=prev_conf,
             hold_count=hold_count,
         )
+        if recent_trades:
+            prompt = recent_trades + "\n\n" + prompt
 
         response = await self.ai_client.complete(prompt, max_tokens=256)
         if not response:

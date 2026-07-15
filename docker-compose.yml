@@ -17,12 +17,11 @@ services:
     container_name: karsa-9router
     restart: unless-stopped
     env_file: .env
-    ports:
-      - "127.0.0.1:20129:20128"
+    network_mode: "service:gluetun"
+    depends_on:
+      - gluetun
     volumes:
       - 9router_data:/app/data
-    networks:
-      - karsa
 
   gluetun:
     image: qmcgaw/gluetun
@@ -47,6 +46,7 @@ services:
     ports:
       - "8000:8000"
       - "8001:8001"
+      - "127.0.0.1:20129:20128"  # 9router dashboard (shares gluetun network)
     healthcheck:
       disable: true
     restart: unless-stopped

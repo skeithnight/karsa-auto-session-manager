@@ -48,6 +48,9 @@ class Watchdog:
         self._high_lag_streak: int = 0
         self._max_lag_streak: int = 3  # 3 consecutive >100ms = 30s sustained
 
+        # Critical task liveness registry
+        self._critical_tasks: Dict[str, asyncio.Task] = {}
+
         logger.debug("Watchdog.__init__: returning")
 
     async def start(self) -> None:
@@ -96,6 +99,7 @@ class Watchdog:
         await self._check_heartbeat()
         await self._check_event_loop_lag()
         self._check_latency()
+        self._check_critical_tasks()
         logger.debug("_check_health: returning None")
 
     async def _check_heartbeat(self) -> None:
@@ -172,6 +176,22 @@ class Watchdog:
             if self.sor.skip_to_market:
                 logger.info(f"Latency recovered: {avg:.1f}s — SOR resuming normal routing")
                 self.sor.skip_to_market = False
+
+    def register_critical_task(self, name: str, task: asyncio.Task) -> None:
+        """Register a critical task for liveness monitoring."""
+        self._critical_tasks[name] = task
+        metrics.critical_task_dead.labels(task=name).set(0)
+        logger.info(f"Watchdog registered critical task: {name}")
+
+    def _check_critical_tasks(self) -> None:
+        """Check all critical tasks are alive. Set metric + log on death."""
+        for name, task in self._critical_tasks.items():
+            if task.done():
+                metrics.critical_task_dead.labels(task=name).set(1)
+                exc = task.exception() if not task.cancelled() else None
+                logger.critical(f"Critical task DEAD: {name} exc={exc}")
+            else:
+                metrics.critical_task_dead.labels(task=name).set(0)
 
     def get_status(self) -> Dict[str, Any]:
         """Get watchdog status."""

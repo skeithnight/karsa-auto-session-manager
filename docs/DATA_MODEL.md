@@ -299,6 +299,6 @@ These keys are read and written by `app/bot/handlers.py`. They use `decode_respo
 | `karsa:settings:regime_filter` | String | None | `"1"` (enabled) / `"0"` (disabled) | Regime filter preference |
 | `karsa:state:risk_profile` | String | None | `"conservative"` / `"semi_aggressive"` / `"aggressive"` | Active risk profile name |
 
-> **Note:** The `karsa:auto:*` keys are written by the Autonomous Session Manager (ASM). The ASM is not yet fully ported — these keys are documented here so handlers can read them safely once ASM is available.
+> **Note:** The `karsa:auto:*` keys are written by the Autonomous Session Manager (ASM). ASM gates executor — no trades execute when session is inactive.
 
 > **Open Issue:** Redis scope is an open conflict (see `CONTEXT.md` §7, Issue #1). The presence of `RedisClient` in `app/core/` and these keys in the data model means Redis is treated as IN SCOPE. This should be formally resolved and the conflict closed.

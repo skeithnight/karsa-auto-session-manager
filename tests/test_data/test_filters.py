@@ -3,7 +3,6 @@
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import pytest
 
 from app.data.filters import BadTickFilter
 from app.data.normalizer import ExchangeData

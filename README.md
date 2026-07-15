@@ -43,12 +43,12 @@ Our architecture is split into critical paths ensuring robustness and modularity
 The project is heavily documented to ensure safety and clarity. Please read the core documents before contributing:
 
 - [CONTEXT.md](CONTEXT.md) - Project context, glossary, and open issues. Start here.
-- [ARCHITECTURE.md](ARCHITECTURE.md) - System design and component breakdown.
-- [DATA_MODEL.md](DATA_MODEL.md) - Exact schemas, Postgres DDL, Redis keys, Pydantic models.
-- [MVP_SCOPE.md](MVP_SCOPE.md) - Project scope, phased delivery plan.
-- [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md) - Quality gates every PR must pass.
-- [RISK_AND_RUNBOOK.md](RISK_AND_RUNBOOK.md) - Kill switch, circuit breakers, disaster recovery.
-- [TESTING_STRATEGY.md](TESTING_STRATEGY.md) - Test guidelines and verification.
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) - System design and component breakdown.
+- [docs/DATA_MODEL.md](docs/DATA_MODEL.md) - Exact schemas, Postgres DDL, Redis keys, Pydantic models.
+- [docs/MVP_SCOPE.md](docs/MVP_SCOPE.md) - Project scope, phased delivery plan.
+- [docs/DEFINITION_OF_DONE.md](docs/DEFINITION_OF_DONE.md) - Quality gates every PR must pass.
+- [docs/RISK_AND_RUNBOOK.md](docs/RISK_AND_RUNBOOK.md) - Kill switch, circuit breakers, disaster recovery.
+- [docs/TESTING_STRATEGY.md](docs/TESTING_STRATEGY.md) - Test guidelines and verification.
 - [AGENTS.md](AGENTS.md) - Instructions and rules for AI agents.
 
 ## 🚀 Getting Started
@@ -57,7 +57,7 @@ The bot is designed to run via Docker Compose, handling the Python application, 
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/karsa-auto-session-manager.git
+git clone git@github.com:skeithnight/karsa-auto-session-manager.git
 cd karsa-auto-session-manager
 
 # Set up environment variables

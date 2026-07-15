@@ -5,7 +5,6 @@ from __future__ import annotations
 from decimal import Decimal
 from unittest.mock import MagicMock
 
-import pytest
 
 from app.risk.gates import RiskGate
 
@@ -15,7 +14,7 @@ class TestRiskGate:
         self.mock_cb = MagicMock()
         self.mock_cb.is_halted.return_value = False
         self.gate = RiskGate(
-            min_24h_volume=Decimal("1000000"),
+            min_liquidity_usd=Decimal("1000000"),
             max_spread_pct=Decimal("0.005"),
             circuit_breaker=self.mock_cb,
         )
@@ -50,6 +49,6 @@ class TestRiskGate:
         assert result["failed_gate"] is None
 
     def test_evaluate_liquidity_fails_first(self):
-        result = self.gate.evaluate(Decimal("100"), Decimal("64000"), Decimal("64192"))
+        result = self.gate.evaluate(Decimal("10"), Decimal("64000"), Decimal("64192"))
         assert result["passed"] is False
         assert result["failed_gate"] == "liquidity"

@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import pytest
 
-from app.alpha.signals import SignalGenerator, TradingSignal
+from app.alpha.signals import SignalGenerator
 
 
 class TestSignalGenerator:

@@ -6,7 +6,7 @@ Internal float math for speed. Used by analyst.py and position_judge.py.
 
 from __future__ import annotations
 
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal
 from typing import List, Optional, Tuple
 
 

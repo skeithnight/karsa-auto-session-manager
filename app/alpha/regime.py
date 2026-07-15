@@ -15,8 +15,6 @@ Updates every 15 minutes. Stored in Redis system:config:regime.
 from __future__ import annotations
 
 import math
-from decimal import Decimal
-from typing import Optional
 
 from loguru import logger
 
@@ -39,18 +37,23 @@ class RegimeEngine:
     ponytail: all math is pure Python, no numpy/pandas dependency.
     """
 
-    def classify(self, ohlcv: list[list]) -> tuple[str, float, float]:
+    def classify(
+        self, ohlcv: list[list], min_candles: int = 200
+    ) -> tuple[str, float, float]:
         """Classify market regime from OHLCV candles.
 
         Args:
             ohlcv: list of [timestamp, open, high, low, close, volume]
+            min_candles: minimum candles required (200 for 1H, 50 for 4H)
 
         Returns:
             Tuple of (regime, hurst, adx) — regime is one of TREND_BULL, TREND_BEAR, MEAN_REVERSION, CHOP.
         """
         logger.debug(f"classify: entering candles={len(ohlcv)}")
-        if len(ohlcv) < 200:
-            logger.warning(f"Not enough candles for regime classification: {len(ohlcv)} < 200")
+        if len(ohlcv) < min_candles:
+            logger.warning(
+                f"Not enough candles for regime classification: {len(ohlcv)} < {min_candles}"
+            )
             logger.debug("classify: returning CHOP (insufficient data)")
             return REGIME_CHOP, 0.0, 0.0
 
@@ -60,10 +63,13 @@ class RegimeEngine:
 
         hurst = self._hurst(closes[-100:])
         adx = self._adx(highs, lows, closes, period=14)
-        ema200 = self._ema(closes, period=200)
+        ema_period = min(200, len(closes) - 1)
+        ema200 = self._ema(closes, period=ema_period)
         current_price = closes[-1]
 
-        logger.info(f"Regime indicators: hurst={hurst:.4f} adx={adx:.2f} ema200={ema200:.2f} price={current_price:.2f}")
+        logger.info(
+            f"Regime indicators: hurst={hurst:.4f} adx={adx:.2f} ema200={ema200:.2f} price={current_price:.2f}"
+        )
 
         # Classification logic
         if adx < ADX_CHOP_THRESHOLD:
@@ -81,6 +87,42 @@ class RegimeEngine:
         logger.info(f"Regime classified: {regime}")
         logger.debug(f"classify: returning {regime}")
         return regime, hurst, adx
+
+    def classify_multi(
+        self, ohlcv_1h: list[list], ohlcv_4h: list[list]
+    ) -> tuple[str, float, float]:
+        """Classify regime requiring BOTH 1H and 4H to agree.
+
+        AND-gate: if either timeframe is CHOP, result is CHOP.
+        If they disagree on trend direction, result is CHOP.
+        Otherwise, use the 1H regime (higher resolution).
+        """
+        regime_1h, hurst, adx = self.classify(ohlcv_1h)
+
+        # 4H needs fewer candles (50 ≈ 200/4)
+        if len(ohlcv_4h) < 50:
+            logger.warning(
+                f"Insufficient 4H candles ({len(ohlcv_4h)} < 50), using 1H only"
+            )
+            return regime_1h, hurst, adx
+
+        regime_4h, _, _ = self.classify(ohlcv_4h, min_candles=50)
+
+        # AND-gate: either CHOP → CHOP
+        if regime_1h == REGIME_CHOP or regime_4h == REGIME_CHOP:
+            logger.info(f"Multi-TF: CHOP (1H={regime_1h}, 4H={regime_4h})")
+            return REGIME_CHOP, hurst, adx
+
+        # Disagree on trend direction → CHOP
+        if {regime_1h, regime_4h} == {REGIME_TREND_BULL, REGIME_TREND_BEAR}:
+            logger.info(
+                f"Multi-TF: trend conflict (1H={regime_1h}, 4H={regime_4h}) → CHOP"
+            )
+            return REGIME_CHOP, hurst, adx
+
+        # Both agree (or one is MEAN_REVERSION) → use 1H
+        logger.info(f"Multi-TF: confirmed {regime_1h} (4H={regime_4h})")
+        return regime_1h, hurst, adx
 
     def _hurst(self, prices: list[float]) -> float:
         """Compute Hurst Exponent using R/S method.
@@ -100,7 +142,7 @@ class RegimeEngine:
                 break
             num_windows = n // window_size
             for i in range(num_windows):
-                window = prices[i * window_size: (i + 1) * window_size]
+                window = prices[i * window_size : (i + 1) * window_size]
                 mean = sum(window) / len(window)
                 deviations = [(p - mean) for p in window]
                 cumulative = []
@@ -109,7 +151,7 @@ class RegimeEngine:
                     s += d
                     cumulative.append(s)
                 r = max(cumulative) - min(cumulative)
-                s_sq = sum(d ** 2 for d in deviations) / len(deviations)
+                s_sq = sum(d**2 for d in deviations) / len(deviations)
                 s_std = math.sqrt(s_sq) if s_sq > 0 else 1e-10
                 rs_values.append((r / s_std, window_size))
 
@@ -127,9 +169,9 @@ class RegimeEngine:
         sum_x = sum(log_n)
         sum_y = sum(log_rs)
         sum_xy = sum(x * y for x, y in zip(log_n, log_rs))
-        sum_x2 = sum(x ** 2 for x in log_n)
+        sum_x2 = sum(x**2 for x in log_n)
 
-        denom = n_pts * sum_x2 - sum_x ** 2
+        denom = n_pts * sum_x2 - sum_x**2
         if abs(denom) < 1e-10:
             return 0.5
 
@@ -137,7 +179,13 @@ class RegimeEngine:
         logger.debug(f"_hurst: returning {hurst:.4f}")
         return hurst
 
-    def _adx(self, highs: list[float], lows: list[float], closes: list[float], period: int = 14) -> float:
+    def _adx(
+        self,
+        highs: list[float],
+        lows: list[float],
+        closes: list[float],
+        period: int = 14,
+    ) -> float:
         """Compute Average Directional Index (ADX)."""
         logger.debug(f"_adx: entering period={period}")
         n = len(closes)

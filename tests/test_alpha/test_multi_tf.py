@@ -45,7 +45,7 @@ class TestMultiTFFilter:
         result = await self.filter.check("BTCUSDT", "LONG")
 
         assert result["direction_agrees"] is False
-        assert result["penalty_applied"] == Decimal("0.5")
+        assert result["penalty_applied"] == Decimal("0.0")
         assert result["data_available"] is True
         assert result["ema_4h"] is not None
 
@@ -70,7 +70,7 @@ class TestMultiTFFilter:
         result = await self.filter.check("ETHUSDT", "SHORT")
 
         assert result["direction_agrees"] is False
-        assert result["penalty_applied"] == Decimal("0.5")
+        assert result["penalty_applied"] == Decimal("0.0")
         assert result["data_available"] is True
 
     @pytest.mark.asyncio

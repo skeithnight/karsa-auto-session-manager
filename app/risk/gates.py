@@ -18,19 +18,19 @@ class RiskGate:
 
     def __init__(
         self,
-        min_24h_volume: Decimal = Decimal("1000000"),  # $1M minimum
+        min_liquidity_usd: Decimal = Decimal("10000"),  # $10K notional
         max_spread_pct: Decimal = Decimal("0.005"),  # 0.5% max spread
         circuit_breaker: Optional[CircuitBreaker] = None,
     ) -> None:
-        self.min_24h_volume = min_24h_volume
+        self.min_liquidity_usd = min_liquidity_usd
         self.max_spread_pct = max_spread_pct
         self.circuit_breaker = circuit_breaker
 
-    def check_liquidity(self, volume_24h: Decimal) -> bool:
-        """Gate 1: 24h volume above threshold."""
-        passed = volume_24h >= self.min_24h_volume
+    def check_liquidity(self, notional_usd: Decimal) -> bool:
+        """Gate 1: L1 notional depth above threshold."""
+        passed = notional_usd >= self.min_liquidity_usd
         if not passed:
-            logger.warning(f"Liquidity gate FAILED: {volume_24h} < {self.min_24h_volume}")
+            logger.warning(f"Liquidity gate FAILED: ${notional_usd:,.2f} < ${self.min_liquidity_usd:,.2f}")
         return passed
 
     def check_spread_health(self, bid_price: Decimal, ask_price: Decimal) -> bool:
@@ -67,8 +67,10 @@ class RiskGate:
         ask_price: Decimal,
     ) -> Dict[str, Any]:
         """Run all 3 gates sequentially. Returns decision dict."""
+        mid_price = (bid_price + ask_price) / 2
+        notional_usd = volume_24h * mid_price
         gates = [
-            ("liquidity", self.check_liquidity(volume_24h)),
+            ("liquidity", self.check_liquidity(notional_usd)),
             ("spread_health", self.check_spread_health(bid_price, ask_price)),
             ("circuit_breaker", self.check_circuit_breaker()),
         ]

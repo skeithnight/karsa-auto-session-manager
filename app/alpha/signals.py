@@ -9,7 +9,6 @@ from uuid import uuid4
 
 from loguru import logger
 
-from app.alpha.metrics import AlphaMetrics
 from app.alpha.regime import REGIME_CHOP
 
 
@@ -23,6 +22,7 @@ class TradingSignal:
         confidence: float,
         size: Decimal,
         metrics: Optional[Dict[str, Any]] = None,
+        atr: Optional[Decimal] = None,
     ) -> None:
         logger.debug(f"TradingSignal.__init__: entering symbol={symbol}")
         self.id = str(uuid4())
@@ -32,6 +32,7 @@ class TradingSignal:
         self.size = size
         self.metrics = metrics or {}
         self.generated_at = datetime.now(timezone.utc)
+        self.atr = atr  # 1H ATR for position lifecycle (trailing stop, partial TP)
         logger.debug("TradingSignal.__init__: returning")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -55,7 +56,7 @@ class SignalGenerator:
     def __init__(
         self,
         min_skew: float = 0.3,
-        min_confidence: float = 0.6,
+        min_confidence: float = 0.72,
         position_size: Decimal = Decimal("0.001"),
     ) -> None:
         logger.debug("SignalGenerator.__init__: entering")
@@ -72,11 +73,15 @@ class SignalGenerator:
         "CHOP": 0.0,  # Force FLAT
     }
 
-    # Composite weights (Phase 2D)
-    W_SKEW = 0.4
-    W_LEAD_LAG = 0.3
-    W_FUNDING = 0.2
-    W_OI = 0.1
+    # Composite weights — regime-dependent (Phase 2D enhanced)
+    # Trend: follow skew/lead-lag, suppress contrarian funding
+    # Mean-reversion: amplify contrarian funding, reduce lead-lag
+    REGIME_WEIGHTS: Dict[str, tuple[float, float, float, float]] = {
+        "TREND_BULL": (0.4, 0.3, 0.05, 0.25),
+        "TREND_BEAR": (0.4, 0.3, 0.05, 0.25),
+        "MEAN_REVERSION": (0.3, 0.2, 0.4, 0.1),
+    }
+    DEFAULT_WEIGHTS = (0.4, 0.3, 0.2, 0.1)  # fallback: skew, lead_lag, funding, oi
 
     def generate(
         self,
@@ -118,41 +123,78 @@ class SignalGenerator:
             s_funding = max(-1.0, min(1.0, -funding_rate / 0.0003))
 
         # OI: binary — rising = 1.0, falling = -1.0
+        # Dead-band: require meaningful OI change (>0.1% relative) to avoid noise
+        OI_DEAD_BAND = 0.001   # 0.1% minimum relative OI change
         s_oi = 0.0
-        if oi_change is not None:
-            s_oi = 1.0 if oi_change > 0 else -1.0 if oi_change < 0 else 0.0
+        if oi_change is not None and abs(oi_change) > OI_DEAD_BAND:
+            s_oi = 1.0 if oi_change > 0 else -1.0
 
-        # --- Composite confidence ---
+        # --- Composite confidence (regime-dependent weights) ---
+        w_skew, w_lead_lag, w_funding, w_oi = self.REGIME_WEIGHTS.get(
+            regime, self.DEFAULT_WEIGHTS
+        )
         raw_score = (
-            self.W_SKEW * s_skew
-            + self.W_LEAD_LAG * s_lead_lag
-            + self.W_FUNDING * s_funding
-            + self.W_OI * s_oi
+            w_skew * s_skew
+            + w_lead_lag * s_lead_lag
+            + w_funding * s_funding
+            + w_oi * s_oi
         )
 
         confidence = abs(raw_score)
 
-        # Direction from skew (primary), lead-lag must not contradict
+        # Direction from skew (primary), lead-lag contradiction penalizes (not kills)
+        LEAD_LAG_HARD_KILL = 0.5   # strong contradiction → no trade
+
         if s_skew > 0:
             direction = "LONG"
-            if s_lead_lag < -0.3:
-                logger.debug(f"Signal {symbol}: lead-lag contradicts LONG — skipping")
+            if s_lead_lag < -LEAD_LAG_HARD_KILL:
+                from app.core import metrics as m
+                m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
+                logger.debug(f"Signal {symbol}: lead-lag KILL LONG (s_ll={s_lead_lag:.2f})")
                 return None
+            elif s_lead_lag < -0.3:
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts LONG — penalized 0.7x"
+                )
         elif s_skew < 0:
             direction = "SHORT"
-            if s_lead_lag > 0.3:
-                logger.debug(f"Signal {symbol}: lead-lag contradicts SHORT — skipping")
+            if s_lead_lag > LEAD_LAG_HARD_KILL:
+                from app.core import metrics as m
+                m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
+                logger.debug(f"Signal {symbol}: lead-lag KILL SHORT (s_ll={s_lead_lag:.2f})")
                 return None
+            elif s_lead_lag > 0.3:
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts SHORT — penalized 0.7x"
+                )
         else:
             direction = "FLAT"
+
+        # In MEAN_REVERSION: direction is contrarian to skew (buy exhaustion, sell euphoria)
+        if regime == "MEAN_REVERSION":
+            if s_skew < -0.3 and s_funding > 0.2:   # oversold + positive funding → LONG
+                direction = "LONG"
+            elif s_skew > 0.3 and s_funding < -0.2:  # overbought + negative funding → SHORT
+                direction = "SHORT"
+            else:
+                direction = "FLAT"   # insufficient conviction in MR → no trade
 
         # Apply regime multiplier
         regime_mult = self.REGIME_MULTIPLIERS.get(regime, 1.0) if regime else 1.0
         confidence *= regime_mult
         confidence = min(confidence, 1.0)
 
+        from app.core import metrics as m
+
+        m.signal_confidence.labels(symbol=symbol).observe(confidence)
+
         if direction == "FLAT" or confidence < self.min_confidence:
-            logger.debug(f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold")
+            m.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
+            logger.debug(
+                f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold"
+            )
             return None
 
         signal = TradingSignal(
@@ -173,6 +215,11 @@ class SignalGenerator:
             },
         )
 
-        logger.info(f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}")
-        logger.debug(f"generate: returning TradingSignal")
+        from app.core import metrics as m
+
+        m.signals_generated.labels(symbol=symbol, direction=direction).inc()
+        logger.info(
+            f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}"
+        )
+        logger.debug("generate: returning TradingSignal")
         return signal

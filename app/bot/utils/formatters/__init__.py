@@ -9,7 +9,7 @@ Import path updated: app.bot.utils.formatters (was src.utils.formatters).
 
 from decimal import Decimal
 from html import escape
-from app.bot.utils.format import HTML, bold, italic, code, fmt
+from app.bot.utils.format import HTML, bold, italic, code, pre, fmt
 
 
 def format_price(p) -> str:
@@ -29,6 +29,53 @@ def format_price(p) -> str:
         return f"{p:,.6f}"
     else:
         return f"{p:,.8f}"
+
+
+def format_bar(value: float, max_value: float, width: int = 15, show_pct: bool = True) -> str:
+    """Generate a \u2588\u2591 progress bar string.
+
+    Args:
+        value: Current value (0 \u2192 max_value).
+        max_value: The 100% reference point.
+        width: Number of bar characters.
+        show_pct: Whether to append percentage label.
+    Returns:
+        e.g. "[\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2588\u2591\u2591\u2591\u2591\u2591\u2591\u2591] 53.3%"
+    """
+    if max_value <= 0:
+        pct = 0.0
+    else:
+        pct = min(100.0, max(0.0, value / max_value * 100))
+    filled = int(round(pct / 100 * width))
+    empty = width - filled
+    bar = "\u2588" * filled + "\u2591" * empty
+    if show_pct:
+        return f"[{bar}] {pct:.1f}%"
+    return f"[{bar}]"
+
+
+def format_risk_reward(entry: float, sl: float, tp: float, side: str) -> str:
+    """Compute and format a Risk:Reward ratio string.
+
+    Args:
+        entry: Entry price.
+        sl: Stop-loss price.
+        tp: Take-profit price.
+        side: "Buy" (long) or "Sell" (short).
+    Returns:
+        e.g. "1:2.5" or "\u2014" if inputs are invalid.
+    """
+    if entry <= 0 or sl <= 0 or tp <= 0:
+        return "\u2014"
+    if side == "Buy":
+        risk = abs(entry - sl)
+        reward = abs(tp - entry)
+    else:
+        risk = abs(sl - entry)
+        reward = abs(entry - tp)
+    if risk <= 0:
+        return "\u2014"
+    return f"1:{reward / risk:.1f}"
 
 
 def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -> str:
@@ -69,18 +116,28 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
 
     card = fmt(
         bold(f"{index}. {symbol} ({side_label})"), f" {pnl_icon}", "\n",
-        f"┣ Entry: ${format_price(entry)} | Now: ${format_price(mark)}", "\n",
-        f"┣ Size: {size} | Liq: ${format_price(liq)}", "\n",
-        f"┗ PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
+        f"\u2523 Entry: ${format_price(entry)} \u2192 Mark: ${format_price(mark)}", "\n",
+        f"\u2523 Size: {size}  |  Liq: ${format_price(liq)}", "\n",
+        f"\u2517 PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
     )
 
     if alloc_bar:
-        card = fmt(card, f"\n   📊 Alloc: {alloc_bar}", sep="")
+        card = fmt(card, f"\n   \U0001f4ca Alloc: {alloc_bar}", sep="")
 
     if sl > 0:
         card = fmt(card, f"\n   SL: ${format_price(sl)}", sep="")
     if tp > 0:
-        card = fmt(card, f" | TP: ${format_price(tp)}", sep="")
+        card = fmt(card, f"  |  TP: ${format_price(tp)}", sep="")
+
+    # Risk metrics — computed from existing fields, no new data needed
+    if sl > 0 and entry > 0:
+        risk_to_sl_pct = abs(entry - sl) / entry * 100
+        rr_str = format_risk_reward(entry, sl, tp, side)
+        card = fmt(
+            card,
+            f"\n   \U0001f4c9 Risk to SL: -{risk_to_sl_pct:.2f}%  |  R:R: {rr_str}",
+            sep="",
+        )
 
     return card
 
@@ -114,39 +171,78 @@ def get_regime_display(regime: str) -> str:
 
 def format_tp_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_pct: float) -> str:
     """Format a Take Profit hit alert message."""
+    _dash = "\u2500"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block = (
+        f"{'Metric':<12} Value\n"
+        f"{_sep}\n"
+        f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Exit Price':<12} ${format_price(exit_price)}\n"
+        f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
+    )
     return fmt(
-        bold("🎯 TAKE PROFIT HIT 🎯"), "\n",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-        bold("Symbol: "), f"{symbol} ({side})", "\n",
-        bold("Exit Price: "), f"${format_price(exit_price)}", "\n",
-        bold("PnL: "), f"🟢 ${pnl:+,.2f} ({pnl_pct:+.2f}%)", "\n\n",
-        "Position closed successfully.",
+        bold("\U0001f3af TAKE PROFIT HIT \U0001f3af"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(block), "\n\n",
+        italic("\U0001f7e2 Position closed in profit."),
     )
 
 
 def format_sl_alert(symbol: str, side: str, exit_price: float, pnl: float, pnl_pct: float) -> str:
     """Format a Stop Loss hit alert message."""
+    _dash = "\u2500"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block = (
+        f"{'Metric':<12} Value\n"
+        f"{_sep}\n"
+        f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Exit Price':<12} ${format_price(exit_price)}\n"
+        f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
+    )
     return fmt(
-        bold("🛑 STOP LOSS HIT 🛑"), "\n",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-        bold("Symbol: "), f"{symbol} ({side})", "\n",
-        bold("Exit Price: "), f"${format_price(exit_price)}", "\n",
-        bold("PnL: "), f"🔴 ${pnl:+,.2f} ({pnl_pct:+.2f}%)", "\n\n",
-        "Position closed to protect capital.",
+        bold("\U0001f6d1 STOP LOSS HIT \U0001f6d1"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(block), "\n\n",
+        italic("\U0001f534 Position closed to protect capital."),
+    )
+
+
+def format_breakeven_alert(symbol: str, side: str, exit_price: float) -> str:
+    """Format a Breakeven / Flat exit alert message."""
+    _dash = "\u2500"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block = (
+        f"{'Metric':<12} Value\n"
+        f"{_sep}\n"
+        f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Exit Price':<12} ${format_price(exit_price)}\n"
+        f"{'PnL':<12} $0.00 (+0.00%)"
+    )
+    return fmt(
+        bold("\u2696\ufe0f POSITION CLOSED (BREAKEVEN)"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(block), "\n\n",
+        italic("\U0001f7e4 Position closed with no net profit/loss."),
     )
 
 
 def format_entry_alert(symbol: str, side: str, price: float, amount: float, sl_price: float) -> str:
-    """Format a trade entry + SL placed alert message.
-    Caller: SOR._place_sl_after_fill(). No schema change."""
+    """Format a trade entry + SL placed alert message."""
+    _dash = "\u2500"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block = (
+        f"{'Metric':<12} Value\n"
+        f"{_sep}\n"
+        f"{'Symbol':<12} {symbol} ({side})\n"
+        f"{'Fill Price':<12} ${format_price(price)}\n"
+        f"{'Size':<12} {amount}\n"
+        f"{'Stop Loss':<12} ${format_price(sl_price)}\n"
+        f"{'Max Loss':<12} $1.00"
+    )
     return fmt(
-        bold("✅ ENTRY FILLED"), "\n",
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "\n",
-        bold("Symbol: "), f"{symbol} ({side})", "\n",
-        bold("Price: "), f"${format_price(price)}", "\n",
-        bold("Amount: "), f"{amount}", "\n",
-        bold("Stop Loss: "), f"${format_price(sl_price)}", "\n",
-        bold("Max Loss: "), "$1.00",
+        bold("\u2705 ENTRY FILLED"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(block),
     )
 
 
@@ -155,11 +251,14 @@ from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatt
 
 __all__ = [
     "format_price",
+    "format_bar",
+    "format_risk_reward",
     "format_position_card",
     "format_risk_button_text",
     "get_regime_display",
     "format_tp_alert",
     "format_sl_alert",
+    "format_breakeven_alert",
     "format_entry_alert",
     "TradeHistoryFormatter",
 ]

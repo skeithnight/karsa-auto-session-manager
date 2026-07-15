@@ -40,6 +40,7 @@ When triggered, the bot immediately executes the following sequence, ignoring al
 | **AI Confidence Anomaly** | AI returns confidence **< 0.20** for **10+ consecutive** signals. | **ALERT:** Possible model degradation or market regime shift. Telegram: *"AI confidence anomaly — review recommended."* |
 | **AI Unavailable** | 9router returns error or timeout on **3 consecutive** calls. | **HALT SIGNALS:** AI is mandatory — no bypass. All signals rejected until AI recovers. Alert Telegram: *"AI offline, signals halted."* |
 | **Universe Scorer Empty** | Universe scorer returns **0 symbols** above threshold. | **FALLBACK:** Use static symbol list from `config.py`. Alert Telegram: *"Universe empty, fallback to static list."* |
+| **ASM Session Inactive** | `karsa:auto:state:active` is `"0"` or missing in Redis. | **BLOCK:** Executor skips all signals. No new positions opened. Data pipeline stays warm. Existing positions managed normally. |
 
 ---
 

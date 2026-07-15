@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Dict, List, Optional
 
@@ -24,7 +23,7 @@ def calculate_vwap(prices: List[Decimal], volumes: List[Decimal]) -> Optional[De
 
     weighted_sum = sum(p * v for p, v in zip(prices, volumes))
     result = weighted_sum / total_volume
-    logger.debug(f"calculate_vwap: returning Decimal")
+    logger.debug("calculate_vwap: returning Decimal")
     return result
 
 

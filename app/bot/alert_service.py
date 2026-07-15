@@ -21,16 +21,28 @@ class AlertService:
     def __init__(self, chat_id: str) -> None:
         self._chat_id = int(chat_id) if chat_id else 0
         self._bot = None
+        self._queue = []
 
     def register_bot(self, bot) -> None:
         """Set bot instance. Called by run_bot() after PTB application starts."""
         self._bot = bot
         logger.info(f"AlertService bot registered, chat_id={self._chat_id}")
+        
+        # Flush any queued messages
+        import asyncio
+        for msg in self._queue:
+            asyncio.create_task(self.send(msg))
+        self._queue.clear()
 
     async def send(self, text: str) -> None:
-        """Send HTML message to configured chat. No-op if bot not registered or chat_id empty."""
-        if not self._bot or not self._chat_id:
+        """Send HTML message to configured chat. Queues if bot not ready."""
+        if not self._chat_id:
             return
+        if not self._bot:
+            self._queue.append(text)
+            logger.debug("AlertService: Bot not ready, queued message.")
+            return
+            
         try:
             await self._bot.send_message(self._chat_id, text, parse_mode="HTML")
         except Exception as e:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from decimal import Decimal
 from typing import Dict
 
@@ -48,7 +48,7 @@ class BadTickFilter:
             logger.warning(
                 f"Bad tick rejected: {key} price changed {price_change:.2%} in {time_delta:.3f}s"
             )
-            logger.debug(f"is_bad_tick: returning True (rejected)")
+            logger.debug("is_bad_tick: returning True (rejected)")
             return True
 
         # Update tracking
@@ -62,5 +62,5 @@ class BadTickFilter:
         logger.debug(f"filter_orderbook: entering exchange={data.exchange}")
         if self.is_bad_tick(data):
             data.is_stale = True
-        logger.debug(f"filter_orderbook: returning ExchangeData")
+        logger.debug("filter_orderbook: returning ExchangeData")
         return data

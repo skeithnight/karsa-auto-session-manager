@@ -611,6 +611,16 @@ async def executor_task(
                 logger.warning(f"No available balance, skipping {signal.symbol}")
                 continue
             amount = (available * risk_pct) / price
+            # Enforce Bybit's $5 USDT minimum order value
+            order_value = amount * price
+            if order_value < Decimal("5"):
+                logger.warning(
+                    f"Order value {order_value:.2f} USDT below $5 min for {signal.symbol}, skipping"
+                )
+                metrics.signals_skipped.labels(
+                    symbol=signal.symbol, reason="below_min_order"
+                ).inc()
+                continue
         except Exception as e:
             logger.error(f"Balance lookup failed: {e}, skipping {signal.symbol}")
             continue
@@ -852,6 +862,17 @@ async def main() -> None:
         logger.warning(
             f"Symbol validation skipped (no exchange markets loaded). Using all {len(valid_symbols)} config symbols."
         )
+    # Filter against Bybit available instruments (removes SHIB, FLOKI etc not on Bybit)
+    if bybit_client._symbol_map:
+        bybit_before = len(valid_symbols)
+        valid_symbols = [s for s in valid_symbols if s in bybit_client._symbol_map]
+        bybit_dropped = bybit_before - len(valid_symbols)
+        if bybit_dropped:
+            logger.warning(
+                f"Dropped {bybit_dropped} symbols not on Bybit. {len(valid_symbols)} remaining."
+            )
+        dropped += bybit_dropped
+
     metrics.symbol_universe_total.set(len(valid_symbols))
     metrics.symbol_universe_dropped.set(dropped)
 

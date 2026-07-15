@@ -45,6 +45,11 @@ class SmartOrderRouter:
         logger.debug(f"execute: entering symbol={symbol} side={side}")
         order: Optional[Dict[str, Any]] = None
 
+        # Reject invalid price
+        if price <= 0:
+            logger.warning(f"SOR: invalid price {price} for {symbol}, skipping")
+            return None
+
         # High latency mode — skip to market directly
         if self.skip_to_market:
             logger.info(f"SOR: latency mode — market order {side} {amount}")
@@ -71,14 +76,20 @@ class SmartOrderRouter:
 
         # Step 2: Reprice attempts
         current_price = price
+        # Derive tick from price (0.1% of price, min 0.01) — prevents negative prices on low-value tokens
+        effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
         for attempt in range(self.max_reprice_attempts):
             await asyncio.sleep(self.reprice_delay_seconds)
 
             # Move price toward market (buy: higher, sell: lower)
             if side == "buy":
-                current_price += price_tick
+                current_price += effective_tick
             else:
-                current_price -= price_tick
+                current_price -= effective_tick
+                # Guard: never go negative or zero
+                if current_price <= 0:
+                    logger.warning(f"Reprice would go negative ({current_price}), falling back to market")
+                    break
 
             logger.info(f"SOR Step 2: Reprice attempt {attempt + 1} @ {current_price}")
             try:

@@ -71,7 +71,7 @@ class StateManager:
             logger.warning(f"Reconciliation degraded — Bybit unreachable: {e}")
             logger.debug(f"reconcile: error={e}")
             logger.warning("Continuing startup — position verification deferred. Data engine and alpha bridge will run.")
-            return True  # ponytail: allow startup without Bybit private API. Full reconcile when pybit migration done.
+            return False  # Cannot verify positions — refuse to start to prevent duplicate risk
 
         # Build exchange state maps
         exchange_pos_map = {p["symbol"]: p for p in exchange_positions}

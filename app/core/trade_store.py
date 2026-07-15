@@ -53,8 +53,8 @@ class TradeStore:
                         "ai_confidence": ai_confidence,
                     },
                 )
-                await conn.commit()
                 row = result.fetchone()
+                await conn.commit()
                 trade_id = row[0] if row else 0
                 logger.info(f"Trade recorded: {symbol} {side} id={trade_id}")
                 return trade_id

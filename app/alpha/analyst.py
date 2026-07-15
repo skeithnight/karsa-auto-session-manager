@@ -8,6 +8,7 @@ Result blends with deterministic confidence: 50/50 weight.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from dataclasses import dataclass
@@ -113,11 +114,13 @@ class CryptoAnalyst:
         highs = [Decimal(str(c[2])) for c in candles]
         lows = [Decimal(str(c[3])) for c in candles]
 
-        rsi = calculate_rsi(closes, 14)
-        bb = calculate_bollinger_bands(closes, 20)
-        macd = calculate_macd(closes)
-        atr = calculate_atr(highs, lows, closes, 14)
-        ema = calculate_ema(closes, 200)
+        rsi, bb, macd, atr, ema = await asyncio.gather(
+            asyncio.to_thread(calculate_rsi, closes, 14),
+            asyncio.to_thread(calculate_bollinger_bands, closes, 20),
+            asyncio.to_thread(calculate_macd, closes),
+            asyncio.to_thread(calculate_atr, highs, lows, closes, 14),
+            asyncio.to_thread(calculate_ema, closes, 200),
+        )
 
         price_vs_ema = ""
         if ema and ema > 0:

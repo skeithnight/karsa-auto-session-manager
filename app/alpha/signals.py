@@ -23,6 +23,7 @@ class TradingSignal:
         confidence: float,
         size: Decimal,
         metrics: Optional[Dict[str, Any]] = None,
+        atr: Optional[Decimal] = None,
     ) -> None:
         logger.debug(f"TradingSignal.__init__: entering symbol={symbol}")
         self.id = str(uuid4())
@@ -32,6 +33,7 @@ class TradingSignal:
         self.size = size
         self.metrics = metrics or {}
         self.generated_at = datetime.now(timezone.utc)
+        self.atr = atr  # 1H ATR for position lifecycle (trailing stop, partial TP)
         logger.debug("TradingSignal.__init__: returning")
 
     def to_dict(self) -> Dict[str, Any]:
@@ -72,11 +74,15 @@ class SignalGenerator:
         "CHOP": 0.0,  # Force FLAT
     }
 
-    # Composite weights (Phase 2D)
-    W_SKEW = 0.4
-    W_LEAD_LAG = 0.3
-    W_FUNDING = 0.2
-    W_OI = 0.1
+    # Composite weights — regime-dependent (Phase 2D enhanced)
+    # Trend: follow skew/lead-lag, suppress contrarian funding
+    # Mean-reversion: amplify contrarian funding, reduce lead-lag
+    REGIME_WEIGHTS: Dict[str, tuple[float, float, float, float]] = {
+        "TREND_BULL": (0.4, 0.3, 0.05, 0.25),
+        "TREND_BEAR": (0.4, 0.3, 0.05, 0.25),
+        "MEAN_REVERSION": (0.3, 0.2, 0.4, 0.1),
+    }
+    DEFAULT_WEIGHTS = (0.4, 0.3, 0.2, 0.1)  # fallback: skew, lead_lag, funding, oi
 
     def generate(
         self,
@@ -122,27 +128,34 @@ class SignalGenerator:
         if oi_change is not None:
             s_oi = 1.0 if oi_change > 0 else -1.0 if oi_change < 0 else 0.0
 
-        # --- Composite confidence ---
+        # --- Composite confidence (regime-dependent weights) ---
+        w_skew, w_lead_lag, w_funding, w_oi = self.REGIME_WEIGHTS.get(
+            regime, self.DEFAULT_WEIGHTS
+        )
         raw_score = (
-            self.W_SKEW * s_skew
-            + self.W_LEAD_LAG * s_lead_lag
-            + self.W_FUNDING * s_funding
-            + self.W_OI * s_oi
+            w_skew * s_skew
+            + w_lead_lag * s_lead_lag
+            + w_funding * s_funding
+            + w_oi * s_oi
         )
 
         confidence = abs(raw_score)
 
-        # Direction from skew (primary), lead-lag must not contradict
+        # Direction from skew (primary), lead-lag contradiction penalizes (not kills)
         if s_skew > 0:
             direction = "LONG"
             if s_lead_lag < -0.3:
-                logger.debug(f"Signal {symbol}: lead-lag contradicts LONG — skipping")
-                return None
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts LONG — penalized 0.7x"
+                )
         elif s_skew < 0:
             direction = "SHORT"
             if s_lead_lag > 0.3:
-                logger.debug(f"Signal {symbol}: lead-lag contradicts SHORT — skipping")
-                return None
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts SHORT — penalized 0.7x"
+                )
         else:
             direction = "FLAT"
 
@@ -152,7 +165,9 @@ class SignalGenerator:
         confidence = min(confidence, 1.0)
 
         if direction == "FLAT" or confidence < self.min_confidence:
-            logger.debug(f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold")
+            logger.debug(
+                f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold"
+            )
             return None
 
         signal = TradingSignal(
@@ -173,6 +188,8 @@ class SignalGenerator:
             },
         )
 
-        logger.info(f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}")
+        logger.info(
+            f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}"
+        )
         logger.debug(f"generate: returning TradingSignal")
         return signal

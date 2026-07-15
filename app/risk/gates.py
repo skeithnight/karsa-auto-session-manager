@@ -18,7 +18,7 @@ class RiskGate:
 
     def __init__(
         self,
-        min_24h_volume: Decimal = Decimal("1000000"),  # $1M minimum
+        min_24h_volume: Decimal = Decimal("250000"),  # $250K minimum
         max_spread_pct: Decimal = Decimal("0.005"),  # 0.5% max spread
         circuit_breaker: Optional[CircuitBreaker] = None,
     ) -> None:

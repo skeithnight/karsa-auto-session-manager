@@ -44,7 +44,7 @@ class TradeHistoryFormatter:
         """Build full message text and keyboard. Returns (text, reply_markup)."""
         total_pages = max(1, (total_trades + TradeHistoryFormatter.PAGE_SIZE - 1) // TradeHistoryFormatter.PAGE_SIZE)
         lines = [
-            f"\U0001f4dc TRADE HISTORY (Page {current_page}/{total_pages})",
+            f"\U0001f4dc TRADE HISTORY  (Page {current_page}/{total_pages})",
             "\u2501" * 32,
             "",
         ]
@@ -55,9 +55,20 @@ class TradeHistoryFormatter:
                 lines.append(TradeHistoryFormatter.format_trade(t))
         lines.append("")
         lines.append("\u2501" * 32)
+
+        # --- Summary block ---
         total = wins + losses
         wr = (wins / max(total, 1)) * 100
-        lines.append(f"Summary: {wins}W / {losses}L \u2022 WR: {wr:.0f}% \u2022 Net: ${net_pnl:+,.2f}")
+        bar_width = 15
+        filled = int(round(wr / 100 * bar_width))
+        wr_bar = "\u2588" * filled + "\u2591" * (bar_width - filled)
+        avg_pnl = net_pnl / max(total, 1)
+        pnl_icon = "\U0001f7e2" if net_pnl >= 0 else "\U0001f534"
+
+        lines.append(f"Trades    {wins}W / {losses}L  \u00b7  Total: {total}")
+        lines.append(f"Win Rate  [{wr_bar}]  {wr:.0f}%")
+        lines.append(f"Net PnL   {pnl_icon} ${net_pnl:+,.2f}  \u00b7  Avg: ${avg_pnl:+,.2f}")
+
         text = "\n".join(lines)
         keyboard = TradeHistoryFormatter.build_keyboard(current_page, total_pages)
         return text, keyboard

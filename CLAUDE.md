@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-`karsa-auto-session-manager` — crypto trading bot. Multi-exchange data (Binance, OKX, Bybit), Bybit-only execution via WARP proxy. Single-process asyncio monolith, 15m-4h swing.
+`karsa-auto-session-manager` — crypto trading bot. Multi-exchange data (Binance, OKX, Bybit), Bybit-only execution via WARP proxy. Single-process asyncio monolith, 15m-4h swing. AI via 9router proxy (karsa-combo model).
 
 **Read first:** `CONTEXT.md` (orientation + conflicts). `AGENTS.md` (directory map + full rules).
 

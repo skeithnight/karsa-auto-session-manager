@@ -559,6 +559,7 @@ async def executor_task(
     sector_cap: SectorCap,
     bybit_client: BybitClient,
     trade_store: TradeStore,
+    session_manager: AutonomousSessionManager,
     risk_pct: Decimal = Decimal("0.03"),
 ) -> None:
     """Key 4: Execute trades via Smart Order Router."""
@@ -569,6 +570,15 @@ async def executor_task(
         try:
             signal = await asyncio.wait_for(risk_queue.get(), timeout=1.0)
         except asyncio.TimeoutError:
+            continue
+
+        # ASM gate — skip execution when no active session
+        try:
+            if not await session_manager.is_active():
+                logger.debug(f"ASM inactive — skipping signal {signal.symbol}")
+                continue
+        except Exception as e:
+            logger.warning(f"ASM check failed: {e} — skipping signal for safety")
             continue
 
         # Record execution latency
@@ -802,7 +812,10 @@ async def main() -> None:
         alert_service=alert_service, redis_client=redis_client
     )
     await circuit_breaker.restore()  # Persisted halt state survives restarts
-    risk_gate = RiskGate(circuit_breaker=circuit_breaker)  # Fix #5: shared CB instance
+    risk_gate = RiskGate(
+        min_liquidity_usd=Decimal(settings.min_liquidity_usd),
+        circuit_breaker=circuit_breaker,
+    )
     state_manager = StateManager(redis_client, bybit_client)
     watchdog = Watchdog(
         redis_client, alpha_paused=alpha_paused, sor=sor, kill_switch=kill_switch
@@ -853,6 +866,36 @@ async def main() -> None:
             f"Reconciliation failed — cannot start. Check Bybit connection. {e}"
         )
         sys.exit(1)
+
+    # Sync positions with Bybit truth — clean orphans + create missing
+    try:
+        live_positions = await bybit_client.fetch_positions()
+        exchange_symbols = {p["symbol"] for p in live_positions}
+        cleaned = await position_store.cleanup_stale(exchange_symbols)
+        if cleaned:
+            logger.info(f"Cleaned {cleaned} orphaned position keys from Redis")
+        # Create Redis keys for Bybit positions missing from PositionStore
+        for pos in live_positions:
+            bybit_sym = pos["symbol"]
+            side = pos["side"]
+            # Convert Bybit format (BTCUSDT) to ccxt format (BTC/USDT)
+            if bybit_sym.endswith("USDT"):
+                ccxt_sym = f"{bybit_sym[:-4]}/USDT"
+            else:
+                ccxt_sym = bybit_sym
+            if not await position_store.has_position(ccxt_sym, side):
+                entry_price = Decimal(str(pos.get("entry_price", 0)))
+                amount = Decimal(str(pos.get("contracts", 0)))
+                if entry_price > 0 and amount > 0:
+                    await position_store.save(
+                        symbol=ccxt_sym,
+                        side=side,
+                        entry_price=entry_price,
+                        amount=amount,
+                    )
+                    logger.info(f"Synced missing position to Redis: {ccxt_sym} {side}")
+    except Exception as e:
+        logger.warning(f"Position sync failed (non-fatal): {e}")
 
     signal_queue: asyncio.Queue = asyncio.Queue()
     risk_queue: asyncio.Queue = asyncio.Queue()
@@ -943,6 +986,7 @@ async def main() -> None:
                 sector_cap,
                 bybit_client,
                 trade_store,
+                session_manager,
             )
         ),
         asyncio.create_task(watchdog_task(watchdog, redis_client)),

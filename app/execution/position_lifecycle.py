@@ -274,10 +274,10 @@ class CheckpointManager:
         close_side = "sell" if side == "buy" else "buy"
 
         try:
-            if state_manager:
-                await state_manager.close_position(symbol, side, amount)
-            else:
-                await self.client.create_market_order(symbol, close_side, amount)
+            order = await self.client.create_market_order(symbol, close_side, amount)
+            exit_price = Decimal(str(order.get("average", order.get("price", 0))))
+            if state_manager and exit_price > 0:
+                state_manager.close_position(symbol, exit_price)
             await self.store.remove(symbol, side)
             # Record lifecycle duration
             entered_str = pos.get("entered_at", "")

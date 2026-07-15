@@ -124,3 +124,35 @@ class PositionStore:
                 except Exception:
                     pass
         return positions
+
+    async def cleanup_stale(self, exchange_symbols: set[str]) -> int:
+        """Remove position keys for symbols no longer held on exchange.
+
+        Args:
+            exchange_symbols: set of Bybit-format symbols (e.g. "BTCUSDT") from fetch_positions().
+
+        Returns:
+            Number of orphaned keys removed.
+        """
+        keys = await self.redis.redis.keys("karsa:position:*")
+        removed = 0
+        for key in keys:
+            key_str = key if isinstance(key, str) else key.decode()
+            raw = await self.redis.redis.get(key)
+            if not raw:
+                await self.redis.redis.delete(key_str)
+                removed += 1
+                continue
+            try:
+                pos = json.loads(raw)
+                sym = pos.get("symbol", "")
+                # Convert ccxt format (BTC/USDT) to Bybit format (BTCUSDT)
+                bybit_sym = sym.replace("/", "")
+                if bybit_sym not in exchange_symbols:
+                    await self.redis.redis.delete(key_str)
+                    logger.info(f"Cleaned orphaned position: {sym} {pos.get('side', '')}")
+                    removed += 1
+            except Exception:
+                await self.redis.redis.delete(key_str)
+                removed += 1
+        return removed

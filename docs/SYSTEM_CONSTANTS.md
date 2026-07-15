@@ -155,7 +155,17 @@
 
 ---
 
-## 13. Resolved Conflicts
+## 13. Autonomous Session Manager (`app/core/session.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | ---: |
+| `run_loop` poll interval | `30` | seconds | `session.py:117` | How often ASM checks session expiry |
+| `karsa:auto:state:active` | `"1"` / `"0"` | string | `session.py:45,56` | ASM active flag — gates executor |
+| Session expiry check | `duration_min * 60` | seconds | `session.py:99` | Elapsed vs configured duration |
+
+---
+
+## 14. Resolved Conflicts
 
 | Constant | Value | Resolution |
 | :--- | :--- | :--- |

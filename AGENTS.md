@@ -41,8 +41,11 @@ app/
 ├── main.py              # asyncio loop entrypoint — all 7 keys start here
 ├── core/
 │   ├── config.py         # Pydantic Settings, loads .env — secrets live ONLY here
+│   ├── database.py        # Postgres async pool (asyncpg)
+│   ├── redis_client.py    # Redis async client (aioredis)
 │   ├── session.py         # UTC session/regime logic (not one of the "6 Keys" — see CONTEXT.md #5)
 │   ├── state.py            # In-memory state + Postgres sync (Key 5)
+│   ├── trade_store.py      # Postgres trade CRUD
 │   ├── ai_client.py        # 9router async HTTP client (AI layer)
 │   ├── metrics.py          # Prometheus metrics (counters, gauges, histograms)
 │   └── position_store.py   # Redis-backed position lifecycle state
@@ -51,8 +54,8 @@ app/
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
 │   ├── filters.py            # Bad tick rejection
 │   ├── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
-│   ├── universe_scorer.py    # Dynamic universe scoring (planned — Phase 4.5.2)
-│   └── sector_mapping.py     # Static sector classification (planned — Phase 4.5.6)
+│   ├── universe_scorer.py    # Dynamic universe scoring (Volume+Momentum+Squeeze+Overextension)
+│   └── sector_mapping.py     # Static sector classification with keyword fallback
 ├── alpha/                  # Key 2 — Alpha Bridge
 │   ├── metrics.py
 │   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
@@ -62,8 +65,8 @@ app/
 │   ├── ta_tools.py           # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
 │   ├── analyst.py            # AI pre-entry analyst (MANDATORY, via 9router)
 │   ├── position_judge.py     # AI position judge (MANDATORY, 2-tier escalation)
-│   ├── multi_tf.py           # Multi-timeframe confirmation (planned — Phase 4.5.3)
-│   └── trade_memory.py       # Trade history injection (planned — Phase 4.5.5)
+│   ├── multi_tf.py           # Multi-timeframe confirmation (4H trend filter)
+│   └── trade_memory.py       # Trade history injection for AI context
 ├── execution/               # Key 4 — Bybit Executor
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market
@@ -71,14 +74,19 @@ app/
 ├── risk/                     # Key 3 — 3-Layer Risk Gate
 │   ├── gates.py
 │   ├── circuit_breaker.py
-│   └── sector_cap.py         # Sector diversity cap (planned — Phase 4.5.6)
+│   └── sector_cap.py         # Sector diversity cap (max 2 per sector)
 ├── watchdog/                 # Key 6
 │   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
 │   └── dead_mans_switch.py     # External health ping
 └── bot/                      # Key 7 — Telegram Command Interface
     ├── handlers.py           # All command & callback handlers
     ├── runner.py             # PTB app builder, bot_data wiring, startup
-    └── utils/                # Formatters, helpers
+    ├── alert_service.py      # Telegram alert sender
+    └── utils/
+        ├── format.py
+        ├── telegram_helpers.py
+        └── formatters/
+            └── trade_history_formatter.py
 tests/                        # see TESTING_STRATEGY.md for full layout
 ```
 

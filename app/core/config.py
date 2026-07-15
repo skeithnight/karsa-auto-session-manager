@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     # Circuit breaker
     daily_drawdown_limit: str = "-0.02"  # -2%, stored as str for Decimal conversion
+    min_liquidity_usd: str = "500"  # $500 minimum L1 notional depth (L1 typically $200-1500)
 
     # Watchdog
     dead_mans_switch_url: str = ""

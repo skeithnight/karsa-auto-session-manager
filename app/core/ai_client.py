@@ -59,6 +59,7 @@ class AIClient:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "stream": False,
         }
         url = f"{self.router_url}/v1/chat/completions"
 

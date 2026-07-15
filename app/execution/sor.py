@@ -55,7 +55,8 @@ class SmartOrderRouter:
             logger.info(f"SOR: latency mode — market order {side} {amount}")
             try:
                 market_order = await self.client.create_market_order(symbol, side, amount)
-                await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+                sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+                market_order["sl_order_id"] = sl_id
                 return market_order
             except Exception as e:
                 logger.error(f"SOR market fallback failed: {e}")
@@ -68,7 +69,8 @@ class SmartOrderRouter:
             if order.get("status") == "open":
                 logger.info(f"Post-Only filled: {order['id']}")
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-                await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+                sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+                order["sl_order_id"] = sl_id
                 logger.debug("execute: returning dict (Post-Only filled)")
                 return order
         except Exception as e:
@@ -100,7 +102,8 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
                     logger.info(f"Reprice filled: {order['id']}")
-                    await self._place_sl_after_fill(symbol, side, current_price, amount, max_loss_usd)
+                    sl_id = await self._place_sl_after_fill(symbol, side, current_price, amount, max_loss_usd)
+                    order["sl_order_id"] = sl_id
                     logger.debug("execute: returning dict (Reprice filled)")
                     return order
             except Exception as e:
@@ -115,7 +118,8 @@ class SmartOrderRouter:
             market_order = await self.client.create_market_order(symbol, side, amount)
             logger.info(f"Market fallback filled: {market_order['id']}")
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-            await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+            sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd)
+            market_order["sl_order_id"] = sl_id
             logger.debug("execute: returning dict (Market fallback)")
             return market_order
         except Exception as e:
@@ -134,6 +138,7 @@ class SmartOrderRouter:
     ) -> None:
         """Place exchange-side SL immediately after fill. CLAUDE.md Rule 5.
         SL price: loss = max_loss_usd / amount, so SL is at fill_price - loss (LONG) or + loss (SHORT)."""
+        sl_order_id = None
         try:
             sl_distance = max_loss_usd / amount if amount > 0 else Decimal("0")
             if side == "buy":
@@ -143,12 +148,9 @@ class SmartOrderRouter:
 
             sl_order = await self.client.place_stop_loss(symbol, side, sl_price, amount)
             if sl_order:
+                sl_order_id = sl_order.get("id")
                 metrics.stop_loss_placement.labels(symbol=symbol, result="success").inc()
-                logger.info(f"Exchange-side SL placed: {sl_order.get('id')} @ {sl_price}")
-                # Push entry alert to Telegram
-                if self.alert_service:
-                    from app.bot.utils.formatters import format_entry_alert
-                    await self.alert_service.send(format_entry_alert(symbol, side, fill_price, amount, sl_price))
+                logger.info(f"Exchange-side SL placed: {sl_order_id} @ {sl_price}")
             else:
                 metrics.stop_loss_placement.labels(symbol=symbol, result="failed").inc()
                 logger.critical(f"SL PLACEMENT RETURNED NONE for {symbol} {side} — position unprotected!")
@@ -156,6 +158,14 @@ class SmartOrderRouter:
             metrics.stop_loss_placement.labels(symbol=symbol, result="failed").inc()
             logger.critical(f"SL PLACEMENT FAILED for {symbol} {side}: {e} — position UNPROTECTED!")
             logger.debug(f"_place_sl_after_fill: error={e}")
+        # Entry alert fires on fill regardless of SL outcome
+        if self.alert_service:
+            try:
+                from app.bot.utils.formatters import format_entry_alert
+                await self.alert_service.send(format_entry_alert(symbol, side, fill_price, amount, sl_price))
+            except Exception as ae:
+                logger.error(f"Entry alert failed: {ae}")
+        return sl_order_id
 
     async def cancel_all(self, symbol: str) -> None:
         """Cancel all open orders for a symbol."""

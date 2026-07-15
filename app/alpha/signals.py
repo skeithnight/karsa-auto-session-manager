@@ -57,7 +57,7 @@ class SignalGenerator:
     def __init__(
         self,
         min_skew: float = 0.3,
-        min_confidence: float = 0.6,
+        min_confidence: float = 0.5,
         position_size: Decimal = Decimal("0.001"),
     ) -> None:
         logger.debug("SignalGenerator.__init__: entering")
@@ -164,7 +164,12 @@ class SignalGenerator:
         confidence *= regime_mult
         confidence = min(confidence, 1.0)
 
+        from app.core import metrics as m
+
+        m.signal_confidence.labels(symbol=symbol).observe(confidence)
+
         if direction == "FLAT" or confidence < self.min_confidence:
+            m.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
             logger.debug(
                 f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold"
             )
@@ -188,6 +193,9 @@ class SignalGenerator:
             },
         )
 
+        from app.core import metrics as m
+
+        m.signals_generated.labels(symbol=symbol, direction=direction).inc()
         logger.info(
             f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}"
         )

@@ -113,7 +113,11 @@ regime_hurst = Gauge(
 )
 regime_adx = Gauge(
     "karsa_regime_adx",
-    "ADX value",
+    "ADX value (1H)",
+)
+regime_adx_4h = Gauge(
+    "karsa_regime_adx_4h",
+    "ADX value (4H) — debug AND-gate visibility",
 )
 
 # ── Watchdog ────────────────────────────────────────────────
@@ -329,6 +333,13 @@ position_pnl = Histogram(
     "Position PnL in USD",
     ["symbol"],
     buckets=[-50, -20, -10, -5, -1, 0, 1, 5, 10, 20, 50, 100],
+)
+
+# ── Critical Task Liveness ───────────────────────────────────
+critical_task_dead = Gauge(
+    "karsa_critical_task_dead",
+    "Critical task liveness (1=dead, 0=alive)",
+    ["task"],
 )
 
 # ── Circuit Breaker ──────────────────────────────────────────

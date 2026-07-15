@@ -514,8 +514,8 @@ async def regime_engine_task(
                 "BTC/USDT", "4h", 60, ttl_seconds=3600
             )
             if candles_1h and len(candles_1h) >= 200:
-                regime, hurst, adx = regime_engine.classify_multi(
-                    candles_1h, candles_4h or []
+                regime, hurst, adx = await asyncio.to_thread(
+                    regime_engine.classify_multi, candles_1h, candles_4h or []
                 )
                 await redis_client.set_session_config(regime)
 
@@ -529,8 +529,15 @@ async def regime_engine_task(
                 metrics.regime_state.set(regime_map.get(regime, 0))
                 metrics.regime_hurst.set(hurst)
                 metrics.regime_adx.set(adx)
+                # 4H ADX for AND-gate visibility
+                adx_4h = 0.0
+                if candles_4h and len(candles_4h) >= 50:
+                    _, _, adx_4h = await asyncio.to_thread(
+                        regime_engine.classify, candles_4h, 50
+                    )
+                    metrics.regime_adx_4h.set(adx_4h)
                 logger.info(
-                    f"Regime updated: {regime} (hurst={hurst:.4f} adx={adx:.2f})"
+                    f"Regime updated: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})"
                 )
             else:
                 logger.warning(f"Insufficient candles for regime: {len(candles)}")
@@ -710,6 +717,22 @@ async def _get_price(redis_client: RedisClient, symbol: str) -> Optional[Decimal
         ask = Decimal(str(best_ask))
         return (bid + ask) / 2
     return None
+
+
+def _on_task_done(
+    task: asyncio.Task, kill_switch: asyncio.Event, critical: set
+) -> None:
+    """Kill switch on critical task crash."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.critical(f"Task CRASHED: {task.get_name()} — {exc}")
+        if task.get_name() in critical:
+            logger.critical("Critical task died — triggering kill switch")
+            kill_switch.set()
+    else:
+        logger.warning(f"Task exited normally: {task.get_name()}")
 
 
 async def main() -> None:
@@ -913,12 +936,39 @@ async def main() -> None:
         ),
     ]
 
-    # Log if any task dies
+    task_names = [
+        "data_engine_task",
+        "alpha_bridge_task",
+        "risk_gate_task",
+        "executor_task",
+        "watchdog_task",
+        "universe_refresh_task",
+        "dead_mans_switch",
+        "session_manager",
+        "bot_runner",
+        "regime_engine_task",
+        "trailing_stop",
+        "checkpoint_mgr",
+    ]
+    for t, name in zip(tasks, task_names):
+        t.set_name(name)
+
+    # Register critical tasks with watchdog for liveness monitoring
+    CRITICAL_TASKS = {
+        "data_engine_task",
+        "alpha_bridge_task",
+        "risk_gate_task",
+        "executor_task",
+        "regime_engine_task",
+    }
+    for t in tasks:
+        if t.get_name() in CRITICAL_TASKS:
+            watchdog.register_critical_task(t.get_name(), t)
+
+    # Kill switch on critical task death
     for t in tasks:
         t.add_done_callback(
-            lambda f: (
-                logger.error(f"Task died: {f.exception()}") if f.exception() else None
-            )
+            lambda task: _on_task_done(task, kill_switch, CRITICAL_TASKS)
         )
 
     logger.info(f"All components started. Monitoring {len(valid_symbols)} symbols.")

@@ -68,6 +68,8 @@ class BybitClient:
                     while i < len(base) and base[i].isdigit():
                         i += 1
                     token = base[i:] if i > 0 else base
+                    if not token:  # skip pure-numeric symbols like "4USDT"
+                        continue
                     ccxt_sym = f"{token}/USDT"
                     self._symbol_map[ccxt_sym] = bybit_sym
                     # Store lot size and min qty for order rounding

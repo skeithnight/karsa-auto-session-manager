@@ -1,0 +1,431 @@
+{
+  "title": "ASM - Pipeline Funnel",
+  "tags": ["asm", "trading", "pipeline", "funnel"],
+  "timezone": "browser",
+  "refresh": "10s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "uid": "asm-pipeline-funnel",
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "📊 Signal Funnel",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+    },
+    {
+      "id": 1,
+      "title": "Signal Funnel (24h)",
+      "type": "bargauge",
+      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_regime_classified_total[24h]))",
+          "legendFormat": "1. Regime Classified",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total[24h]))",
+          "legendFormat": "2. Strategy Scored",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total[24h]))",
+          "legendFormat": "3. Confidence Passed",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(increase(karsa_risk_gate_pass_total[24h]))",
+          "legendFormat": "4. Risk Gate Passed",
+          "refId": "D"
+        },
+        {
+          "expr": "sum(increase(karsa_orders_placed_total[24h]))",
+          "legendFormat": "5. EXECUTED",
+          "refId": "E"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "orange", "value": 10 },
+              { "color": "green", "value": 50 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "colorMode": "gradient",
+        "displayMode": "gradient"
+      }
+    },
+    {
+      "id": 2,
+      "title": "Kill Reasons (Where Signals Die)",
+      "type": "piechart",
+      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (reason)",
+          "legendFormat": "{{reason}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "pieType": "donut",
+        "tooltip": { "mode": "single" }
+      }
+    },
+    {
+      "id": 3,
+      "title": "Kill Stage Breakdown",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (stage)",
+          "legendFormat": "{{stage}}",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "colorMode": "gradient"
+      }
+    },
+    {
+      "id": 4,
+      "title": "Risk Gate Pass vs Reject (24h)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 11 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_risk_gate_pass_total[24h]))",
+          "legendFormat": "Pass",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_risk_gate_reject_total[24h]))",
+          "legendFormat": "Reject",
+          "refId": "B"
+        }
+      ],
+      "options": { "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "id": 5,
+      "title": "Kill Reasons by Reason (detail)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 11 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (stage, reason)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true },
+            "renameByName": {
+              "stage": "Stage",
+              "reason": "Reason",
+              "Value": "Count"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "📈 Regime Funnels",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 }
+    },
+    {
+      "id": 10,
+      "title": "CHOP Funnel",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_regime_classified_total{regime=\"CHOP\"}[24h]))",
+          "legendFormat": "Classified",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"CHOP\",score_bucket=\"85-100\"}[24h]))",
+          "legendFormat": "Score 85-100",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"CHOP\"}[24h]))",
+          "legendFormat": "Passed Gate",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(increase(karsa_orders_placed_total[24h]))",
+          "legendFormat": "Executed",
+          "refId": "D"
+        }
+      ],
+      "options": { "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "id": 11,
+      "title": "TREND_BULL Funnel",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_regime_classified_total{regime=\"TREND_BULL\"}[24h]))",
+          "legendFormat": "Classified",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"TREND_BULL\",score_bucket=\"85-100\"}[24h]))",
+          "legendFormat": "Score 85-100",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BULL\"}[24h]))",
+          "legendFormat": "Passed Gate",
+          "refId": "C"
+        }
+      ],
+      "options": { "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "id": 12,
+      "title": "RANGE Funnel",
+      "type": "stat",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 20 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_regime_classified_total{regime=\"RANGE\"}[24h]))",
+          "legendFormat": "Classified",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"RANGE\",score_bucket=\"85-100\"}[24h]))",
+          "legendFormat": "Score 85-100",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"RANGE\"}[24h]))",
+          "legendFormat": "Passed Gate",
+          "refId": "C"
+        }
+      ],
+      "options": { "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "🎲 Score Distributions",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }
+    },
+    {
+      "id": 20,
+      "title": "Strategy Score Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
+      "targets": [
+        {
+          "expr": "karsa_strategy_score",
+          "legendFormat": "{{regime}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "bucketBound": "le",
+        "combine": false,
+        "fillOpacity": 20
+      }
+    },
+    {
+      "id": 21,
+      "title": "Signal Confidence Distribution",
+      "type": "histogram",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
+      "targets": [
+        {
+          "expr": "karsa_signal_confidence",
+          "legendFormat": "{{symbol}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "bucketBound": "le",
+        "combine": false,
+        "fillOpacity": 20
+      }
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "📉 Strategy Score Buckets by Regime",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }
+    },
+    {
+      "id": 30,
+      "title": "Score Buckets by Regime (24h)",
+      "type": "bargauge",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"0-50\"}[24h])) by (regime)",
+          "legendFormat": "{{regime}} 0-50",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"50-65\"}[24h])) by (regime)",
+          "legendFormat": "{{regime}} 50-65",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"65-85\"}[24h])) by (regime)",
+          "legendFormat": "{{regime}} 65-85",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"85-100\"}[24h])) by (regime)",
+          "legendFormat": "{{regime}} 85-100",
+          "refId": "D"
+        }
+      ],
+      "options": {
+        "orientation": "horizontal",
+        "showUnfilled": true,
+        "colorMode": "gradient"
+      }
+    },
+    {
+      "id": 31,
+      "title": "Confidence Pass Rate by Regime (24h)",
+      "type": "stat",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"CHOP\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"CHOP\"}[24h]))",
+          "legendFormat": "CHOP",
+          "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BULL\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"TREND_BULL\"}[24h]))",
+          "legendFormat": "TREND_BULL",
+          "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BEAR\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"TREND_BEAR\"}[24h]))",
+          "legendFormat": "TREND_BEAR",
+          "refId": "C"
+        },
+        {
+          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"RANGE\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"RANGE\"}[24h]))",
+          "legendFormat": "RANGE",
+          "refId": "D"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.1 },
+              { "color": "green", "value": 0.3 }
+            ]
+          }
+        }
+      },
+      "options": { "textMode": "value_and_name", "colorMode": "value" }
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "⚡ Live Pipeline Status",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 }
+    },
+    {
+      "id": 40,
+      "title": "Current Regime",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 45 },
+      "targets": [
+        {
+          "expr": "karsa_regime_state",
+          "legendFormat": "Regime",
+          "refId": "A"
+        }
+      ],
+      "options": { "textMode": "value_and_name", "colorMode": "background" }
+    },
+    {
+      "id": 41,
+      "title": "ADX",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 6, "y": 45 },
+      "targets": [
+        {
+          "expr": "karsa_regime_adx",
+          "legendFormat": "ADX",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "title": "Hurst",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 45 },
+      "targets": [
+        {
+          "expr": "karsa_regime_hurst",
+          "legendFormat": "Hurst",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 43,
+      "title": "Regime Classifications (5m)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 49 },
+      "targets": [
+        {
+          "expr": "sum(rate(karsa_regime_classified_total[5m])) by (regime)",
+          "legendFormat": "{{regime}}",
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "tooltip": { "mode": "multi" }
+      }
+    }
+  ]
+}

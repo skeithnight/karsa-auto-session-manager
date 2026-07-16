@@ -91,6 +91,22 @@ class StrategyRouter:
         logger.info(
             f"StrategyRouter: regime={regime.value} dir={direction} score={score}"
         )
+
+        from app.core import metrics as m
+
+        if score < 50:
+            bucket = "0-50"
+        elif score < 65:
+            bucket = "50-65"
+        elif score < 85:
+            bucket = "65-85"
+        else:
+            bucket = "85-100"
+
+        m.strategy_scored_total.labels(
+            regime=regime.value, score_bucket=bucket
+        ).inc()
+
         return float(score)
 
     # ------------------------------------------------------------------

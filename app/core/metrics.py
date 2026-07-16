@@ -45,6 +45,31 @@ skew_value = Gauge(
     ["symbol"],
 )
 
+# ── Pipeline Funnel (flow-stage counters) ──────────────────
+regime_classified_total = Counter(
+    "karsa_regime_classified_total",
+    "Regime classifications performed",
+    ["regime"],
+)
+
+strategy_scored_total = Counter(
+    "karsa_strategy_scored_total",
+    "Signals scored by StrategyRouter",
+    ["regime", "score_bucket"],
+)
+
+signal_confidence_passed_total = Counter(
+    "karsa_signal_confidence_passed_total",
+    "Signals that passed confidence gate",
+    ["regime"],
+)
+
+signals_killed_total = Counter(
+    "karsa_signals_killed_total",
+    "Signals killed at each pipeline stage",
+    ["stage", "reason"],
+)
+
 # ── Alpha Bridge ─────────────────────────────────────────────
 signals_generated = Counter(
     "karsa_signals_generated_total",
@@ -57,6 +82,13 @@ signal_confidence = Histogram(
     "Signal confidence distribution",
     ["symbol"],
     buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+
+strategy_score = Histogram(
+    "karsa_strategy_score",
+    "StrategyRouter score per signal (0-100, gate at 65)",
+    ["symbol", "regime"],
+    buckets=[10, 20, 30, 40, 50, 60, 65, 70, 80, 90, 100],
 )
 
 signals_skipped = Counter(
@@ -168,6 +200,11 @@ symbol_universe_total = Gauge(
 symbol_universe_dropped = Gauge(
     "karsa_symbol_universe_dropped",
     "Symbols dropped during cross-exchange validation",
+)
+
+universe_symbols_scored = Counter(
+    "karsa_universe_symbols_scored_total",
+    "Symbols scored by UniverseScorer each cycle",
 )
 
 # ── Network Health ───────────────────────────────────────────
@@ -296,9 +333,15 @@ postgres_write_errors = Counter(
     ["table"],
 )
 
+signals_pipeline_attempted = Counter(
+    "karsa_signals_pipeline_attempted_total",
+    "Symbols attempted through signal pipeline (before generate)",
+    ["symbol"],
+)
+
 signals_entered_pipeline = Counter(
     "karsa_signals_entered_pipeline_total",
-    "Signals entering the full 6-stage pipeline",
+    "Signals entering the full 6-stage pipeline (after generate)",
     ["symbol"],
 )
 

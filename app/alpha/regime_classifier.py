@@ -85,6 +85,10 @@ class RegimeClassifier:
 
         regime = self._decision_tree(adx, hurst, atr_pct, last_close, sma20)
 
+        from app.core import metrics as m
+
+        m.regime_classified_total.labels(regime=regime.value).inc()
+
         logger.info(
             f"RegimeClassifier: adx={adx:.2f} hurst={hurst:.3f} atr_pct={atr_pct:.0f} "
             f"close={last_close:.2f} sma20={sma20:.2f} → {regime.value}"
@@ -122,8 +126,10 @@ class RegimeClassifier:
         while True:
             try:
                 if ohlcv_fetcher is not None:
-                    # Fetch BTC 1H candles — expect (N, 6) numpy array
-                    candles = await ohlcv_fetcher.fetch(symbol, "1h", limit=200)  # type: ignore[attr-defined]
+                    # Fetch BTC 1H candles — convert to numpy array
+                    import numpy as _np
+                    candles_raw = await ohlcv_fetcher.fetch(symbol, "1h", limit=200)  # type: ignore[attr-defined]
+                    candles = _np.array(candles_raw, dtype=float) if candles_raw else _np.array([])
                     regime = self.classify(candles)
 
                     # Write to Redis with metadata

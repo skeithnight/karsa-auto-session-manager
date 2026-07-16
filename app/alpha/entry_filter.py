@@ -1,6 +1,7 @@
 """Entry Filter — pre-entry quality checklist before risk gate.
 
-Checks: regime, spread, book depth, time-of-day, existing position.
+Checks: spread, book depth, time-of-day, existing position.
+Regime gating delegated to StrategyRouter (Phase 6 adaptive multi-strategy).
 """
 
 from __future__ import annotations
@@ -10,13 +11,14 @@ from typing import Optional, Tuple
 
 from loguru import logger
 
-from app.alpha.regime import REGIME_CHOP
-
 
 class EntryFilter:
     """Pre-entry gate between signal generation and risk gate.
 
     Returns (passed: bool, reason: str).
+
+    Phase 6: CHOP regime no longer hard-blocked here. StrategyRouter
+    scores CHOP signals (micro-scalp) and gates at 65+ threshold.
     """
 
     def __init__(
@@ -52,7 +54,7 @@ class EntryFilter:
         """Run all entry checks. Returns (passed, reason).
 
         Args:
-            regime: current market regime
+            regime: current market regime (CHOP allowed — StrategyRouter gates)
             spread_pct: (ask - bid) / mid price
             bid_depth: total bid volume near top of book
             ask_depth: total ask volume near top of book
@@ -61,12 +63,10 @@ class EntryFilter:
         """
         logger.debug("check: entering")
 
-        # 1. Regime check
-        if regime == REGIME_CHOP:
-            logger.debug("check: returning False (CHOP regime)")
-            return False, "CHOP regime"
+        # Regime check removed — StrategyRouter handles regime-specific gating.
+        # CHOP signals now scored by micro-scalp strategy (funding + liquidity sweep).
 
-        # 2. Spread check
+        # 1. Spread check
         if spread_pct is not None and spread_pct > self.max_spread_pct:
             logger.debug(
                 f"check: returning False (spread {spread_pct:.4f} > {self.max_spread_pct})"

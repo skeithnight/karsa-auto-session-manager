@@ -62,7 +62,7 @@ class ActivePositionManager:
             try:
                 now = datetime.now(timezone.utc).timestamp()
 
-                positions = await self._state.get_all_positions()  # type: ignore[attr-defined]
+                positions = self._state.get_all_positions()
                 for pos in positions:
                     await self._manage_single_position(pos)
 
@@ -141,6 +141,9 @@ class ActivePositionManager:
     ) -> None:
         """Move SL to entry ± fee buffer. Exchange-side amend with retry."""
         symbol = pos.get("symbol", "")
+        sl_order_id = pos.get("sl_order_id", "")
+        amount = Decimal(str(pos.get("amount", "0")))
+        api_side = "buy" if side == "LONG" else "sell"
         try:
             if side == "LONG":
                 new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
@@ -149,12 +152,12 @@ class ActivePositionManager:
 
             new_sl_str = str(new_sl)
             try:
-                await self._client.amend_stop_loss(symbol, new_sl_str)  # type: ignore[attr-defined]
+                await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
             except Exception:
                 self._log.warning(f"APM: breakeven amend failed for {symbol}, retrying")
-                await self._client.amend_stop_loss(symbol, new_sl_str)  # type: ignore[attr-defined]
+                await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
 
-            await self._state.set_breakeven(symbol, True)  # type: ignore[attr-defined]
+            await self._state.update_sl(symbol, api_side, sl_order_id)  # type: ignore[attr-defined]
             self._log.info(f"APM: breakeven locked for {symbol} at {new_sl_str}")
 
         except Exception:
@@ -195,7 +198,10 @@ class ActivePositionManager:
                 return
 
         try:
-            await self._client.amend_stop_loss(symbol, str(new_sl))  # type: ignore[attr-defined]
+            sl_order_id = pos.get("sl_order_id", "")
+            amount = Decimal(str(pos.get("amount", "0")))
+            api_side = "buy" if side == "LONG" else "sell"
+            await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
             self._log.info(f"APM: trailing SL amended for {symbol} to {new_sl}")
         except Exception:
             self._log.exception(f"APM: trailing SL amend failed for {symbol}")
@@ -288,7 +294,7 @@ class ActivePositionManager:
     async def _reconcile_positions(self) -> None:
         """Compare internal state vs Bybit — fix ghost positions."""
         try:
-            internal = await self._state.get_all_positions()  # type: ignore[attr-defined]
+            internal = self._state.get_all_positions()
             external = await self._client.get_positions()  # type: ignore[attr-defined]
             external_symbols = {p.get("symbol") for p in external}
 

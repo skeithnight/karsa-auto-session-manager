@@ -180,3 +180,5 @@ Every 5 minutes, the APM must run a background check comparing its internal `sel
 4.  **Maximizing Profit:** If Trend regime, APM trails the SL behind the price using ATR.
 5.  **Cutting Losses:** If time-exit is reached, or if the market Regime changes, APM market-closes the position immediately.
 6.  **Safety:** All SL/TP orders live on Bybit's servers. Internal state is constantly reconciled.
+
+By implementing this Active Position Manager, you transform your bot from a simple "signal generator" into a **complete, autonomous portfolio manager** that actively defends your capital and ruthlessly locks in profits.

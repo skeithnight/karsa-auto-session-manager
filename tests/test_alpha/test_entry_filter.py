@@ -24,10 +24,14 @@ class TestEntryFilter:
         assert ok is True
         assert reason == "passed"
 
-    def test_chop_rejects(self):
-        ok, reason = self.filt.check(regime="CHOP")
-        assert ok is False
-        assert "CHOP" in reason
+    def test_chop_passes_entry_filter(self):
+        """Phase 6: CHOP no longer hard-blocked. StrategyRouter gates CHOP signals."""
+        ok, reason = self.filt.check(
+            regime="CHOP",
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+        )
+        assert ok is True
+        assert reason == "passed"
 
     def test_spread_too_wide(self):
         ok, reason = self.filt.check(spread_pct=0.01)

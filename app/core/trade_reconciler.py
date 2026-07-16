@@ -629,6 +629,21 @@ class TradeReconciler:
                         "pnl": str(pnl),
                         "trade_id": d.local_trade_id,
                     })
+
+                    # Send normal exit alert
+                    try:
+                        from app.bot.utils.formatters import format_tp_alert, format_sl_alert, format_breakeven_alert
+                        entry_price = _safe_decimal(d.bybit_data.get("avg_entry_price", "0"))
+                        pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
+                        if pnl > 0:
+                            msg = format_tp_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                        elif pnl < 0:
+                            msg = format_sl_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                        else:
+                            msg = format_breakeven_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                        await self.alert.send(msg)
+                    except Exception as e:
+                        logger.error(f"Trade reconciler: failed to send exit alert: {e}")
             except Exception as e:
                 logger.error(
                     f"Trade reconciler: repair failed for {d.symbol} {d.side}: {e}"
@@ -639,7 +654,7 @@ class TradeReconciler:
 
     async def _alert_discrepancies(self, discrepancies: List[Discrepancy]) -> None:
         """Send Telegram alert for CRITICAL discrepancies."""
-        critical = [d for d in discrepancies if d.severity == "CRITICAL"]
+        critical = [d for d in discrepancies if d.severity == "CRITICAL" and not d.repaired]
         if not critical:
             return
 

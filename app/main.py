@@ -304,6 +304,7 @@ async def alpha_bridge_task(
     position_store: Optional[PositionStore] = None,
     trade_memory: Optional[Any] = None,
     trade_store: Optional[TradeStore] = None,
+    strategy_router: Optional[Any] = None,
 ) -> None:
     """Key 2: Generate trading signals from market state."""
     logger.debug("alpha_bridge_task: entering")
@@ -331,6 +332,8 @@ async def alpha_bridge_task(
             logger.warning("Alpha Bridge paused — stale data")
             await asyncio.sleep(5)
             continue
+        _signals_queued_this_cycle = 0
+        MAX_SIGNALS_PER_CYCLE = 5
         for symbol in symbols:
             try:
                 state = await redis_client.get_global_state(symbol)
@@ -401,18 +404,77 @@ async def alpha_bridge_task(
                         logger.debug(f"Entry filtered {symbol}: {entry_reason}")
                         continue
 
+                    # Phase 6: StrategyRouter quality gate
+                    # Scores signal 0-100 per regime. Below 65 = reject.
+                    # Replaces CHOP hard-block with regime-aware scoring.
+                    # Fetch funding early — StrategyRouter needs it for CHOP scoring.
+                    _funding_rate = await alpha_metrics.get_funding_rate(symbol)
+                    funding_float = (
+                        float(_funding_rate) if _funding_rate is not None else None
+                    )
+                    strategy_score: float | None = None
+                    if strategy_router is not None:
+                        try:
+                            from app.alpha.regime_classifier import MarketRegime
+
+                            _regime_map = {
+                                "CHOP": MarketRegime.CHOP,
+                                "MEAN_REVERSION": MarketRegime.RANGE,
+                                "TREND_BULL": MarketRegime.TREND_BULL,
+                                "TREND_BEAR": MarketRegime.TREND_BEAR,
+                            }
+                            regime_enum = _regime_map.get(regime, MarketRegime.CHOP)
+
+                            # Preliminary direction from skew for scoring
+                            _direction = "LONG" if skew > 0 else ("SHORT" if skew < 0 else "FLAT")
+                            if _direction == "FLAT":
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="strategy_neutral_skew"
+                                ).inc()
+                                continue
+
+                            strategy_score = strategy_router.evaluate_signal(
+                                candles=candles_1h if candles_1h else [],
+                                regime=regime_enum,
+                                direction=_direction,
+                                funding_rate=funding_float,
+                                orderbook_delta=-skew,  # CHOP fades the skew (contrarian)
+                                global_prices=lead_lag_buffer.get_latest_prices(symbol),
+                            )
+                            metrics.strategy_score.labels(
+                                symbol=symbol, regime=regime
+                            ).observe(strategy_score)
+                            from app.alpha.strategy_router import STRATEGY_GATE_THRESHOLD
+
+                            if strategy_score < STRATEGY_GATE_THRESHOLD:
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol,
+                                    reason=f"strategy_gate:{strategy_score:.0f}",
+                                ).inc()
+                                logger.debug(
+                                    f"StrategyRouter rejected {symbol}: "
+                                    f"score={strategy_score:.0f} < {STRATEGY_GATE_THRESHOLD} "
+                                    f"(regime={regime})"
+                                )
+                                continue
+                            logger.info(
+                                f"StrategyRouter passed {symbol}: "
+                                f"score={strategy_score:.0f} regime={regime}"
+                            )
+                        except Exception as e:
+                            logger.warning(f"StrategyRouter error {symbol}: {e}")
+                            # Fail-open: continue without strategy gate
+
                     # Multi-signal inputs (Phase 2)
                     lead_lag_delta = lead_lag_buffer.get_lead_lag_delta(symbol)
-                    funding_rate = await alpha_metrics.get_funding_rate(symbol)
-                    funding_float = (
-                        float(funding_rate) if funding_rate is not None else None
-                    )
+                    # funding_float already fetched above for StrategyRouter
                     oi_val = await alpha_metrics.get_open_interest(symbol)
                     oi_prev = alpha_metrics._oi_cache.get(symbol)
                     oi_change = None
                     if oi_val is not None and oi_prev is not None:
                         oi_change = float(oi_val - oi_prev[1])
 
+                    metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
                     signal = signal_generator.generate(
                         symbol,
                         vwap,
@@ -421,6 +483,7 @@ async def alpha_bridge_task(
                         lead_lag_delta=lead_lag_delta,
                         funding_rate=funding_float,
                         oi_change=oi_change,
+                        strategy_score=strategy_score,
                     )
                     # Attach pre-computed ATR to signal for position lifecycle
                     if signal and atr_val:
@@ -525,7 +588,11 @@ async def alpha_bridge_task(
                         _signal_cooldown[signal.symbol] = now_ts
                         signal._generated_at = now_ts
                         await signal_queue.put(signal)
+                        _signals_queued_this_cycle += 1
                         logger.debug(f"alpha_bridge_task: queued {signal.symbol}")
+                        if _signals_queued_this_cycle >= MAX_SIGNALS_PER_CYCLE:
+                            logger.info(f"Alpha Bridge: {MAX_SIGNALS_PER_CYCLE} signals queued this cycle, skipping remaining symbols")
+                            break
                     else:
                         metrics.signals_skipped.labels(
                             symbol=symbol, reason="low_confidence"
@@ -936,6 +1003,7 @@ async def universe_refresh_task(
     while not kill_switch.is_set():
         try:
             symbols = await scorer.refresh(config_symbols)
+            metrics.universe_symbols_scored.inc(len(symbols))
             logger.info(f"Universe refresh complete: {len(symbols)} symbols")
         except Exception as e:
             logger.error(f"Universe refresh failed: {e}")
@@ -1082,6 +1150,11 @@ async def main() -> None:
     # Phase 6 modules
     # Phase 6.5: APM_ENABLED flag — set APM_ENABLED=1 in env to activate
     APM_ENABLED = __import__("os").environ.get("APM_ENABLED", "0") == "1"
+    # Create stores before PortfolioRiskManager needs them
+    position_store = PositionStore(redis_client)
+    trade_store = TradeStore(db_engine)
+    trade_memory = TradeMemory(redis_client)
+    sector_cap = SectorCap(position_store)
     regime_classifier = RegimeClassifier(redis_client=redis_client)
     strategy_router = StrategyRouter()
     dynamic_risk_gate = DynamicRiskGate()
@@ -1113,9 +1186,6 @@ async def main() -> None:
     crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client)
     position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client)
 
-    position_store = PositionStore(redis_client)
-    trade_store = TradeStore(db_engine)
-    trade_memory = TradeMemory(redis_client)
     trade_reconciler = TradeReconciler(bybit_client, trade_store, alert_service)
     # Backfill trade history from Bybit on startup (one-time sync)
     try:
@@ -1139,8 +1209,6 @@ async def main() -> None:
 
     # Phase 4.5 modules
     multi_tf = MultiTFFilter(ohlcv_fetcher)
-    trade_memory = TradeMemory(redis_client)
-    sector_cap = SectorCap(position_store)
     universe_scorer = UniverseScorer(redis_client, ohlcv_fetcher, settings.symbols)
 
     # Startup reconciliation — trust nothing
@@ -1206,7 +1274,7 @@ async def main() -> None:
     # Falls back to static config list if Bybit API unavailable
     dropped = 0
     dynamic_symbols = await ccxt_manager.fetch_bybit_perps(
-        min_volume_usd=1_000_000, top_n=100
+        min_volume_usd=1_000_000, top_n=30
     )
     if dynamic_symbols:
         valid_symbols = dynamic_symbols
@@ -1282,6 +1350,7 @@ async def main() -> None:
                 position_store,
                 trade_memory,
                 trade_store,
+                strategy_router=strategy_router,
             )
         ),
         asyncio.create_task(

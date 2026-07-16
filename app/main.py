@@ -665,6 +665,7 @@ async def executor_task(
     trade_store: TradeStore,
     session_manager: AutonomousSessionManager,
     risk_pct: Decimal = Decimal("0.03"),
+    dynamic_risk_gate: DynamicRiskGate | None = None,
 ) -> None:
     """Key 4: Execute trades via Smart Order Router."""
     logger.debug("executor_task: entering")
@@ -690,6 +691,27 @@ async def executor_task(
         except Exception as e:
             logger.warning(f"ASM check failed: {e} — skipping signal for safety")
             continue
+
+        # Phase 6: get RiskProfile for regime-aware sizing
+        risk_profile = None
+        if dynamic_risk_gate is not None:
+            try:
+                from app.alpha.regime_classifier import MarketRegime
+                raw_regime = await redis_client.get("system:config:regime")
+                if raw_regime:
+                    import json as _json
+                    try:
+                        regime_data = _json.loads(raw_regime)
+                        regime_val = regime_data.get("regime", "CHOP") if isinstance(regime_data, dict) else str(regime_data)
+                    except (_json.JSONDecodeError, AttributeError):
+                        regime_val = str(raw_regime)
+                    try:
+                        regime_enum = MarketRegime(regime_val)
+                    except ValueError:
+                        regime_enum = MarketRegime.CHOP
+                    risk_profile = dynamic_risk_gate.get_profile(regime_enum)
+            except Exception:
+                pass  # fall through to flat sizing
 
         # Record execution latency
         generated_at = getattr(signal, "_generated_at", None)
@@ -746,6 +768,9 @@ async def executor_task(
                 logger.warning(f"No available balance, skipping {signal.symbol}")
                 continue
             amount = (available * dynamic_risk) / price
+            # Phase 6: apply regime-aware size multiplier
+            if risk_profile is not None:
+                amount = amount * risk_profile.size_multiplier
             # Enforce Bybit's $5 USDT minimum order value
             order_value = amount * price
             if order_value < Decimal("5"):
@@ -792,15 +817,30 @@ async def executor_task(
                         regime = str(raw_regime_data)
 
                 # Save position to Redis
+                atr_val = getattr(signal, "atr", None)
+                # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
+                initial_risk_per_unit = None
+                risk_profile_json = None
+                if risk_profile is not None and atr_val is not None:
+                    initial_risk_per_unit = Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
+                    risk_profile_json = risk_profile.to_json()
+                elif risk_profile is not None:
+                    # No ATR — fall back to 1% of entry price as risk estimate
+                    initial_risk_per_unit = price * Decimal("0.01")
+                    risk_profile_json = risk_profile.to_json()
+
                 await position_store.save(
                     symbol=signal.symbol,
                     side=side_str,
                     entry_price=price,
                     amount=amount,
                     sl_order_id=result.get("sl_order_id"),
-                    atr=getattr(signal, "atr", None),
+                    atr=atr_val,
                     entry_confidence=signal.confidence,
                     regime=regime,
+                    entry_regime=regime,
+                    initial_risk_per_unit=str(initial_risk_per_unit) if initial_risk_per_unit is not None else None,
+                    risk_profile_json=risk_profile_json,
                 )
                 await trade_store.record_entry(
                     symbol=signal.symbol,
@@ -808,6 +848,9 @@ async def executor_task(
                     amount=amount,
                     entry_price=price,
                     regime=regime,
+                    entry_regime=regime,
+                    initial_risk_per_unit=initial_risk_per_unit,
+                    risk_profile_json=risk_profile_json,
                 )
             else:
                 logger.warning(f"SOR returned no fill for {signal.symbol}")
@@ -1260,6 +1303,7 @@ async def main() -> None:
                 bybit_client,
                 trade_store,
                 session_manager,
+                dynamic_risk_gate=dynamic_risk_gate,
             )
         ),
         asyncio.create_task(watchdog_task(watchdog, redis_client)),

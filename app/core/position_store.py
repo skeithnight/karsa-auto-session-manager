@@ -42,6 +42,9 @@ class PositionStore:
         atr: Optional[Decimal] = None,
         entry_confidence: Optional[float] = None,
         regime: Optional[str] = None,
+        entry_regime: Optional[str] = None,
+        initial_risk_per_unit: Optional[str] = None,
+        risk_profile_json: Optional[str] = None,
     ) -> None:
         """Save new position state."""
         key = self._key(symbol, side)
@@ -58,6 +61,9 @@ class PositionStore:
             "checkpoint": "OPEN",
             "entered_at": datetime.now(timezone.utc).isoformat(),
             "last_check_at": datetime.now(timezone.utc).isoformat(),
+            "entry_regime": entry_regime or regime or "",
+            "initial_risk_per_unit": initial_risk_per_unit or "",
+            "risk_profile_json": risk_profile_json or "",
         }
         await self.redis.redis.set(key, json.dumps(data))
         logger.info(f"Position saved: {symbol} {side} @ {entry_price}")

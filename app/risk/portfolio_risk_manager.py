@@ -132,10 +132,59 @@ class PortfolioRiskManager:
     async def _check_exposure_limits(self, signal: object) -> CheckResult:
         """Check gross/net exposure against equity thresholds.
 
-        Thresholds are TODO until team ratification — currently passes.
+        Thresholds pending team ratification — using conservative defaults.
         """
-        # TODO: implement when PRM_MAX_GROSS_EXPOSURE_PCT and PRM_MAX_NET_EXPOSURE_PCT confirmed
-        return CheckResult(passed=True)
+        from decimal import Decimal
+
+        # Pending team ratification — conservative defaults
+        PRM_MAX_GROSS_EXPOSURE_PCT = Decimal("0.50")  # 50% of equity
+        PRM_MAX_NET_EXPOSURE_PCT = Decimal("0.30")  # 30% of equity
+
+        try:
+            wallet = await self._bybit_client.get_wallet_balance()  # type: ignore[attr-defined]
+            equity = Decimal(str(wallet.get("equity", wallet.get("available", "0"))))
+            if equity <= 0:
+                return CheckResult(passed=True)
+
+            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            gross_notional = Decimal("0")
+            net_notional = Decimal("0")
+
+            for p in positions:
+                entry_price = Decimal(str(p.get("entry_price", "0")))
+                amount = Decimal(str(p.get("amount", "0")))
+                if entry_price <= 0 or amount <= 0:
+                    continue
+                notional = entry_price * amount
+                gross_notional += abs(notional)
+                side = p.get("side", "buy")
+                if side in ("buy", "LONG"):
+                    net_notional += notional
+                else:
+                    net_notional -= notional
+
+            # Check signal's additional exposure
+            symbol = getattr(signal, "symbol", None)
+            if symbol:
+                # Estimate new position notional (rough — no live price here)
+                # Use 1% of equity as proxy; actual size checked in executor_task
+                pass
+
+            if gross_notional > equity * PRM_MAX_GROSS_EXPOSURE_PCT:
+                return CheckResult(
+                    passed=False,
+                    reason=f"gross exposure {gross_notional:.0f} > {PRM_MAX_GROSS_EXPOSURE_PCT*100}% of equity {equity:.0f}",
+                )
+            if abs(net_notional) > equity * PRM_MAX_NET_EXPOSURE_PCT:
+                return CheckResult(
+                    passed=False,
+                    reason=f"net exposure {abs(net_notional):.0f} > {PRM_MAX_NET_EXPOSURE_PCT*100}% of equity {equity:.0f}",
+                )
+            return CheckResult(passed=True)
+
+        except Exception:
+            logger.exception("PRM: exposure check failed — BLOCKING")
+            return CheckResult(passed=False, reason="exposure check unavailable")
 
     # ------------------------------------------------------------------
     # Check 3: Daily loss circuit breaker

@@ -31,6 +31,10 @@ def _make_prm(
     else:
         sector_mapping.get_sector.return_value = "L1"
     bybit_client = AsyncMock()
+    bybit_client.get_wallet_balance.return_value = {
+        "equity": "10000",
+        "available": "10000",
+    }
     return PortfolioRiskManager(
         redis, position_store, trade_store, sector_mapping, bybit_client
     )

@@ -32,6 +32,9 @@ class TradeStore:
         entry_price: Decimal,
         regime: Optional[str] = None,
         ai_confidence: Optional[int] = None,
+        entry_regime: Optional[str] = None,
+        initial_risk_per_unit: Optional[Decimal] = None,
+        risk_profile_json: Optional[str] = None,
     ) -> int:
         """Record trade entry. Returns trade id."""
         now = datetime.now(timezone.utc)
@@ -39,8 +42,10 @@ class TradeStore:
             async with self.db.engine.connect() as conn:
                 result = await conn.execute(
                     text(
-                        """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence)
-                        VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence)
+                        """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence,
+                        entry_regime, initial_risk_per_unit, risk_profile_json)
+                        VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence,
+                        :entry_regime, :initial_risk_per_unit, :risk_profile_json)
                         RETURNING id"""
                     ),
                     {
@@ -51,6 +56,9 @@ class TradeStore:
                         "regime": regime,
                         "entry_time": now,
                         "ai_confidence": ai_confidence,
+                        "entry_regime": entry_regime,
+                        "initial_risk_per_unit": str(initial_risk_per_unit) if initial_risk_per_unit is not None else None,
+                        "risk_profile_json": risk_profile_json,
                     },
                 )
                 row = result.fetchone()

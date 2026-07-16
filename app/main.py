@@ -132,6 +132,12 @@ from app.alpha.ta_tools import calculate_atr
 from app.alpha.trade_memory import TradeMemory
 from app.data.universe_scorer import UniverseScorer
 from app.watchdog.monitor import Watchdog
+# Phase 6: Adaptive Multi-Strategy
+from app.alpha.regime_classifier import RegimeClassifier
+from app.alpha.strategy_router import StrategyRouter
+from app.risk.dynamic_risk_gate import DynamicRiskGate
+from app.risk.portfolio_risk_manager import PortfolioRiskManager
+from app.execution.position_manager import ActivePositionManager
 from app.watchdog.dead_mans_switch import DeadMansSwitch
 from app.bot.runner import run_bot
 from app.bot.alert_service import AlertService
@@ -538,6 +544,7 @@ async def risk_gate_task(
     redis_client: RedisClient,
     signal_queue: asyncio.Queue,
     risk_queue: asyncio.Queue,
+    portfolio_risk_manager: PortfolioRiskManager | None = None,
 ) -> None:
     """Key 3: Gate signals through risk checks."""
     logger.debug("risk_gate_task: entering")
@@ -558,6 +565,13 @@ async def risk_gate_task(
         if not state or not state.get("best_bid") or not state.get("best_ask"):
             logger.warning(f"Signal rejected — no live state for {signal.symbol}")
             continue
+
+        # Phase 6.4: Portfolio Risk Manager — runs BEFORE RiskGate
+        if portfolio_risk_manager is not None:
+            prm_result = await portfolio_risk_manager.check(signal)
+            if not prm_result.approved:
+                logger.warning(f"PRM blocked {signal.symbol}: {prm_result.reason}")
+                continue
 
         decision = risk_gate.evaluate(
             volume_24h=(
@@ -1022,6 +1036,25 @@ async def main() -> None:
     session_manager = AutonomousSessionManager(redis_client, kill_switch)
     ohlcv_fetcher = OHLCVFetcher(ccxt_manager.exchanges["bybit"])
     lead_lag_buffer = LeadLagBuffer()
+    # Phase 6 modules
+    # Phase 6.5: APM_ENABLED flag — set APM_ENABLED=1 in env to activate
+    APM_ENABLED = __import__("os").environ.get("APM_ENABLED", "0") == "1"
+    regime_classifier = RegimeClassifier(redis_client=redis_client)
+    strategy_router = StrategyRouter()
+    dynamic_risk_gate = DynamicRiskGate()
+    portfolio_risk_manager = PortfolioRiskManager(
+        redis_client=redis_client,
+        position_store=position_store,
+        trade_store=trade_store,
+        sector_mapping=sector_cap,
+        bybit_client=bybit_client,
+    )
+    active_position_manager = ActivePositionManager(
+        bybit_client=bybit_client,
+        state_manager=state_manager,
+        regime_classifier=regime_classifier,
+        alert_service=alert_service,
+    )
     entry_filter = EntryFilter(
         min_atr=0.008,         # require real volatility, skip dead markets
         max_spread_pct=0.001,  # 0.1% max spread — cuts micro-cap noise
@@ -1210,7 +1243,8 @@ async def main() -> None:
         ),
         asyncio.create_task(
             risk_gate_task(
-                risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue
+                risk_gate, circuit_breaker, redis_client, signal_queue, risk_queue,
+                portfolio_risk_manager=portfolio_risk_manager,
             )
         ),
         asyncio.create_task(
@@ -1245,13 +1279,21 @@ async def main() -> None:
         asyncio.create_task(
             regime_engine_task(regime_engine, ohlcv_fetcher, redis_client)
         ),
-        asyncio.create_task(
-            trailing_stop.run(kill_switch, lambda s: _get_price(redis_client, s))
-        ),
-        asyncio.create_task(
-            checkpoint_mgr.run(
-                kill_switch, lambda s: _get_price(redis_client, s), state_manager
-            )
+        # Phase 6.5: APM_ENABLED=True disables legacy lifecycle managers
+        # Set APM_ENABLED=1 in env to activate ActivePositionManager
+        *(
+            []
+            if APM_ENABLED
+            else [
+                asyncio.create_task(
+                    trailing_stop.run(kill_switch, lambda s: _get_price(redis_client, s))
+                ),
+                asyncio.create_task(
+                    checkpoint_mgr.run(
+                        kill_switch, lambda s: _get_price(redis_client, s), state_manager
+                    )
+                ),
+            ]
         ),
         asyncio.create_task(
             position_reconciler_task(bybit_client, position_store, interval_seconds=300)
@@ -1261,6 +1303,18 @@ async def main() -> None:
         ),
         asyncio.create_task(
             metrics_publisher_task(bybit_client, redis_client, position_store, kill_switch)
+        ),
+        # Phase 6 tasks
+        asyncio.create_task(
+            regime_classifier.run_classification_loop(
+                ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=900
+            )
+        ),
+        asyncio.create_task(
+            portfolio_risk_manager.reset_daily_state_loop()
+        ),
+        asyncio.create_task(
+            active_position_manager.start_monitoring()
         ),
     ]
 
@@ -1280,6 +1334,9 @@ async def main() -> None:
         "position_reconciler",
         "trade_history_reconciler",
         "metrics_publisher_task",
+        "regime_classifier",
+        "prm_daily_reset",
+        "active_position_manager",
     ]
     for t, name in zip(tasks, task_names):
         t.set_name(name)

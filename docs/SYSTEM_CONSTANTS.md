@@ -171,3 +171,63 @@
 | :--- | :--- | :--- |
 | Daily drawdown limit | `-0.02` | Code authoritative. All docs aligned at -2%. (Issue #2) |
 | Symbol count | 60 | Config.py confirmed. MVP_SCOPE.md updated. (Issue #6) |
+
+---
+
+## 15. Phase 6 — Adaptive Multi-Strategy
+
+### 15.1 RegimeClassifier (`app/alpha/regime_classifier.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `REGIME_ADX_TREND_THRESHOLD` | `25` | — | `regime.py:32` | Matches existing `ADX_TREND_THRESHOLD` |
+| `REGIME_ADX_CHOP_THRESHOLD` | `20` | — | `regime.py:33` | Matches existing `ADX_CHOP_THRESHOLD` |
+| `REGIME_HURST_MR_THRESHOLD` | `0.45` | — | `regime.py:31` | Matches existing `HURST_MR_THRESHOLD` |
+| `REGIME_ATR_CHOP_PERCENTILE` | `80` | percentile | architecture doc | ATR percentile above which + low ADX = CHOP |
+
+### 15.2 StrategyRouter (`app/alpha/strategy_router.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `TREND_SCORE_BREAKOUT` | `30` | points | architecture doc | Price > rolling 20-period high/low |
+| `TREND_SCORE_VOLUME` | `30` | points | architecture doc | Volume > 1.5× SMA(20) |
+| `TREND_SCORE_GLOBAL_SYNC` | `40` | points | architecture doc | Binance+OKX directional agreement |
+| `RANGE_SCORE_BB_EDGE` | `40` | points | architecture doc | BB extreme at 2.5 StdDev |
+| `RANGE_SCORE_WICK` | `40` | points | architecture doc | Wick rejection (closed back inside bands) |
+| `RANGE_SCORE_RSI` | `20` | points | architecture doc | RSI exhaustion (>75 short, <25 long) |
+| `CHOP_SCORE_LIQUIDITY_SWEEP` | `50` | points | architecture doc | Orderbook delta reversal |
+| `CHOP_SCORE_FUNDING_EXTREME` | `50` | points | architecture doc | Funding rate extreme |
+
+### 15.3 DynamicRiskGate (`app/risk/dynamic_risk_gate.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `TREND_SIZE_MULT` | `1.0` | multiplier | architecture doc | Full size in trending markets |
+| `RANGE_SIZE_MULT` | `0.7` | multiplier | architecture doc | Reduced size in range markets |
+| `CHOP_SIZE_MULT` | `0.3` | multiplier | architecture doc | Minimal size in choppy markets |
+| `TREND_MAX_HOLD_MINS` | `1440` | minutes | architecture doc | 24h max hold in trend |
+| `RANGE_MAX_HOLD_MINS` | `240` | minutes | architecture doc | 4h max hold in range |
+| `CHOP_MAX_HOLD_MINS` | `30` | minutes | architecture doc | 30min max hold in chop |
+
+### 15.4 ActivePositionManager (`app/execution/position_manager.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `APM_MONITOR_INTERVAL_S` | `2` | seconds | architecture doc | Position monitoring loop interval |
+| `APM_ERROR_BACKOFF_S` | `5` | seconds | architecture doc | Backoff on error before retry |
+| `APM_RECONCILE_INTERVAL_S` | `300` | seconds | architecture doc | Ghost position reconciliation interval |
+| `APM_BREAKEVEN_FEE_PCT` | `0.001` | ratio (0.1%) | architecture doc | Fee buffer for breakeven SL |
+| `APM_TREND_TRAIL_ATR_MULT` | `3.0` | ATR multiplier | architecture doc | Chandelier trailing stop multiplier |
+| `APM_TREND_TRAIL_ACTIVATE_R` | `1.5` | R-multiple | architecture doc | Profit threshold to activate trailing |
+| `APM_BREAKEVEN_LOCK_R` | `1.0` | R-multiple | architecture doc | Profit threshold to move SL to breakeven |
+
+### 15.5 PortfolioRiskManager (`app/risk/portfolio_risk_manager.py`)
+
+| Constant | Value | Unit | Source | Notes |
+| :--- | :--- | :--- | :--- | :--- |
+| `PRM_MAX_SECTOR_POSITIONS` | `2` | count | architecture doc | Max positions per sector (BTC/ETH exempt) |
+| `PRM_MAX_GROSS_EXPOSURE_PCT` | `TODO` | ratio | — | **Pending team ratification** |
+| `PRM_MAX_NET_EXPOSURE_PCT` | `TODO` | ratio | — | **Pending team ratification** |
+| `PRM_DAILY_LOSS_LIMIT` | `TODO` | ratio | — | **Pending — Issue #11** (proposed: -3%) |
+| `PRM_MAX_CONSECUTIVE_LOSSES` | `TODO` | count | — | **Pending — Issue #10** (proposed: 4) |
+| `PRM_LOSS_PAUSE_MINUTES` | `60` | minutes | architecture doc | Entry block duration after CB fires |

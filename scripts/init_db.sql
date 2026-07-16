@@ -16,7 +16,13 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_time TIMESTAMPTZ,
     exit_reason VARCHAR(50),
     ai_confidence INTEGER,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    -- Phase 6: Adaptive Multi-Strategy columns
+    entry_regime VARCHAR(20),
+    initial_risk_per_unit NUMERIC(20,8),
+    moved_to_breakeven BOOLEAN DEFAULT FALSE,
+    current_sl NUMERIC(20,8),
+    risk_profile_json JSONB
 );
 
 CREATE TABLE IF NOT EXISTS ai_decisions (

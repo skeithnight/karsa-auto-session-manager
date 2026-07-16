@@ -1,7 +1,7 @@
 <div align="center">
   <img src="assets/karsa_asm_logo.jpg" alt="Karsa Auto Session Manager Logo" width="300" />
   
-  # Karsa Auto Session Manager
+# Karsa Auto Session Manager
   
   **Autonomous Crypto Perpetuals Trading Bot**  
   *"Read Global, Execute Local"*
@@ -24,7 +24,7 @@ Our architecture is split into critical paths ensuring robustness and modularity
 | 1 | **Global Data Engine** | CCXT Pro WS ingestion, normalization, bad-tick filtering | `app/data/` |
 | 2 | **Alpha Bridge** | VWAP/Skew/Lead-Lag calculation, signal generation | `app/alpha/` |
 | 3 | **3-Layer Risk Gate** | Liquidity, spread health, circuit breaker checks | `app/risk/` |
-| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), private WS via WARP | `app/execution/` |
+| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), private WS via WireGuard VPN (`gluetun` sidecar) | `app/execution/` |
 | 5 | **State Manager** | Postgres sync, startup reconciliation | `app/core/state.py` |
 | 6 | **Watchdog & Telemetry** | Heartbeats, latency tracking, dead man's switch, Prometheus | `app/watchdog/` |
 | 7 | **Session Orchestrator** | UTC time-block regime logic | `app/core/session.py` |
@@ -53,7 +53,7 @@ The project is heavily documented to ensure safety and clarity. Please read the 
 
 ## 🚀 Getting Started
 
-The bot is designed to run via Docker Compose, handling the Python application, Postgres database, Redis store, and the WARP proxy network stack.
+The bot is designed to run via Docker Compose, handling the Python application, Postgres database, Redis store, and the WireGuard VPN network stack (via `gluetun`, see `docs/SETUP.md`).
 
 ```bash
 # Clone the repository

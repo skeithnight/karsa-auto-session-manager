@@ -128,6 +128,73 @@ class SmartOrderRouter:
             logger.debug(f"execute: error={e}")
             return None
 
+    async def execute_exit(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        price_tick: Decimal = Decimal("0.01"),
+    ) -> Optional[Dict[str, Any]]:
+        """Execute profitable exit via Post-Only → Reprice → Market.
+
+        No SL placement (position is closing). For loss exits / hard fails,
+        callers should use create_market_order directly to guarantee fill.
+        """
+        logger.debug(f"execute_exit: entering symbol={symbol} side={side}")
+
+        if price <= 0:
+            logger.warning(f"SOR exit: invalid price {price} for {symbol}, falling back to market")
+            return await self.client.create_market_order(symbol, side, amount)
+
+        # Step 1: Post-Only Limit
+        logger.info(f"SOR exit Step 1: Post-Only {side} {amount} @ {price}")
+        try:
+            order = await self.client.create_limit_order(symbol, side, amount, price)
+            if order.get("status") == "open":
+                logger.info(f"Exit Post-Only filled: {order['id']}")
+                return order
+        except Exception as e:
+            logger.warning(f"Exit Post-Only failed: {e}")
+
+        # Step 2: Reprice attempts
+        current_price = price
+        effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
+        for attempt in range(self.max_reprice_attempts):
+            await asyncio.sleep(self.reprice_delay_seconds)
+
+            if side == "buy":
+                current_price += effective_tick
+            else:
+                current_price -= effective_tick
+                if current_price <= 0:
+                    logger.warning(f"Exit reprice would go negative, falling back to market")
+                    break
+
+            logger.info(f"SOR exit Step 2: Reprice attempt {attempt + 1} @ {current_price}")
+            try:
+                if order and order.get("id"):
+                    await self.client.cancel_order(order["id"], symbol)
+
+                order = await self.client.create_limit_order(symbol, side, amount, current_price)
+                if order.get("status") == "open":
+                    logger.info(f"Exit reprice filled: {order['id']}")
+                    return order
+            except Exception as e:
+                logger.warning(f"Exit reprice failed: {e}")
+
+        # Step 3: Market fallback
+        logger.info("SOR exit Step 3: Market fallback")
+        try:
+            if order and order.get("id"):
+                await self.client.cancel_order(order["id"], symbol)
+            market_order = await self.client.create_market_order(symbol, side, amount)
+            logger.info(f"Exit market fallback filled: {market_order['id']}")
+            return market_order
+        except Exception as e:
+            logger.error(f"Exit market fallback failed: {e}")
+            return None
+
     async def _place_sl_after_fill(
         self, symbol: str, side: str, fill_price: Decimal, amount: Decimal, max_loss_usd: Decimal, price_tick: Decimal
     ) -> Optional[str]:

@@ -94,6 +94,7 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 _socket.getaddrinfo = _bypass_getaddrinfo
 
 import asyncio
+import random
 import signal
 import sys
 import time
@@ -154,9 +155,11 @@ async def _stream_orderbook(
 ) -> None:
     """Stream orderbook for a single (symbol, exchange) pair. Runs until kill_switch."""
     logger.info(f"Starting stream {exchange_id}/{symbol}")
+    retries = 0
     while not kill_switch.is_set():
         try:
             orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
+            retries = 0  # reset backoff on success
             metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
             await redis_client.set_exchange_heartbeat(exchange_id)
             exchange_data = normalizer.normalize_orderbook(
@@ -230,7 +233,10 @@ async def _stream_orderbook(
             ).inc()
             logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
             logger.debug(f"_stream_orderbook: error={e}")
-            await asyncio.sleep(1)
+            # Exponential backoff with jitter to prevent thundering herd
+            delay = min(2 ** min(retries, 6), 30) + random.random()
+            retries += 1
+            await asyncio.sleep(delay)
     logger.debug(f"Stream {exchange_id}/{symbol} exiting")
 
 
@@ -260,18 +266,18 @@ async def data_engine_task(
         f"binance={len(binance_symbols)}, okx={len(okx_symbols)} streams"
     )
 
+    async def _staggered_stream(idx: int, sym: str, eid: str) -> None:
+        # ponytail: stagger startup to prevent Redis connection storm
+        await asyncio.sleep(idx * 0.05)
+        await _stream_orderbook(
+            sym, eid, ccxt_manager, normalizer, bad_tick_filter,
+            redis_client, lead_lag_buffer,
+        )
+
     await asyncio.gather(
         *[
-            _stream_orderbook(
-                sym,
-                eid,
-                ccxt_manager,
-                normalizer,
-                bad_tick_filter,
-                redis_client,
-                lead_lag_buffer,
-            )
-            for sym, eid in streams
+            _staggered_stream(i, sym, eid)
+            for i, (sym, eid) in enumerate(streams)
         ],
         return_exceptions=True,
     )
@@ -431,6 +437,14 @@ async def alpha_bridge_task(
                                 logger.info(
                                     f"Multi-TF penalty {symbol}: {mtf['penalty_applied']}x → conf={signal.confidence:.3f}"
                                 )
+                                if signal.confidence < signal_generator.min_confidence:
+                                    logger.info(
+                                        f"Multi-TF penalty killed {symbol}: conf={signal.confidence:.3f} < {signal_generator.min_confidence}"
+                                    )
+                                    metrics.signals_skipped.labels(
+                                        symbol=symbol, reason="mtf_penalty_low"
+                                    ).inc()
+                                    continue
 
                         # AI analyst — ambiguous confidence zone (0.40-0.85)
                         if crypto_analyst and signal.confidence >= 0.40:
@@ -1044,6 +1058,7 @@ async def main() -> None:
         trade_store=trade_store,
         alert_service=alert_service,
         trade_memory=trade_memory,
+        sor=sor,
     )
 
     # Phase 4.5 modules
@@ -1115,7 +1130,7 @@ async def main() -> None:
     # Falls back to static config list if Bybit API unavailable
     dropped = 0
     dynamic_symbols = await ccxt_manager.fetch_bybit_perps(
-        min_volume_usd=1_000_000, top_n=200
+        min_volume_usd=1_000_000, top_n=100
     )
     if dynamic_symbols:
         valid_symbols = dynamic_symbols

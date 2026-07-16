@@ -180,66 +180,6 @@
       }
     },
     {
-      "id": 200,
-      "title": "\ud83e\udde0 Analyst Confidence",
-      "type": "table",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "grafana-postgresql-datasource"
-      },
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 0,
-        "y": 7
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "grafana-postgresql-datasource"
-          },
-          "rawSql": "SELECT symbol AS \"Symbol\", AVG((output_json->>'ai_confidence')::numeric) AS \"Avg AI Confidence\", COUNT(*) AS \"Evaluations\", decision_type AS \"Type\" FROM ai_decisions WHERE created_at >= NOW() - INTERVAL '24 hours' GROUP BY symbol, decision_type ORDER BY \"Avg AI Confidence\" DESC LIMIT 20;",
-          "format": "table",
-          "instant": true
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "auto"
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Avg AI Confidence"
-            },
-            "properties": [
-              {
-                "id": "custom.width",
-                "value": 160
-              },
-              {
-                "id": "decimals",
-                "value": 1
-              }
-            ]
-          }
-        ]
-      },
-      "options": {
-        "showHeader": true,
-        "sortBy": [
-          {
-            "displayName": "Avg AI Confidence",
-            "desc": true
-          }
-        ]
-      }
-    },
-    {
       "id": 5,
       "title": "Symbol Universe",
       "type": "stat",

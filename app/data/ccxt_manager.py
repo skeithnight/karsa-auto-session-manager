@@ -110,6 +110,51 @@ class CCXTManager:
                 logger.debug(f"Symbol {symbol} not on Bybit, skipping")
         return valid
 
+    async def fetch_bybit_perps(
+        self,
+        min_volume_usd: float = 5_000_000,
+        top_n: int = 80,
+    ) -> list[str]:
+        """Dynamic symbol discovery: fetch all Bybit USDT perpetuals, filter by 24h volume.
+
+        Returns top_n symbols sorted by 24h quote volume (descending), filtered by
+        min_volume_usd floor. Symbols returned in CCXT format (e.g. 'BTC/USDT').
+        Falls back to empty list on failure.
+        """
+        bybit = self.exchanges.get("bybit")
+        if not bybit or "bybit" not in self.markets_loaded:
+            logger.warning("fetch_bybit_perps: Bybit not available")
+            return []
+
+        try:
+            tickers = await bybit.fetch_tickers(params={"category": "linear"})
+        except Exception as e:
+            logger.error(f"fetch_bybit_perps: fetch_tickers failed: {e}")
+            return []
+
+        candidates: list[tuple[str, float]] = []
+        for symbol, ticker in tickers.items():
+            # Only USDT perpetuals (BTC/USDT:USDT format)
+            if not symbol.endswith(":USDT"):
+                continue
+            market = bybit.markets.get(symbol)
+            if not market or not market.get("swap"):
+                continue
+            vol_usd = float(ticker.get("quoteVolume") or 0)
+            if vol_usd < min_volume_usd:
+                continue
+            # Normalize to config format: BTC/USDT:USDT -> BTC/USDT
+            base = symbol.split(":")[0]
+            candidates.append((base, vol_usd))
+
+        candidates.sort(key=lambda x: x[1], reverse=True)
+        result = [s for s, _ in candidates[:top_n]]
+        logger.info(
+            f"fetch_bybit_perps: {len(candidates)} above ${min_volume_usd:,.0f} volume, "
+            f"selected top {len(result)}"
+        )
+        return result
+
     def get_reference_symbols(self, target_symbols: list[str], exchange_id: str) -> list[str]:
         """Return subset of symbols that also exist on a reference exchange (Binance/OKX).
         Used by the data engine to know which streams to open for cross-exchange analysis.

@@ -394,3 +394,13 @@ trade_reconcile_errors = Counter(
     "Trade reconciliation cycle errors",
     ["error_type"],
 )
+
+wallet_total_equity = Gauge(
+    "karsa_wallet_total_equity_usdt",
+    "Total equity in USDT",
+)
+
+max_positions = Gauge(
+    "karsa_asm_max_positions",
+    "Maximum allowed open positions",
+)

@@ -38,12 +38,17 @@ class RedisClient:
     async def connect(self) -> None:
         """Establish Redis connection."""
         logger.debug("connect: entering")
-        self.redis = aioredis.from_url(
+        pool = aioredis.BlockingConnectionPool.from_url(
             self.settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=256,
+            max_connections=50,
+            timeout=10,               # wait up to 10s for a free connection
+            socket_timeout=5.0,
+            socket_connect_timeout=5.0,
+            retry_on_timeout=True,
         )
+        self.redis = aioredis.Redis(connection_pool=pool)
         logger.info(f"Connected to Redis: {self.settings.redis_url}")
         logger.debug("connect: returning None")
 

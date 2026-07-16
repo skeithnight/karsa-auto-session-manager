@@ -25,9 +25,9 @@ SQUEEZE_MAX = Decimal("30")     # 0-30
 OVEREXTENSION_MAX = Decimal("40")  # penalty -40 to 0
 
 # Selection thresholds
-DEFAULT_TOP_N = 15
-DEFAULT_MIN_SCORE = Decimal("55")
-DEFAULT_MAX_PER_SECTOR = 2
+DEFAULT_TOP_N = 40
+DEFAULT_MIN_SCORE = Decimal("40")
+DEFAULT_MAX_PER_SECTOR = 3
 OVEREXTENSION_THRESHOLD = Decimal("0.30")  # 30% 24h move
 
 

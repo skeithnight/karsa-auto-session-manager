@@ -56,7 +56,7 @@ class SignalGenerator:
     def __init__(
         self,
         min_skew: float = 0.3,
-        min_confidence: float = 0.72,
+        min_confidence: float = 0.6,
         position_size: Decimal = Decimal("0.001"),
     ) -> None:
         logger.debug("SignalGenerator.__init__: entering")
@@ -140,8 +140,6 @@ class SignalGenerator:
             + w_oi * s_oi
         )
 
-        confidence = abs(raw_score)
-
         # Direction from skew (primary), lead-lag contradiction penalizes (not kills)
         LEAD_LAG_HARD_KILL = 0.5   # strong contradiction → no trade
 
@@ -180,6 +178,9 @@ class SignalGenerator:
                 direction = "SHORT"
             else:
                 direction = "FLAT"   # insufficient conviction in MR → no trade
+
+        # Confidence from (potentially penalized) raw_score
+        confidence = abs(raw_score)
 
         # Apply regime multiplier
         regime_mult = self.REGIME_MULTIPLIERS.get(regime, 1.0) if regime else 1.0

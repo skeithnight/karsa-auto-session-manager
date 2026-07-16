@@ -370,7 +370,7 @@ class TradeReconciler:
                 if entry_time and isinstance(entry_time, datetime):
                     if (
                         abs((entry_time - exec_time).total_seconds())
-                        < window.total_seconds() * 60
+                        < window.total_seconds()
                     ):
                         matched = True
                         # Check price mismatch
@@ -555,6 +555,12 @@ class TradeReconciler:
                     price = _safe_decimal(d.bybit_data.get("price", "0"))
                     if amount <= 0 or price <= 0:
                         logger.warning(f"Trade reconciler: skip missing_entry {d.symbol} — amount={amount} price={price}")
+                        continue
+                    # Dedup: skip if an open trade already exists for this symbol+side
+                    existing = await self.store.get_open_trade_by_symbol(d.symbol)
+                    if existing and _normalize_side(existing.get("side", "")) == _normalize_side(d.side):
+                        logger.info(f"Trade reconciler: skip missing_entry {d.symbol} {d.side} — open trade already exists id={existing['id']}")
+                        d.repaired = True
                         continue
                     await self.store.record_entry(
                         symbol=d.symbol,

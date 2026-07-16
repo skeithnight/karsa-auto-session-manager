@@ -94,6 +94,7 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
 _socket.getaddrinfo = _bypass_getaddrinfo
 
 import asyncio
+import random
 import signal
 import sys
 import time
@@ -154,9 +155,11 @@ async def _stream_orderbook(
 ) -> None:
     """Stream orderbook for a single (symbol, exchange) pair. Runs until kill_switch."""
     logger.info(f"Starting stream {exchange_id}/{symbol}")
+    retries = 0
     while not kill_switch.is_set():
         try:
             orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
+            retries = 0  # reset backoff on success
             metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
             await redis_client.set_exchange_heartbeat(exchange_id)
             exchange_data = normalizer.normalize_orderbook(
@@ -230,7 +233,10 @@ async def _stream_orderbook(
             ).inc()
             logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
             logger.debug(f"_stream_orderbook: error={e}")
-            await asyncio.sleep(1)
+            # Exponential backoff with jitter to prevent thundering herd
+            delay = min(2 ** min(retries, 6), 30) + random.random()
+            retries += 1
+            await asyncio.sleep(delay)
     logger.debug(f"Stream {exchange_id}/{symbol} exiting")
 
 
@@ -260,18 +266,18 @@ async def data_engine_task(
         f"binance={len(binance_symbols)}, okx={len(okx_symbols)} streams"
     )
 
+    async def _staggered_stream(idx: int, sym: str, eid: str) -> None:
+        # ponytail: stagger startup to prevent Redis connection storm
+        await asyncio.sleep(idx * 0.05)
+        await _stream_orderbook(
+            sym, eid, ccxt_manager, normalizer, bad_tick_filter,
+            redis_client, lead_lag_buffer,
+        )
+
     await asyncio.gather(
         *[
-            _stream_orderbook(
-                sym,
-                eid,
-                ccxt_manager,
-                normalizer,
-                bad_tick_filter,
-                redis_client,
-                lead_lag_buffer,
-            )
-            for sym, eid in streams
+            _staggered_stream(i, sym, eid)
+            for i, (sym, eid) in enumerate(streams)
         ],
         return_exceptions=True,
     )
@@ -291,6 +297,7 @@ async def alpha_bridge_task(
     ohlcv_fetcher: Optional[Any] = None,
     position_store: Optional[PositionStore] = None,
     trade_memory: Optional[Any] = None,
+    trade_store: Optional[TradeStore] = None,
 ) -> None:
     """Key 2: Generate trading signals from market state."""
     logger.debug("alpha_bridge_task: entering")
@@ -430,17 +437,55 @@ async def alpha_bridge_task(
                                 logger.info(
                                     f"Multi-TF penalty {symbol}: {mtf['penalty_applied']}x → conf={signal.confidence:.3f}"
                                 )
+                                if signal.confidence < signal_generator.min_confidence:
+                                    logger.info(
+                                        f"Multi-TF penalty killed {symbol}: conf={signal.confidence:.3f} < {signal_generator.min_confidence}"
+                                    )
+                                    metrics.signals_skipped.labels(
+                                        symbol=symbol, reason="mtf_penalty_low"
+                                    ).inc()
+                                    continue
 
-                        # AI analyst — ambiguous confidence zone only (0.55-0.85)
-                        if crypto_analyst and signal.confidence >= 0.55:
+                        # AI analyst — ambiguous confidence zone (0.40-0.85)
+                        if crypto_analyst and signal.confidence >= 0.40:
                             logger.info(f"AI Analyst validating {signal.symbol} signal")
-                            trade_ctx = await trade_memory.get_prompt_context(symbol=signal.symbol, regime=regime or None)
+                            trade_ctx = await trade_memory.get_prompt_context(symbol=signal.symbol, regime=regime or None) if trade_memory else ""
+                            # Compute mid price from orderbook
+                            mid_price = None
+                            if best_bid and best_ask:
+                                mid_price = Decimal(str((float(best_bid) + float(best_ask)) / 2))
+                            _analyst_start = time.time()
                             analyst_result = await crypto_analyst.analyze(
                                 symbol=signal.symbol,
                                 direction=signal.direction,
                                 confidence=signal.confidence,
+                                regime=regime or "CHOP",
+                                spread_pct=spread_pct or 0.0,
+                                funding_rate=funding_float or 0.0,
+                                oi_change=oi_change or 0.0,
+                                price=mid_price or Decimal("0"),
                                 recent_trades=trade_ctx,
                             )
+                            _analyst_ms = int((time.time() - _analyst_start) * 1000)
+                            # Persist AI decision for Grafana audit trail (even on parse failure)
+                            if trade_store:
+                                try:
+                                    import json as _json
+                                    _output = {
+                                        "ai_confidence": analyst_result.ai_confidence if analyst_result else 0,
+                                        "direction": analyst_result.direction if analyst_result else "UNKNOWN",
+                                        "reasoning": analyst_result.reasoning if analyst_result else "parse_failed",
+                                        "deterministic_confidence": float(signal.confidence),
+                                    }
+                                    await trade_store.record_ai_decision(
+                                        symbol=signal.symbol,
+                                        decision_type="analyst",
+                                        model=analyst_result.model_used if analyst_result else crypto_analyst.ai_client.model,
+                                        output_json=_json.dumps(_output),
+                                        latency_ms=_analyst_ms,
+                                    )
+                                except Exception as _db_err:
+                                    logger.warning(f"Failed to record ai_decision for {symbol}: {_db_err}")
                             if analyst_result:
                                 # Blend: 50% deterministic + 50% AI
                                 final_conf = (
@@ -884,6 +929,44 @@ def _on_task_done(
     else:
         logger.warning(f"Task exited normally: {task.get_name()}")
 
+async def metrics_publisher_task(
+    bybit_client: BybitClient,
+    redis_client: RedisClient,
+    position_store: PositionStore,
+    kill_switch: asyncio.Event,
+    interval_seconds: int = 30,
+) -> None:
+    """Periodically publish wallet and max positions metrics to Prometheus."""
+    logger.info("Started metrics publisher task")
+    while not kill_switch.is_set():
+        try:
+            # 1. Update max positions
+            try:
+                max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
+            except Exception:
+                max_pos = 5
+            
+            metrics.max_positions.set(max_pos)
+
+            # 2. Update wallet balance
+            wallet = await bybit_client.get_wallet_balance()
+            available = float(wallet.get("available", 0))
+            metrics.wallet_balance.set(available)
+
+            # 3. Update total equity
+            open_positions = await position_store.list_all()
+            total_unrealized_pnl = sum([float(p.get("pnl", 0)) for p in open_positions])
+            equity = float(wallet.get("balance", 0)) + total_unrealized_pnl
+            metrics.wallet_total_equity.set(equity)
+
+        except Exception as e:
+            logger.error(f"Metrics publisher error: {e}")
+            
+        try:
+            await asyncio.wait_for(kill_switch.wait(), timeout=interval_seconds)
+        except asyncio.TimeoutError:
+            pass
+
 
 async def main() -> None:
     """Initialize all components and run the main event loop."""
@@ -975,6 +1058,7 @@ async def main() -> None:
         trade_store=trade_store,
         alert_service=alert_service,
         trade_memory=trade_memory,
+        sor=sor,
     )
 
     # Phase 4.5 modules
@@ -1042,36 +1126,47 @@ async def main() -> None:
     signal_queue: asyncio.Queue = asyncio.Queue()
     risk_queue: asyncio.Queue = asyncio.Queue()
 
-    # Validate symbol universe — keep only symbols present on all 3 exchanges
-    # Fall back to raw config if no exchange markets were loaded (VPN down etc.)
-    validated = ccxt_manager.get_bybit_universe(settings.symbols)
-    if validated:
-        valid_symbols = validated
-        dropped = len(settings.symbols) - len(valid_symbols)
-        if dropped:
-            logger.warning(
-                f"Dropped {dropped} symbols not available on Bybit. {len(valid_symbols)} remaining."
-            )
-        else:
-            logger.info(
-                f"All {len(valid_symbols)} config symbols validated on Bybit."
-            )
-    else:
-        valid_symbols = settings.symbols
-        dropped = 0
-        logger.warning(
-            f"Symbol validation skipped (no exchange markets loaded). Using all {len(valid_symbols)} config symbols."
+    # Dynamic symbol discovery — fetch top Bybit USDT perps by 24h volume
+    # Falls back to static config list if Bybit API unavailable
+    dropped = 0
+    dynamic_symbols = await ccxt_manager.fetch_bybit_perps(
+        min_volume_usd=1_000_000, top_n=100
+    )
+    if dynamic_symbols:
+        valid_symbols = dynamic_symbols
+        logger.info(
+            f"Dynamic universe: {len(valid_symbols)} Bybit USDT perps (>$5M vol)"
         )
-    # Filter against Bybit available instruments (removes SHIB, FLOKI etc not on Bybit)
-    if bybit_client._symbol_map:
-        bybit_before = len(valid_symbols)
-        valid_symbols = [s for s in valid_symbols if s in bybit_client._symbol_map]
-        bybit_dropped = bybit_before - len(valid_symbols)
-        if bybit_dropped:
+    else:
+        # Fallback: static config validated against Bybit
+        validated = ccxt_manager.get_bybit_universe(settings.symbols)
+        if validated:
+            valid_symbols = validated
+            dropped = len(settings.symbols) - len(valid_symbols)
+            if dropped:
+                logger.warning(
+                    f"Dropped {dropped} symbols not available on Bybit. {len(valid_symbols)} remaining."
+                )
+            else:
+                logger.info(
+                    f"All {len(valid_symbols)} config symbols validated on Bybit."
+                )
+        else:
+            valid_symbols = settings.symbols
+            dropped = 0
             logger.warning(
-                f"Dropped {bybit_dropped} symbols not on Bybit. {len(valid_symbols)} remaining."
+                f"Symbol validation skipped (no exchange markets loaded). Using all {len(valid_symbols)} config symbols."
             )
-        dropped += bybit_dropped
+        # Filter against Bybit available instruments (removes SHIB, FLOKI etc not on Bybit)
+        if bybit_client._symbol_map:
+            bybit_before = len(valid_symbols)
+            valid_symbols = [s for s in valid_symbols if s in bybit_client._symbol_map]
+            bybit_dropped = bybit_before - len(valid_symbols)
+            if bybit_dropped:
+                logger.warning(
+                    f"Dropped {bybit_dropped} symbols not on Bybit. {len(valid_symbols)} remaining."
+                )
+            dropped += bybit_dropped
 
     metrics.symbol_universe_total.set(len(valid_symbols))
     metrics.symbol_universe_dropped.set(dropped)
@@ -1110,6 +1205,7 @@ async def main() -> None:
                 ohlcv_fetcher,
                 position_store,
                 trade_memory,
+                trade_store,
             )
         ),
         asyncio.create_task(
@@ -1163,6 +1259,9 @@ async def main() -> None:
         asyncio.create_task(
             trade_history_reconciler_task(trade_reconciler, interval_seconds=900)
         ),
+        asyncio.create_task(
+            metrics_publisher_task(bybit_client, redis_client, position_store, kill_switch)
+        ),
     ]
 
     task_names = [
@@ -1180,6 +1279,7 @@ async def main() -> None:
         "checkpoint_mgr",
         "position_reconciler",
         "trade_history_reconciler",
+        "metrics_publisher_task",
     ]
     for t, name in zip(tasks, task_names):
         t.set_name(name)

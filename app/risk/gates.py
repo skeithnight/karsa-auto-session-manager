@@ -20,10 +20,12 @@ class RiskGate:
         self,
         min_liquidity_usd: Decimal = Decimal("10000"),  # $10K notional
         max_spread_pct: Decimal = Decimal("0.005"),  # 0.5% max spread
+        min_order_notional_usd: Decimal = Decimal("50"),  # reject dust trades
         circuit_breaker: Optional[CircuitBreaker] = None,
     ) -> None:
         self.min_liquidity_usd = min_liquidity_usd
         self.max_spread_pct = max_spread_pct
+        self.min_order_notional_usd = min_order_notional_usd
         self.circuit_breaker = circuit_breaker
 
     def check_liquidity(self, notional_usd: Decimal) -> bool:
@@ -43,6 +45,13 @@ class RiskGate:
         passed = spread <= self.max_spread_pct
         if not passed:
             logger.warning(f"Spread gate FAILED: {spread:.4%} > {self.max_spread_pct:.4%}")
+        return passed
+
+    def check_order_notional(self, order_notional_usd: Decimal) -> bool:
+        """Gate 0: Reject dust trades below logical profitability threshold."""
+        passed = order_notional_usd >= self.min_order_notional_usd
+        if not passed:
+            logger.warning(f"Order notional gate FAILED: ${order_notional_usd:,.2f} < ${self.min_order_notional_usd:,.2f}")
         return passed
 
     def check_circuit_breaker(self) -> bool:
@@ -65,11 +74,18 @@ class RiskGate:
         volume_24h: Decimal,
         bid_price: Decimal,
         ask_price: Decimal,
+        order_notional_usd: Optional[Decimal] = None,
     ) -> Dict[str, Any]:
-        """Run all 3 gates sequentially. Returns decision dict."""
+        """Run all gates sequentially. Returns decision dict."""
         mid_price = (bid_price + ask_price) / 2
         notional_usd = volume_24h * mid_price
-        gates = [
+        gates: list[tuple[str, bool]] = []
+
+        # Gate 0: dust trade rejection (when order size known)
+        if order_notional_usd is not None:
+            gates.append(("order_notional", self.check_order_notional(order_notional_usd)))
+
+        gates += [
             ("liquidity", self.check_liquidity(notional_usd)),
             ("spread_health", self.check_spread_health(bid_price, ask_price)),
             ("circuit_breaker", self.check_circuit_breaker()),

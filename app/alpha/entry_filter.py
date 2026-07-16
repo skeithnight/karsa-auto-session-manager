@@ -25,7 +25,7 @@ class EntryFilter:
         min_depth_ratio: float = 0.7,
         max_depth_ratio: float = 1.4,
         blocked_hour_start: int = 0,
-        blocked_hour_end: int = 1,
+        blocked_hour_end: int = 6,
         min_atr: float = 0.0,
         max_atr: float = float("inf"),
     ) -> None:
@@ -94,7 +94,7 @@ class EntryFilter:
                 )
                 return False, f"depth ratio {ratio:.2f} out of range"
 
-        # 4. Time-of-day (00:00–01:00 UTC blocked)
+        # 4. Time-of-day (00:00–06:00 UTC blocked — dead Asian session)
         t = now_utc or datetime.now(timezone.utc)
         if self.blocked_hour_start <= t.hour < self.blocked_hour_end:
             logger.debug(f"check: returning False (blocked hour {t.hour})")

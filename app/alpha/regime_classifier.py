@@ -96,7 +96,9 @@ class RegimeClassifier:
         return regime
 
     async def get_current_regime(self, symbol: str = "BTC/USDT") -> MarketRegime:
-        """Read regime from Redis (written by classification loop)."""
+        """Read regime from Redis (written by classification loop).
+        Checks per-symbol key first, falls back to global BTC regime.
+        """
         if self._redis is None:
             logger.warning(
                 "RegimeClassifier: no Redis client, returning CHOP (conservative)"
@@ -104,6 +106,13 @@ class RegimeClassifier:
             return MarketRegime.CHOP
 
         try:
+            # Try per-symbol regime first
+            symbol_key = f"system:regime:{symbol.replace('/', ':')}"
+            raw = await self._redis.get(symbol_key)  # type: ignore[attr-defined]
+            if raw is not None:
+                return MarketRegime(raw)
+
+            # Fallback to global BTC regime
             raw = await self._redis.get("system:config:regime")  # type: ignore[attr-defined]
             if raw is None:
                 logger.warning("RegimeClassifier: no regime in Redis, returning CHOP")

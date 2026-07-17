@@ -349,6 +349,27 @@ class BybitClient:
         logger.debug(f"fetch_open_orders: returning list_len={len(orders)}")
         return orders
 
+    async def fetch_tickers(self, symbol: Optional[str] = None) -> list:
+        """Fetch latest tickers for position monitoring. Used by APM."""
+        logger.debug(f"fetch_tickers: entering symbol={symbol}")
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        params: Dict[str, Any] = {"category": "linear"}
+        if symbol:
+            params["symbol"] = self._to_bybit_symbol(symbol)
+        result = await self._execute(self.session.get_tickers, **params)
+        tickers = [
+            {
+                "symbol": t["symbol"],
+                "last": _safe_decimal(t.get("lastPrice")),
+                "bid": _safe_decimal(t.get("bid1Price")),
+                "ask": _safe_decimal(t.get("ask1Price")),
+            }
+            for t in result.get("list", [])
+        ]
+        logger.debug(f"fetch_tickers: returning {len(tickers)} tickers")
+        return tickers
+
     async def get_executions(
         self,
         symbol: Optional[str] = None,
@@ -456,6 +477,64 @@ class BybitClient:
             timeInForce="GTC",
         )
         logger.info(f"Stop-loss placed: {result.get('orderId')} @ {stop_price}")
+        return result
+
+    async def place_take_profit(
+        self,
+        symbol: str,
+        side: str,
+        tp_price: Decimal,
+        amount: Decimal,
+    ) -> Optional[Dict[str, Any]]:
+        """Place exchange-side take-profit (conditional market order).
+
+        triggerDirection reversed vs SL: Buy-side TP fires on price >= trigger.
+        """
+        logger.debug(
+            f"place_take_profit: entering symbol={symbol} side={side} tp_price={tp_price}"
+        )
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        close_side = "Sell" if side == "buy" else "Buy"
+        result = await self._execute(
+            self.session.place_order,
+            category="linear",
+            symbol=self._to_bybit_symbol(symbol),
+            side=close_side,
+            orderType="Market",
+            qty=str(self._round_qty(symbol, amount)),
+            triggerPrice=str(self._round_price(symbol, tp_price)),
+            triggerDirection=1 if close_side == "Sell" else 2,
+            tpslMode="Full",
+            reduceOnly=True,
+            timeInForce="GTC",
+        )
+        logger.info(f"Take-profit placed: {result.get('orderId')} @ {tp_price}")
+        return result
+
+    async def reduce_position(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+    ) -> Optional[Dict[str, Any]]:
+        """Partial close — reduceOnly market order for scale-out."""
+        logger.debug(
+            f"reduce_position: entering symbol={symbol} side={side} amount={amount}"
+        )
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        close_side = "Sell" if side == "buy" else "Buy"
+        result = await self._execute(
+            self.session.place_order,
+            category="linear",
+            symbol=self._to_bybit_symbol(symbol),
+            side=close_side,
+            orderType="Market",
+            qty=str(self._round_qty(symbol, amount)),
+            reduceOnly=True,
+        )
+        logger.info(f"Position reduced: {amount} {symbol}")
         return result
 
     async def amend_stop_loss(

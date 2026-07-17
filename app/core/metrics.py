@@ -447,3 +447,59 @@ max_positions = Gauge(
     "karsa_asm_max_positions",
     "Maximum allowed open positions",
 )
+
+# ── Shadow Mode ─────────────────────────────────────────────
+karsa_shadow_mode_active = Gauge(
+    "karsa_shadow_mode_active",
+    "Shadow mode enabled (1=active, 0=inactive)",
+)
+
+karsa_shadow_orders_placed_total = Counter(
+    "karsa_shadow_orders_placed_total",
+    "Shadow virtual orders placed",
+    ["symbol", "side"],
+)
+
+karsa_shadow_exits_placed_total = Counter(
+    "karsa_shadow_exits_placed_total",
+    "Shadow virtual exits placed",
+    ["symbol", "reason"],
+)
+
+karsa_shadow_pnl_usdt = Histogram(
+    "karsa_shadow_pnl_usdt",
+    "Shadow virtual PnL in USDT",
+    buckets=[-100, -50, -20, -10, -5, -1, 0, 1, 5, 10, 20, 50, 100],
+)
+
+karsa_shadow_fees_total_usdt = Counter(
+    "karsa_shadow_fees_total_usdt",
+    "Total shadow trading fees in USDT",
+)
+
+karsa_shadow_slippage_total_usdt = Counter(
+    "karsa_shadow_slippage_total_usdt",
+    "Total shadow slippage cost in USDT",
+)
+
+karsa_shadow_positions_open = Gauge(
+    "karsa_shadow_positions_open",
+    "Currently open shadow positions",
+)
+
+karsa_shadow_sl_hits_total = Counter(
+    "karsa_shadow_sl_hits_total",
+    "Shadow SL hits triggered",
+    ["symbol", "side"],
+)
+
+karsa_shadow_funding_fees_total_usdt = Counter(
+    "karsa_shadow_funding_fees_total_usdt",
+    "Total shadow funding fees in USDT",
+)
+
+karsa_shadow_limit_orders_unfilled_total = Counter(
+    "karsa_shadow_limit_orders_unfilled_total",
+    "Shadow post-only limit orders expired unfilled",
+    ["symbol"],
+)

@@ -13,9 +13,11 @@ RANGE scoring (max 100):
   +40  wick rejection: candle closed back inside range (pin bar)
   +20  RSI exhaustion: RSI > 75 (shorts) or RSI < 25 (longs)
 
-CHOP scoring (max 100):
-  +50  liquidity sweep: order-book delta reversal
-  +50  funding extreme: funding rate skewed against trade direction
+CHOP scoring — granular confluence (max 100, gate 65):
+  +20  orderbook absorption: contrarian delta vs price direction
+  +20  price wick snap-back: candle reversed back inside range
+  +30  funding confluence: rate skewed against crowd + price refuses to drop
+  +30  OI drop (capitulation): OI dropping during the move (liquidation-driven)
 """
 
 from __future__ import annotations
@@ -36,8 +38,10 @@ RANGE_SCORE_BB_EDGE: int = 40
 RANGE_SCORE_WICK: int = 40
 RANGE_SCORE_RSI: int = 20
 
-CHOP_SCORE_LIQUIDITY_SWEEP: int = 50
-CHOP_SCORE_FUNDING_EXTREME: int = 50
+CHOP_SCORE_ORDERBOOK_ABSORPTION: int = 20
+CHOP_SCORE_WICK_SNAPBACK: int = 20
+CHOP_SCORE_FUNDING_CONF: int = 30
+CHOP_SCORE_OI_DROP: int = 30
 
 STRATEGY_GATE_THRESHOLD: int = 65
 
@@ -53,6 +57,7 @@ class StrategyRouter:
         global_prices: dict[str, float] | None = None,
         orderbook_delta: float | None = None,
         funding_rate: float | None = None,
+        oi_change: float | None = None,
     ) -> float:
         """Score a signal 0-100 based on regime and market data.
 
@@ -63,6 +68,7 @@ class StrategyRouter:
             global_prices: {"binance": price, "okx": price} for cross-exchange sync
             orderbook_delta: net orderbook delta (positive = buy pressure)
             funding_rate: current funding rate
+            oi_change: relative OI change (negative = dropping / capitulation)
 
         Returns:
             Score 0-100. Below 65 = reject.
@@ -82,7 +88,7 @@ class StrategyRouter:
             score = self._score_range_strategy(candles, direction)
         elif regime == MarketRegime.CHOP:
             score = self._score_chop_strategy(
-                candles, direction, orderbook_delta, funding_rate
+                candles, direction, orderbook_delta, funding_rate, oi_change
             )
         else:
             logger.warning(f"StrategyRouter: unknown regime {regime}, returning 0")
@@ -215,22 +221,59 @@ class StrategyRouter:
         direction: str,
         orderbook_delta: float | None,
         funding_rate: float | None,
+        oi_change: float | None = None,
     ) -> int:
-        score = 0
+        """Granular confluence scoring for CHOP regime.
 
-        # Liquidity sweep: orderbook delta reversal
+        Four components, each requiring specific micro-structure evidence.
+        Need 3/4 to pass gate (70+). One or two components = rejected.
+        """
+        score = 0
+        closes = candles[:, 4].astype(float) if candles.ndim == 2 else np.array([c[4] for c in candles], dtype=float)
+        highs = candles[:, 2].astype(float) if candles.ndim == 2 else np.array([c[2] for c in candles], dtype=float)
+        lows = candles[:, 3].astype(float) if candles.ndim == 2 else np.array([c[3] for c in candles], dtype=float)
+
+        # 1. Orderbook absorption: contrarian delta vs price direction (+20)
+        #    Price dropping but bids absorbing (delta < 0) = LONG signal
+        #    Price rising but asks absorbing (delta > 0) = SHORT signal
         if orderbook_delta is not None:
             if direction == "LONG" and orderbook_delta < 0:
-                score += CHOP_SCORE_LIQUIDITY_SWEEP
+                score += CHOP_SCORE_ORDERBOOK_ABSORPTION
             elif direction == "SHORT" and orderbook_delta > 0:
-                score += CHOP_SCORE_LIQUIDITY_SWEEP
+                score += CHOP_SCORE_ORDERBOOK_ABSORPTION
 
-        # Funding extreme: funding skewed against trade direction
+        # 2. Price wick snap-back: candle reversed back inside range (+20)
+        #    Long lower wick = price dropped then recovered
+        #    Long upper wick = price rose then recovered
+        if len(closes) >= 2:
+            last_close = closes[-1]
+            last_high = highs[-1]
+            last_low = lows[-1]
+            prev_close = closes[-2]
+            body = abs(last_close - prev_close)
+            if body > 0:
+                if direction == "LONG":
+                    lower_wick = min(last_close, prev_close) - last_low
+                    if lower_wick > body:
+                        score += CHOP_SCORE_WICK_SNAPBACK
+                elif direction == "SHORT":
+                    upper_wick = last_high - max(last_close, prev_close)
+                    if upper_wick > body:
+                        score += CHOP_SCORE_WICK_SNAPBACK
+
+        # 3. Funding confluence: rate skewed against crowd + price refuses (+30)
+        #    Deeply negative funding but price won't drop = shorts trapped
+        #    Deeply positive funding but price won't rise = longs trapped
         if funding_rate is not None:
             if direction == "LONG" and funding_rate < -0.0005:
-                score += CHOP_SCORE_FUNDING_EXTREME
+                score += CHOP_SCORE_FUNDING_CONF
             elif direction == "SHORT" and funding_rate > 0.0005:
-                score += CHOP_SCORE_FUNDING_EXTREME
+                score += CHOP_SCORE_FUNDING_CONF
+
+        # 4. OI drop (capitulation): OI dropping during the move (+30)
+        #    Falling OI = liquidations driving the move, not new positioning
+        if oi_change is not None and oi_change < 0:
+            score += CHOP_SCORE_OI_DROP
 
         return score
 

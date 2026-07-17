@@ -184,7 +184,13 @@ class CCXTManager:
         except Exception as e:
             metrics.ws_disconnects.labels(exchange=exchange_id).inc()
             logger.error(f"WebSocket error on {exchange_id}: {e}")
-            logger.debug(f"watch_orderbook: error={e}")
+            # Force close stale WebSocket so next watch triggers fresh reconnect
+            try:
+                if hasattr(exchange, 'ws') and exchange.ws:
+                    await exchange.ws.close()
+                    logger.info(f"Force-closed stale WS on {exchange_id}")
+            except Exception:
+                pass
             raise
 
     async def watch_trades(self, symbol: str, exchange_id: str) -> list:
@@ -203,7 +209,13 @@ class CCXTManager:
         except Exception as e:
             metrics.ws_disconnects.labels(exchange=exchange_id).inc()
             logger.error(f"WebSocket error on {exchange_id}: {e}")
-            logger.debug(f"watch_trades: error={e}")
+            # Force close stale WebSocket so next watch triggers fresh reconnect
+            try:
+                if hasattr(exchange, 'ws') and exchange.ws:
+                    await exchange.ws.close()
+                    logger.info(f"Force-closed stale WS on {exchange_id}")
+            except Exception:
+                pass
             raise
 
     def is_stale(self, exchange_id: str) -> bool:

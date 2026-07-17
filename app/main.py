@@ -120,6 +120,8 @@ from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.execution.bybit_client import BybitClient
 from app.execution.sor import SmartOrderRouter
+from app.execution.shadow import ShadowExecutor, ShadowExchangeClient, ShadowAPM
+from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
 from app.execution.position_lifecycle import TrailingStopManager, CheckpointManager
 from app.core.position_store import PositionStore
 from app.core.trade_store import TradeStore
@@ -234,14 +236,23 @@ async def _stream_orderbook(
             logger.info(f"Stream {exchange_id}/{symbol} cancelled")
             raise
         except Exception as e:
+            retries += 1
             metrics.orderbook_errors.labels(
                 exchange=exchange_id, symbol=symbol, error_type=type(e).__name__
             ).inc()
-            logger.error(f"Data Engine error {exchange_id}/{symbol}: {e}")
-            logger.debug(f"_stream_orderbook: error={e}")
+            logger.warning(
+                f"Stream {exchange_id}/{symbol} error (attempt {retries}): {e}"
+            )
+            if retries >= 10:
+                logger.error(
+                    f"Stream {exchange_id}/{symbol} gave up after {retries} retries"
+                )
+                break
             # Exponential backoff with jitter to prevent thundering herd
             delay = min(2 ** min(retries, 6), 30) + random.random()
-            retries += 1
+            logger.info(
+                f"Stream {exchange_id}/{symbol} retry {retries} in {delay:.1f}s"
+            )
             await asyncio.sleep(delay)
     logger.debug(f"Stream {exchange_id}/{symbol} exiting")
 
@@ -352,16 +363,16 @@ async def alpha_bridge_task(
                         else 0.0
                     )
 
-                    # Read regime from Redis (set by regime_engine_task)
-                    raw_regime = await redis_client.get_session_config()
+                    # Read per-symbol regime from Redis (set by regime_engine_task)
+                    raw_sym_regime = await redis_client.get_symbol_regime(symbol)
                     regime = "CHOP"
-                    if raw_regime:
+                    if raw_sym_regime:
                         import json
                         try:
-                            parsed_regime = json.loads(raw_regime)
-                            regime = parsed_regime.get("regime", "CHOP") if isinstance(parsed_regime, dict) else str(parsed_regime)
+                            parsed = json.loads(raw_sym_regime)
+                            regime = parsed.get("regime", "CHOP") if isinstance(parsed, dict) else str(parsed)
                         except json.JSONDecodeError:
-                            regime = str(raw_regime)
+                            regime = str(raw_sym_regime)
 
                     # Entry quality filter (Phase 3)
                     best_bid = state.get("best_bid")
@@ -407,11 +418,16 @@ async def alpha_bridge_task(
                     # Phase 6: StrategyRouter quality gate
                     # Scores signal 0-100 per regime. Below 65 = reject.
                     # Replaces CHOP hard-block with regime-aware scoring.
-                    # Fetch funding early — StrategyRouter needs it for CHOP scoring.
+                    # Fetch funding + OI early — StrategyRouter needs them for CHOP confluence.
                     _funding_rate = await alpha_metrics.get_funding_rate(symbol)
                     funding_float = (
                         float(_funding_rate) if _funding_rate is not None else None
                     )
+                    oi_val = await alpha_metrics.get_open_interest(symbol)
+                    oi_prev = alpha_metrics._oi_cache.get(symbol)
+                    oi_change = None
+                    if oi_val is not None and oi_prev is not None:
+                        oi_change = float(oi_val - oi_prev[1])
                     strategy_score: float | None = None
                     if strategy_router is not None:
                         try:
@@ -440,6 +456,7 @@ async def alpha_bridge_task(
                                 funding_rate=funding_float,
                                 orderbook_delta=-skew,  # CHOP fades the skew (contrarian)
                                 global_prices=lead_lag_buffer.get_latest_prices(symbol),
+                                oi_change=oi_change,
                             )
                             metrics.strategy_score.labels(
                                 symbol=symbol, regime=regime
@@ -467,12 +484,7 @@ async def alpha_bridge_task(
 
                     # Multi-signal inputs (Phase 2)
                     lead_lag_delta = lead_lag_buffer.get_lead_lag_delta(symbol)
-                    # funding_float already fetched above for StrategyRouter
-                    oi_val = await alpha_metrics.get_open_interest(symbol)
-                    oi_prev = alpha_metrics._oi_cache.get(symbol)
-                    oi_change = None
-                    if oi_val is not None and oi_prev is not None:
-                        oi_change = float(oi_val - oi_prev[1])
+                    # funding_float + oi_change already fetched above for StrategyRouter
 
                     metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
                     signal = signal_generator.generate(
@@ -669,15 +681,36 @@ async def risk_gate_task(
 
 async def regime_engine_task(
     regime_engine: RegimeEngine,
+    regime_classifier: RegimeClassifier,
     ohlcv_fetcher: OHLCVFetcher,
     redis_client: RedisClient,
 ) -> None:
-    """Regime Engine: classify market regime from BTC 1H+4H OHLCV every 15 min."""
+    """Regime Engine: classify per-symbol regime + BTC global fallback every 15 min."""
     logger.debug("regime_engine_task: entering")
-    logger.info("Regime Engine starting...")
+    logger.info("Regime Engine starting (per-symbol mode)...")
+
+    # ponytail: shared semaphore to cap concurrent OHLCV fetches (rate limit safety)
+    _fetch_sem = asyncio.Semaphore(5)
+
+    async def _classify_one(symbol: str) -> None:
+        """Fetch 1H candles + classify single symbol."""
+        try:
+            async with _fetch_sem:
+                candles_raw = await ohlcv_fetcher.fetch(symbol, "1h", 200, ttl_seconds=900)
+            if not candles_raw or len(candles_raw) < 50:
+                logger.debug(f"RegimeClassifier: {symbol} insufficient candles ({len(candles_raw) if candles_raw else 0})")
+                return
+            import numpy as _np
+            candles = _np.array(candles_raw, dtype=float)
+            regime = await asyncio.to_thread(regime_classifier.classify, candles)
+            await redis_client.set_symbol_regime(symbol, regime.value)
+            logger.info(f"Regime {symbol}: {regime.value}")
+        except Exception as e:
+            logger.warning(f"RegimeClassifier {symbol} error: {e}")
 
     while not kill_switch.is_set():
         try:
+            # 1. BTC global regime (legacy engine — keeps Prometheus metrics)
             candles_1h = await ohlcv_fetcher.fetch(
                 "BTC/USDT", "1h", 200, ttl_seconds=900
             )
@@ -690,17 +723,13 @@ async def regime_engine_task(
                 )
                 await redis_client.set_session_config(regime)
 
-                # Update Prometheus metrics
                 regime_map = {
-                    "CHOP": 0,
-                    "MEAN_REVERSION": 1,
-                    "TREND_BEAR": 2,
-                    "TREND_BULL": 3,
+                    "CHOP": 0, "MEAN_REVERSION": 1,
+                    "TREND_BEAR": 2, "TREND_BULL": 3,
                 }
                 metrics.regime_state.set(regime_map.get(regime, 0))
                 metrics.regime_hurst.set(hurst)
                 metrics.regime_adx.set(adx)
-                # 4H ADX for AND-gate visibility
                 adx_4h = 0.0
                 if candles_4h and len(candles_4h) >= 50:
                     _, _, adx_4h = await asyncio.to_thread(
@@ -708,10 +737,27 @@ async def regime_engine_task(
                     )
                     metrics.regime_adx_4h.set(adx_4h)
                 logger.info(
-                    f"Regime updated: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})"
+                    f"BTC regime: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})"
                 )
             else:
-                logger.warning(f"Insufficient candles for regime: {len(candles_1h)}")
+                logger.warning(f"Insufficient BTC candles: {len(candles_1h) if candles_1h else 0}")
+
+            # 2. Per-symbol regime (Phase 6.1 — classify each universe symbol)
+            raw_universe = await redis_client.redis.get("system:universe:symbols")  # type: ignore[union-attr]
+            if raw_universe:
+                import json as _json
+                try:
+                    universe_data = _json.loads(raw_universe)
+                    symbols = universe_data.get("symbols", []) if isinstance(universe_data, dict) else []
+                except (_json.JSONDecodeError, AttributeError):
+                    symbols = []
+                if symbols:
+                    logger.info(f"Classifying regime for {len(symbols)} symbols...")
+                    await asyncio.gather(
+                        *[_classify_one(s) for s in symbols],
+                        return_exceptions=True,
+                    )
+
         except Exception as e:
             logger.error(f"Regime Engine error: {e}")
 
@@ -873,14 +919,14 @@ async def executor_task(
                 )
                 # Register position in store for trailing stop + checkpoint management
                 # Record trade entry in Postgres first to get regime
-                raw_regime_data = await redis_client.get_session_config()
+                raw_regime_data = await redis_client.get_symbol_regime(signal.symbol)
                 regime = "UNKNOWN"
                 if raw_regime_data:
-                    import json
+                    import json as _json
                     try:
-                        parsed_regime_data = json.loads(raw_regime_data)
+                        parsed_regime_data = _json.loads(raw_regime_data)
                         regime = parsed_regime_data.get("regime", "UNKNOWN") if isinstance(parsed_regime_data, dict) else str(parsed_regime_data)
-                    except json.JSONDecodeError:
+                    except (_json.JSONDecodeError, TypeError):
                         regime = str(raw_regime_data)
 
                 # Save position to Redis
@@ -1167,10 +1213,43 @@ async def main() -> None:
     )
     active_position_manager = ActivePositionManager(
         bybit_client=bybit_client,
-        state_manager=state_manager,
+        position_store=position_store,
         regime_classifier=regime_classifier,
         alert_service=alert_service,
     )
+
+    # --- Shadow Mode: conditional component substitution ---
+    shadow_executor = None
+    shadow_apm = None
+    shadow_pos_store = None
+    shadow_trade_store = None
+
+    if settings.shadow_mode_enabled:
+        logger.warning("SHADOW MODE ENABLED — no real orders will be placed")
+        metrics.karsa_shadow_mode_active.set(1)
+
+        shadow_pos_store = ShadowPositionStore(redis_client)
+        shadow_trade_store = ShadowTradeStore(db_engine)
+
+        shadow_executor = ShadowExecutor(
+            redis_client=redis_client,
+            position_store=shadow_pos_store,
+            trade_store=shadow_trade_store,
+            alert_service=alert_service,
+        )
+
+        shadow_exchange_client = ShadowExchangeClient(redis_client)
+
+        shadow_apm = ShadowAPM(
+            real_apm=active_position_manager,
+            shadow_executor=shadow_executor,
+            redis_client=redis_client,
+            position_store=shadow_pos_store,
+            trade_store=shadow_trade_store,
+        )
+    else:
+        metrics.karsa_shadow_mode_active.set(0)
+
     entry_filter = EntryFilter(
         min_atr=0.008,         # require real volatility, skip dead markets
         max_spread_pct=0.001,  # 0.1% max spread — cuts micro-cap noise
@@ -1211,61 +1290,63 @@ async def main() -> None:
     multi_tf = MultiTFFilter(ohlcv_fetcher)
     universe_scorer = UniverseScorer(redis_client, ohlcv_fetcher, settings.symbols)
 
-    # Startup reconciliation — trust nothing
-    try:
-        reconciled = await state_manager.reconcile()
-        if not reconciled:
+    # Startup reconciliation — trust nothing (skip in shadow mode)
+    if not settings.shadow_mode_enabled:
+        try:
+            reconciled = await state_manager.reconcile()
+            if not reconciled:
+                logger.critical(
+                    "Reconciliation failed — cannot start. Check Bybit connection."
+                )
+                sys.exit(1)
+        except Exception as e:
             logger.critical(
-                "Reconciliation failed — cannot start. Check Bybit connection."
+                f"Reconciliation failed — cannot start. Check Bybit connection. {e}"
             )
             sys.exit(1)
-    except Exception as e:
-        logger.critical(
-            f"Reconciliation failed — cannot start. Check Bybit connection. {e}"
-        )
-        sys.exit(1)
 
-    # Sync positions with Bybit truth — clean orphans + create missing
-    try:
-        live_positions = await bybit_client.fetch_positions()
-        exchange_symbols = {p["symbol"] for p in live_positions}
-        cleaned = await position_store.cleanup_stale(exchange_symbols)
-        if cleaned:
-            logger.info(f"Cleaned {cleaned} orphaned position keys from Redis")
-        # Create Redis keys for Bybit positions missing from PositionStore
-        for pos in live_positions:
-            bybit_sym = pos["symbol"]
-            side = pos["side"]
-            # Convert Bybit format (BTCUSDT) to ccxt format (BTC/USDT)
-            if bybit_sym.endswith("USDT"):
-                ccxt_sym = f"{bybit_sym[:-4]}/USDT"
-            else:
-                ccxt_sym = bybit_sym
-            if not await position_store.has_position(ccxt_sym, side):
-                entry_price = Decimal(str(pos.get("entry_price", 0)))
-                amount = Decimal(str(pos.get("contracts", 0)))
-                if entry_price > 0 and amount > 0:
-                    await position_store.save(
-                        symbol=ccxt_sym,
-                        side=side,
-                        entry_price=entry_price,
-                        amount=amount,
-                    )
-                    logger.info(f"Synced missing position to Redis: {ccxt_sym} {side}")
-                    # Record in Postgres so trade_store stays in sync
-                    try:
-                        await trade_store.record_entry(
+    # Sync positions with Bybit truth — clean orphans + create missing (skip in shadow mode)
+    if not settings.shadow_mode_enabled:
+        try:
+            live_positions = await bybit_client.fetch_positions()
+            exchange_symbols = {p["symbol"] for p in live_positions}
+            cleaned = await position_store.cleanup_stale(exchange_symbols)
+            if cleaned:
+                logger.info(f"Cleaned {cleaned} orphaned position keys from Redis")
+            # Create Redis keys for Bybit positions missing from PositionStore
+            for pos in live_positions:
+                bybit_sym = pos["symbol"]
+                side = pos["side"]
+                # Convert Bybit format (BTCUSDT) to ccxt format (BTC/USDT)
+                if bybit_sym.endswith("USDT"):
+                    ccxt_sym = f"{bybit_sym[:-4]}/USDT"
+                else:
+                    ccxt_sym = bybit_sym
+                if not await position_store.has_position(ccxt_sym, side):
+                    entry_price = Decimal(str(pos.get("entry_price", 0)))
+                    amount = Decimal(str(pos.get("contracts", 0)))
+                    if entry_price > 0 and amount > 0:
+                        await position_store.save(
                             symbol=ccxt_sym,
                             side=side,
-                            amount=amount,
                             entry_price=entry_price,
+                            amount=amount,
                         )
-                    except Exception as te:
-                        logger.warning(
-                            f"Trade store record_entry failed for synced {ccxt_sym}: {te}"
-                        )
-    except Exception as e:
-        logger.warning(f"Position sync failed (non-fatal): {e}")
+                        logger.info(f"Synced missing position to Redis: {ccxt_sym} {side}")
+                        # Record in Postgres so trade_store stays in sync
+                        try:
+                            await trade_store.record_entry(
+                                symbol=ccxt_sym,
+                                side=side,
+                                amount=amount,
+                                entry_price=entry_price,
+                            )
+                        except Exception as te:
+                            logger.warning(
+                                f"Trade store record_entry failed for synced {ccxt_sym}: {te}"
+                            )
+        except Exception as e:
+            logger.warning(f"Position sync failed (non-fatal): {e}")
 
     signal_queue: asyncio.Queue = asyncio.Queue()
     risk_queue: asyncio.Queue = asyncio.Queue()
@@ -1361,16 +1442,16 @@ async def main() -> None:
         ),
         asyncio.create_task(
             executor_task(
-                sor,
+                shadow_executor if shadow_executor else sor,
                 state_manager,
                 circuit_breaker,
                 risk_queue,
                 watchdog,
                 redis_client,
-                position_store,
+                shadow_pos_store if shadow_pos_store else position_store,
                 sector_cap,
                 bybit_client,
-                trade_store,
+                shadow_trade_store if shadow_trade_store else trade_store,
                 session_manager,
                 dynamic_risk_gate=dynamic_risk_gate,
             )
@@ -1390,7 +1471,7 @@ async def main() -> None:
             )
         ),
         asyncio.create_task(
-            regime_engine_task(regime_engine, ohlcv_fetcher, redis_client)
+            regime_engine_task(regime_engine, regime_classifier, ohlcv_fetcher, redis_client)
         ),
         # Phase 6.5: APM_ENABLED=True disables legacy lifecycle managers
         # Set APM_ENABLED=1 in env to activate ActivePositionManager
@@ -1408,8 +1489,14 @@ async def main() -> None:
                 ),
             ]
         ),
-        asyncio.create_task(
-            position_reconciler_task(bybit_client, position_store, interval_seconds=300)
+        *(
+            []
+            if settings.shadow_mode_enabled
+            else [
+                asyncio.create_task(
+                    position_reconciler_task(bybit_client, position_store, interval_seconds=300)
+                ),
+            ]
         ),
         asyncio.create_task(
             trade_history_reconciler_task(trade_reconciler, interval_seconds=900)
@@ -1427,7 +1514,7 @@ async def main() -> None:
             portfolio_risk_manager.reset_daily_state_loop()
         ),
         asyncio.create_task(
-            active_position_manager.start_monitoring()
+            shadow_apm.run() if shadow_apm else active_position_manager.start_monitoring()
         ),
     ]
 
@@ -1444,12 +1531,16 @@ async def main() -> None:
         "regime_engine_task",
         "trailing_stop",
         "checkpoint_mgr",
-        "position_reconciler",
+        *(
+            []
+            if settings.shadow_mode_enabled
+            else ["position_reconciler"]
+        ),
         "trade_history_reconciler",
         "metrics_publisher_task",
         "regime_classifier",
         "prm_daily_reset",
-        "active_position_manager",
+        "shadow_apm" if settings.shadow_mode_enabled else "active_position_manager",
     ]
     for t, name in zip(tasks, task_names):
         t.set_name(name)
@@ -1461,6 +1552,7 @@ async def main() -> None:
         "risk_gate_task",
         "executor_task",
         "regime_engine_task",
+        "active_position_manager",
     }
     for t in tasks:
         if t.get_name() in CRITICAL_TASKS:

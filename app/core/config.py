@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     bybit_api_secret: str
     bybit_testnet: bool = False
 
+    # Shadow Mode
+    shadow_mode_enabled: bool = False
+    shadow_slippage_pct: str = "0.0005"
+    shadow_taker_fee_pct: str = "0.00055"
+    shadow_maker_fee_pct: str = "0.0002"
+
     # PostgreSQL
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"
 

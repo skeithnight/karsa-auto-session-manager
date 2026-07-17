@@ -8,7 +8,7 @@
 ## Doc Conflict Flag (relevant to this roadmap specifically)
 
 The MVP graduation gate is defined **twice, with different numbers**:
-- `MVP_SCOPE.md` §6: 14 consecutive days on Testnet, win rate > 50%, reward/risk ratio > 1.2.
+- `MVP_SCOPE.md` §6: 14 consecutive days on live Bybit (main URL, $1 SL cap), win rate > 50%, reward/risk ratio > 1.2.
 - `PRD.md` §9: 30-day continuous paper-trading period, win rate > 52%, Sharpe Ratio > 1.5.
 
 Different duration, different win-rate bar, and different risk-adjusted-return metric entirely (R:R vs Sharpe). This roadmap treats **Phase 5 (below) as requiring both sets of criteria to pass** rather than picking the looser one — a graduation gate protecting real capital should not be resolved by silently choosing the weaker of two "Locked" numbers. This should also be logged as `CONTEXT.md` Open Issue #6.
@@ -21,9 +21,9 @@ Different duration, different win-rate bar, and different risk-adjusted-return m
 | :-- | :--- | :--- | :--- |
 | 0 | Design & Docs | This doc set | All core docs approved; open conflicts in `CONTEXT.md` §7 resolved |
 | 1 | The Nervous System (Data & Infra) | `MVP_SCOPE.md` §5 | Continuous console output of normalized Global VWAP/Skew; survives network drops |
-| 2 | The Hands (Execution & Proxy) | `MVP_SCOPE.md` §5 | Dummy order placed/tracked/closed on Bybit Testnet via WARP, latency logged |
+| 2 | The Hands (Execution & Proxy) | `MVP_SCOPE.md` §5 | Dummy order placed/tracked/closed on **live Bybit (main URL)** via WARP with $1 SL cap, latency logged |
 | 3 | The Brain & The Shield (Alpha & Risk) | `MVP_SCOPE.md` §5 | Signals generated, filtered through Risk Gate, decisions logged to Postgres |
-| 4 | Integration & Paper Trading | `MVP_SCOPE.md` §5 | 72 hours on Testnet, zero crashes, zero state divergence |
+| 4 | Integration & Paper Trading | `MVP_SCOPE.md` §5 | 72 hours on **live Bybit (main URL)** with $1 SL cap, zero crashes, zero state divergence |
 | 4.5 | AI Integration & 6-Stage Lifecycle | New (this doc) | Full 6-stage pipeline running with mandatory AI (see below) |
 | 5 | Graduation Evaluation | New (this doc) | Both `MVP_SCOPE.md` §6 **and** `PRD.md` §9 criteria pass (see conflict flag above) |
 | 6 | Live Capital — Limited (V1.1 Pilot) | New (this doc) | Defined below |
@@ -53,10 +53,10 @@ Purpose: transform ASM from a rule-based system into a KCT-equivalent AI-augment
 
 ### Gate to Phase 5
 
-- Full 6-stage pipeline runs for 72h on Testnet without AI-related crashes *(skipped — testnet unavailable)*
+- Full 6-stage pipeline runs for 72h on **live Bybit main URL** (micro-size, $1 SL cap) without AI-related crashes
 - AI analyst p95 latency < 2s
 - AI position judge correctly identifies HARD_FAIL positions in test scenarios
-- Universe scorer produces sensible top-15 list on testnet data
+- Universe scorer produces sensible top-15 list on live market data
 - All tests in `tests/unit/test_universe_scorer.py`, `test_analyst.py`, `test_position_judge.py`, `test_multi_tf.py`, `test_trade_memory.py`, `test_sector_cap.py` pass
 
 ---
@@ -65,7 +65,7 @@ Purpose: transform ASM from a rule-based system into a KCT-equivalent AI-augment
 
 Purpose: a formal, deliberate checkpoint between "paper trading works" and "real money is at risk" — not an automatic transition.
 
-**Status:** Code complete. Testnet skipped — deploying to live Bybit with $1 max loss per position SL hard cap. Operator decision (no testnet API access available).
+**Status:** Code complete. Testnet skipped (no testnet API access available) — deployed to live Bybit main URL with $1 max loss per position SL hard cap.
 
 **Phase 5 code additions (committed):**
 - `scripts/init_db.sql` — `trades` + `ai_decisions` Postgres tables, auto-created on first `docker compose up`
@@ -79,8 +79,8 @@ Purpose: a formal, deliberate checkpoint between "paper trading works" and "real
 - `app/main.py` — balance-based position sizing (`available * risk_pct / price`), trade store wiring
 - `.env.testnet` — template with `BYBIT_TESTNET=true` and WireGuard guidance
 
-**Original exit criteria (for reference — testnet phase skipped per operator decision):**
-- 30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence
+**Original exit criteria (for reference — replaced by live deployment safety boundaries below):**
+- ~~30 consecutive days on Bybit Testnet, zero unhandled exceptions, zero state divergence~~ *(testnet not accessible)*
 - Win rate > 52% **and** R:R > 1.2 **and** Sharpe > 1.5 over that period
 - Circuit breaker intentionally triggered at least once and verified to flatten + halt correctly
 - AI analyst p95 latency consistently < 2s

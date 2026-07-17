@@ -1,10 +1,6 @@
 {
   "title": "ASM - Core Operations",
-  "tags": [
-    "asm",
-    "trading",
-    "core"
-  ],
+  "tags": ["asm", "trading", "core"],
   "timezone": "browser",
   "refresh": "10s",
   "time": {
@@ -16,33 +12,17 @@
     {
       "id": 100,
       "type": "row",
-      "title": "\ud83d\udda5\ufe0f System Health",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 0
-      }
+      "title": "🖥️ System Health",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
     },
     {
       "id": 1,
       "title": "ASM Session",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 0,
-        "y": 1
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 0, "y": 1 },
       "targets": [
-        {
-          "expr": "karsa_asm_session_active",
-          "legendFormat": "Active"
-        },
-        {
-          "expr": "karsa_asm_risk_pct",
-          "legendFormat": "Risk %"
-        }
+        { "expr": "karsa_asm_session_active", "legendFormat": "Active" },
+        { "expr": "karsa_asm_risk_pct", "legendFormat": "Risk %" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -50,40 +30,22 @@
             {
               "type": "value",
               "options": {
-                "0": {
-                  "text": "DOWN/OFF",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "ACTIVE",
-                  "color": "green"
-                }
+                "0": { "text": "DOWN/OFF", "color": "red" },
+                "1": { "text": "ACTIVE", "color": "green" }
               }
             }
           ]
         }
       },
-      "options": {
-        "orientation": "horizontal",
-        "textMode": "value_and_name",
-        "colorMode": "value"
-      }
+      "options": { "orientation": "horizontal", "textMode": "value_and_name", "colorMode": "value" }
     },
     {
       "id": 2,
       "title": "VPN Connection",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 6,
-        "y": 1
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 6, "y": 1 },
       "targets": [
-        {
-          "expr": "karsa_vpn_status",
-          "legendFormat": "VPN Status"
-        }
+        { "expr": "karsa_vpn_status", "legendFormat": "VPN Status" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -91,14 +53,8 @@
             {
               "type": "value",
               "options": {
-                "0": {
-                  "text": "DISCONNECTED",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "CONNECTED",
-                  "color": "green"
-                }
+                "0": { "text": "DISCONNECTED", "color": "red" },
+                "1": { "text": "CONNECTED", "color": "green" }
               }
             }
           ]
@@ -109,17 +65,9 @@
       "id": 3,
       "title": "Bybit Connection",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 12,
-        "y": 1
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 12, "y": 1 },
       "targets": [
-        {
-          "expr": "karsa_bybit_status",
-          "legendFormat": "Bybit API"
-        }
+        { "expr": "karsa_bybit_status", "legendFormat": "Bybit API" }
       ],
       "fieldConfig": {
         "defaults": {
@@ -127,14 +75,8 @@
             {
               "type": "value",
               "options": {
-                "0": {
-                  "text": "DOWN",
-                  "color": "red"
-                },
-                "1": {
-                  "text": "CONNECTED",
-                  "color": "green"
-                }
+                "0": { "text": "DOWN", "color": "red" },
+                "1": { "text": "CONNECTED", "color": "green" }
               }
             }
           ]
@@ -145,82 +87,343 @@
       "id": 4,
       "title": "WS Heartbeat Age",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 18,
-        "y": 1
-      },
+      "gridPos": { "h": 5, "w": 6, "x": 18, "y": 1 },
       "targets": [
-        {
-          "expr": "karsa_heartbeat_age_seconds",
-          "legendFormat": "{{exchange}}"
-        }
+        { "expr": "karsa_heartbeat_age_seconds", "legendFormat": "{{exchange}}" }
       ],
       "fieldConfig": {
         "defaults": {
           "unit": "s",
           "thresholds": {
             "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 5
-              },
-              {
-                "color": "red",
-                "value": 15
-              }
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "red", "value": 15 }
             ]
           }
         }
       }
     },
     {
+      "id": 200,
+      "type": "row",
+      "title": "📉 Signal Pipeline Funnel",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }
+    },
+    {
+      "id": 201,
+      "title": "Market Regime",
+      "type": "stat",
+      "description": "Current regime from RegimeClassifier (BTC 1H). CHOP = all signals blocked at entry filter.",
+      "gridPos": { "h": 6, "w": 3, "x": 0, "y": 7 },
+      "targets": [
+        { "expr": "karsa_regime_state", "legendFormat": "Regime" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "mappings": [
+            { "type": "value", "options": { "0": { "text": "CHOP", "color": "red" } } },
+            { "type": "value", "options": { "1": { "text": "MR", "color": "yellow" } } },
+            { "type": "value", "options": { "2": { "text": "BEAR", "color": "dark-orange" } } },
+            { "type": "value", "options": { "3": { "text": "BULL", "color": "green" } } }
+          ],
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "background",
+        "graphMode": "none"
+      }
+    },
+    {
+      "id": 202,
+      "title": "Data Flow",
+      "type": "stat",
+      "description": "Symbols ingested and scored by universe.",
+      "gridPos": { "h": 6, "w": 3, "x": 3, "y": 7 },
+      "targets": [
+        { "expr": "sum(increase(karsa_orderbook_received_total[1h]))", "legendFormat": "OB/hr" },
+        { "expr": "karsa_symbol_universe_total", "legendFormat": "Universe" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "super-light-blue" },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 203,
+      "title": "Entry Filter",
+      "type": "stat",
+      "description": "Signals blocked by entry filter. CHOP regime blocks ALL signals.",
+      "gridPos": { "h": 6, "w": 4, "x": 6, "y": 7 },
+      "targets": [
+        { "expr": "sum(increase(karsa_signals_skipped_total{reason=~'entry_filter:.*'}[1h]))", "legendFormat": "Blocked (1h)" },
+        { "expr": "sum(increase(karsa_signals_pipeline_attempted_total[1h])) or vector(0)", "legendFormat": "Attempted (1h)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 204,
+      "title": "Signal Gen",
+      "type": "stat",
+      "description": "Signals generated vs skipped (low confidence, lead-lag kill).",
+      "gridPos": { "h": 6, "w": 4, "x": 10, "y": 7 },
+      "targets": [
+        { "expr": "sum(increase(karsa_signals_generated_total[1h])) or vector(0)", "legendFormat": "Generated (1h)" },
+        { "expr": "sum(increase(karsa_signals_skipped_total{reason=~'low_confidence|lead_lag_kill|mtf_penalty_low'}[1h]))", "legendFormat": "Skipped (1h)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "cyan" },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 205,
+      "title": "AI Analyst",
+      "type": "stat",
+      "description": "AI analyst calls — validated vs rejected.",
+      "gridPos": { "h": 6, "w": 4, "x": 14, "y": 7 },
+      "targets": [
+        { "expr": "sum(increase(karsa_ai_calls_total{service='analyst'}[1h]))", "legendFormat": "Calls (1h)" },
+        { "expr": "sum(increase(karsa_signals_skipped_total{reason='ai_rejected'}[1h]))", "legendFormat": "AI Rejected" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "yellow" },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 206,
+      "title": "Risk Gate / Trade",
+      "type": "stat",
+      "description": "Risk gate pass/reject and trades opened.",
+      "gridPos": { "h": 6, "w": 3, "x": 18, "y": 7 },
+      "targets": [
+        { "expr": "sum(increase(karsa_risk_gate_pass_total[1h]))", "legendFormat": "Pass" },
+        { "expr": "sum(increase(karsa_risk_gate_reject_total[1h]))", "legendFormat": "Reject" },
+        { "expr": "sum(increase(karsa_positions_opened_total[1h]))", "legendFormat": "Opened" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "fixed", "fixedColor": "green" },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 207,
+      "title": "Conversion Rate",
+      "type": "gauge",
+      "description": "Pipeline attempted → trades opened. Target: >5%",
+      "gridPos": { "h": 6, "w": 3, "x": 21, "y": 7 },
+      "targets": [
+        {
+          "expr": "(sum(increase(karsa_positions_opened_total[24h])) or vector(0)) / clamp_min(sum(increase(karsa_signals_pipeline_attempted_total[24h])) or vector(0), 1) * 100",
+          "legendFormat": "Conversion %"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "green", "value": 8 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"] },
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      }
+    },
+    {
+      "id": 208,
+      "title": "Signal Skip Reasons (24h)",
+      "type": "piechart",
+      "description": "Why signals were blocked at each pipeline stage.",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 13 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (increase(karsa_signals_skipped_total[24h]))",
+          "legendFormat": "{{reason}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
+      "options": {
+        "pieType": "donut",
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] }
+      }
+    },
+    {
+      "id": 209,
+      "title": "Pipeline Drop-off (24h)",
+      "type": "table",
+      "description": "How many signals dropped at each pipeline stage.",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 13 },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_orderbook_received_total[24h]))",
+          "format": "table", "instant": true, "refId": "A"
+        },
+        {
+          "expr": "sum(increase(karsa_signals_pipeline_attempted_total[24h])) or vector(0)",
+          "format": "table", "instant": true, "refId": "B"
+        },
+        {
+          "expr": "sum(increase(karsa_signals_generated_total[24h])) or vector(0)",
+          "format": "table", "instant": true, "refId": "C"
+        },
+        {
+          "expr": "sum(increase(karsa_ai_calls_total{service='analyst'}[24h]))",
+          "format": "table", "instant": true, "refId": "D"
+        },
+        {
+          "expr": "sum(increase(karsa_risk_gate_pass_total[24h]))",
+          "format": "table", "instant": true, "refId": "E"
+        },
+        {
+          "expr": "sum(increase(karsa_positions_opened_total[24h]))",
+          "format": "table", "instant": true, "refId": "F"
+        }
+      ],
+      "transformations": [
+        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": { "Time": true, "Field": true },
+            "renameByName": {
+              "Value #A": "Data Ingestion",
+              "Value #B": "Pipeline Attempted",
+              "Value #C": "Signals Generated",
+              "Value #D": "AI Analyst Calls",
+              "Value #E": "Risk Gate Passed",
+              "Value #F": "Trades Opened"
+            }
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" }, "unit": "short" }
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "Symbol & Signal Detail",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 24 }
+    },
+    {
       "id": 5,
       "title": "Symbol Universe",
       "type": "stat",
-      "gridPos": {
-        "h": 7,
-        "w": 6,
-        "x": 0,
-        "y": 7
+      "description": "Active symbol universe vs dropped symbols. From UniverseScorer + Bybit validation.",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 25 },
+      "targets": [
+        { "expr": "karsa_symbol_universe_total", "legendFormat": "Active" },
+        { "expr": "karsa_symbol_universe_dropped", "legendFormat": "Dropped" },
+        { "expr": "sum(increase(karsa_universe_symbols_scored_total[4h]))", "legendFormat": "Scored (4h)" }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "green", "value": 50 }
+            ]
+          }
+        }
       },
+      "options": {
+        "orientation": "vertical",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area"
+      }
+    },
+    {
+      "id": 12,
+      "title": "Signal Skipped Reasons (24h)",
+      "type": "piechart",
+      "description": "Breakdown of why signals were skipped in the last 24h.",
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 25 },
       "targets": [
         {
-          "expr": "karsa_symbol_universe_total",
-          "legendFormat": "Valid Symbols"
-        },
-        {
-          "expr": "karsa_symbol_universe_dropped",
-          "legendFormat": "Dropped"
+          "expr": "sum by (reason) (increase(karsa_signals_skipped_total[24h]))",
+          "legendFormat": "{{reason}}"
         }
       ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" } }
+      },
       "options": {
-        "orientation": "horizontal",
-        "textMode": "value_and_name"
+        "pieType": "donut",
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "reduceOptions": { "calcs": ["lastNotNull"] }
       }
     },
     {
       "id": 6,
       "title": "AI Decisions",
       "type": "table",
-      "gridPos": {
-        "h": 7,
-        "w": 10,
-        "x": 6,
-        "y": 7
-      },
+      "description": "Recent AI analyst decisions with confidence, direction, and reasoning.",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 25 },
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "grafana-postgresql-datasource"
       },
       "targets": [
         {
-          "rawSql": "SELECT symbol AS \"Symbol\", (output_json->>'ai_confidence')::numeric AS \"Confidence\", (output_json->>'direction') AS \"AI Result\", (output_json->>'reasoning') AS \"Reason\", decision_type AS \"Type\", TO_CHAR(created_at, 'HH24:MI:SS') AS \"Time\" FROM ai_decisions ORDER BY id DESC LIMIT 10;",
+          "rawSql": "SELECT symbol AS \"Symbol\", (output_json->>'ai_confidence')::numeric AS \"AI Conf %\", (output_json->>'direction') AS \"AI Dir\", (output_json->>'deterministic_confidence')::numeric AS \"Det Conf\", decision_type AS \"Type\", model AS \"Model\", latency_ms AS \"Latency (ms)\", TO_CHAR(created_at, 'HH24:MI:SS') AS \"Time\" FROM ai_decisions ORDER BY id DESC LIMIT 15;",
           "format": "table",
           "datasource": {
             "type": "grafana-postgresql-datasource",
@@ -230,454 +433,291 @@
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "left"
-          }
-        },
+        "defaults": { "custom": { "align": "left" } },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Confidence"
-            },
+            "matcher": { "id": "byName", "options": "AI Conf %" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              },
-              {
-                "id": "custom.displayMode",
-                "value": "color-text"
-              },
+              { "id": "unit", "value": "percent" },
+              { "id": "custom.displayMode", "value": "color-text" },
               {
                 "id": "thresholds",
                 "value": {
                   "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "yellow",
-                      "value": 50
-                    },
-                    {
-                      "color": "green",
-                      "value": 75
-                    }
+                    { "color": "red", "value": null },
+                    { "color": "yellow", "value": 50 },
+                    { "color": "green", "value": 75 }
                   ]
                 }
               }
             ]
           },
           {
-            "matcher": {
-              "id": "byName",
-              "options": "AI Result"
-            },
+            "matcher": { "id": "byName", "options": "AI Dir" },
             "properties": [
               {
                 "id": "mappings",
                 "value": [
-                  {
-                    "type": "value",
-                    "options": {
-                      "LONG": {
-                        "color": "green",
-                        "text": "LONG"
-                      },
-                      "SHORT": {
-                        "color": "red",
-                        "text": "SHORT"
-                      },
-                      "FLAT": {
-                        "color": "gray",
-                        "text": "FLAT"
-                      }
-                    }
-                  }
+                  { "type": "value", "options": { "LONG": { "text": "🟢 LONG", "color": "green" } } },
+                  { "type": "value", "options": { "SHORT": { "text": "🔴 SHORT", "color": "red" } } },
+                  { "type": "value", "options": { "HOLD": { "text": "⏸ HOLD", "color": "yellow" } } }
                 ]
+              }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Latency (ms)" },
+            "properties": [
+              { "id": "unit", "value": "ms" },
+              { "id": "custom.displayMode", "value": "color-text" },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    { "color": "green", "value": null },
+                    { "color": "yellow", "value": 2000 },
+                    { "color": "red", "value": 10000 }
+                  ]
+                }
               }
             ]
           }
         ]
       },
-      "options": {
-        "showHeader": true
-      }
+      "options": { "showHeader": true }
     },
     {
       "id": 11,
       "title": "Signal Confidence",
       "type": "table",
-      "gridPos": {
-        "h": 7,
-        "w": 8,
-        "x": 16,
-        "y": 7
-      },
-      "datasource": {
-        "type": "prometheus",
-        "uid": "PBFA97CFB590B2093"
-      },
+      "description": "Average signal confidence per symbol with signal count. Sorted by confidence desc.",
+      "gridPos": { "h": 7, "w": 6, "x": 0, "y": 32 },
       "targets": [
         {
-          "expr": "sum(karsa_signal_confidence_sum) by (symbol) / sum(karsa_signal_confidence_count) by (symbol)",
-          "format": "table",
-          "instant": true,
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "PBFA97CFB590B2093"
-          },
-          "legendFormat": "{{symbol}}"
+          "expr": "sum by (symbol) (karsa_signal_confidence_sum) / clamp_min(sum by (symbol) (karsa_signal_confidence_count), 1)",
+          "format": "table", "instant": true, "refId": "A"
+        },
+        {
+          "expr": "sum by (symbol) (karsa_signal_confidence_count)",
+          "format": "table", "instant": true, "refId": "B"
         }
       ],
       "transformations": [
+        { "id": "seriesToColumns", "options": { "byField": "symbol" } },
         {
           "id": "organize",
           "options": {
-            "excludeByName": {
-              "Time": true
-            },
+            "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Field": true },
             "renameByName": {
               "symbol": "Symbol",
-              "Value": "Confidence"
+              "Value #A": "Avg Confidence",
+              "Value #B": "Signal Count"
             }
           }
+        },
+        { "id": "sortBy", "options": { "fields": {}, "sort": [{ "field": "Avg Confidence", "desc": true }] } }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Avg Confidence" },
+            "properties": [
+              { "id": "unit", "value": "percentunit" },
+              { "id": "decimals", "value": 3 },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    { "color": "red", "value": null },
+                    { "color": "yellow", "value": 0.4 },
+                    { "color": "green", "value": 0.65 }
+                  ]
+                }
+              },
+              { "id": "custom.displayMode", "value": "color-text" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Signal Count" },
+            "properties": [
+              { "id": "unit", "value": "short" },
+              { "id": "color", "value": { "mode": "fixed", "fixedColor": "text" } }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true }
+    },
+    {
+      "id": 13,
+      "title": "Signal Confidence Over Time",
+      "type": "timeseries",
+      "description": "Average signal confidence trend over time. Shows pipeline health.",
+      "gridPos": { "h": 7, "w": 6, "x": 6, "y": 32 },
+      "targets": [
+        {
+          "expr": "sum(karsa_signal_confidence_sum) / clamp_min(sum(karsa_signal_confidence_count), 1)",
+          "legendFormat": "Avg Confidence"
         }
       ],
       "fieldConfig": {
         "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.4 },
+              { "color": "green", "value": 0.65 }
+            ]
+          },
           "custom": {
-            "align": "center"
+            "fillOpacity": 15,
+            "lineWidth": 2,
+            "thresholdsStyle": { "mode": "area" }
           }
-        },
-        "overrides": []
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom" },
+        "tooltip": { "mode": "single" }
       }
     },
     {
-      "id": 300,
+      "id": 301,
       "type": "row",
-      "title": "\ud83d\udcc8 Trading",
-      "gridPos": {
-        "h": 1,
-        "w": 24,
-        "x": 0,
-        "y": 14
-      }
+      "title": "Trading",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 39 }
     },
     {
       "id": 7,
       "title": "Cash & Balance",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 12,
-        "x": 0,
-        "y": 15
-      },
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 40 },
       "targets": [
-        {
-          "expr": "karsa_wallet_total_equity_usdt",
-          "legendFormat": "Equity"
-        },
-        {
-          "expr": "karsa_wallet_balance_usdt",
-          "legendFormat": "Cash"
-        },
-        {
-          "expr": "sum(abs(karsa_position_size * karsa_position_entry_price_usdt))",
-          "legendFormat": "Deployed"
-        }
+        { "expr": "karsa_wallet_total_equity_usdt", "legendFormat": "Equity" },
+        { "expr": "karsa_wallet_balance_usdt", "legendFormat": "Cash" },
+        { "expr": "sum(abs(karsa_position_size * karsa_position_entry_price_usdt))", "legendFormat": "Deployed" }
       ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "currencyUSD",
-          "decimals": 2
-        }
-      },
-      "options": {
-        "orientation": "horizontal",
-        "textMode": "value_and_name"
-      }
+      "fieldConfig": { "defaults": { "unit": "currencyUSD", "decimals": 2 } },
+      "options": { "textMode": "value_and_name", "colorMode": "value", "graphMode": "area" }
     },
     {
       "id": 8,
-      "title": "Position",
+      "title": "Positions",
       "type": "stat",
-      "gridPos": {
-        "h": 5,
-        "w": 12,
-        "x": 12,
-        "y": 15
-      },
+      "gridPos": { "h": 5, "w": 12, "x": 12, "y": 40 },
       "targets": [
-        {
-          "expr": "count(karsa_position_size != 0)",
-          "legendFormat": "Active Positions",
-          "instant": true
-        },
-        {
-          "expr": "karsa_asm_max_positions",
-          "legendFormat": "Max Positions",
-          "instant": true
-        }
+        { "expr": "count(karsa_position_size > 0)", "legendFormat": "Open" },
+        { "expr": "karsa_asm_max_positions", "legendFormat": "Max" }
       ],
       "fieldConfig": {
         "defaults": {
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "blue"
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 3 },
+              { "color": "red", "value": 5 }
+            ]
           }
         }
       },
-      "options": {
-        "orientation": "horizontal",
-        "textMode": "value_and_name"
-      }
+      "options": { "textMode": "value_and_name", "colorMode": "value", "graphMode": "area" }
     },
     {
       "id": 9,
-      "title": "\ud83d\udd34 Live Trading",
+      "title": "Live Trading",
       "type": "table",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 0,
-        "y": 20
-      },
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 45 },
       "targets": [
         {
-          "expr": "karsa_position_unrealized_pnl_usdt",
-          "format": "table",
-          "instant": true,
-          "refId": "A"
+          "expr": "karsa_position_size",
+          "format": "table", "instant": true, "refId": "A"
         },
         {
           "expr": "karsa_position_entry_price_usdt",
-          "format": "table",
-          "instant": true,
-          "refId": "B"
+          "format": "table", "instant": true, "refId": "B"
         },
         {
-          "expr": "karsa_position_size",
-          "format": "table",
-          "instant": true,
-          "refId": "C"
+          "expr": "karsa_position_unrealized_pnl_usdt",
+          "format": "table", "instant": true, "refId": "C"
         },
         {
           "expr": "karsa_position_duration_seconds",
-          "format": "table",
-          "instant": true,
-          "refId": "D"
+          "format": "table", "instant": true, "refId": "D"
         }
       ],
       "transformations": [
-        {
-          "id": "seriesToColumns",
-          "options": {
-            "byField": "symbol"
-          }
-        },
+        { "id": "seriesToColumns", "options": { "byField": "symbol" } },
         {
           "id": "organize",
           "options": {
-            "excludeByName": {
-              "Time 1": true,
-              "Time 2": true,
-              "Time 3": true,
-              "Time 4": true,
-              "__name__ 1": true,
-              "__name__ 2": true,
-              "__name__ 3": true,
-              "__name__ 4": true,
-              "instance 1": true,
-              "instance 2": true,
-              "instance 3": true,
-              "instance 4": true,
-              "job 1": true,
-              "job 2": true,
-              "job 3": true,
-              "job 4": true
-            },
+            "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "Field": true },
             "renameByName": {
               "symbol": "Symbol",
-              "Value #A": "uPnL $",
+              "Value #A": "Size",
               "Value #B": "Entry Price",
-              "Value #C": "Size",
+              "Value #C": "Unrealized PnL",
               "Value #D": "Duration (s)"
             }
-          }
-        },
-        {
-          "id": "sortBy",
-          "options": {
-            "sort": [
-              {
-                "desc": true,
-                "displayName": "uPnL $"
-              }
-            ]
           }
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "center"
-          }
-        },
+        "defaults": { "custom": { "align": "center" } },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "uPnL $"
-            },
+            "matcher": { "id": "byName", "options": "Unrealized PnL" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              },
-              {
-                "id": "custom.displayMode",
-                "value": "color-text"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 0
-                    }
-                  ]
-                }
-              }
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "custom.displayMode", "value": "color-text" },
+              { "id": "thresholds", "value": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }
             ]
           },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Entry Price"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              }
-            ]
-          }
+          { "matcher": { "id": "byName", "options": "Entry Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] }
         ]
       },
-      "options": {
-        "showHeader": true
-      }
+      "options": { "showHeader": true }
     },
     {
       "id": 10,
-      "title": "\ud83d\udcdc Trade History",
+      "title": "Trade History",
       "type": "table",
-      "gridPos": {
-        "h": 8,
-        "w": 12,
-        "x": 12,
-        "y": 20
-      },
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 45 },
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "grafana-postgresql-datasource"
       },
       "targets": [
         {
-          "rawSql": "SELECT symbol AS \"Symbol\", side AS \"Side\", entry_price AS \"Entry Price\", exit_price AS \"Exit Price\", pnl AS \"Realized PnL\", (pnl / (amount * entry_price) * 100) AS \"ROI %\", exit_reason AS \"Exit Reason\" FROM trades WHERE exit_time IS NOT NULL ORDER BY exit_time DESC LIMIT 20;",
-          "format": "table"
+          "rawSql": "SELECT symbol AS \"Symbol\", side AS \"Side\", entry_price AS \"Entry Price\", exit_price AS \"Exit Price\", quantity AS \"Qty\", realized_pnl AS \"Realized PnL\", roi_pct AS \"ROI %\", exit_reason AS \"Exit Reason\", TO_CHAR(opened_at, 'MM-DD HH24:MI') AS \"Opened\", TO_CHAR(closed_at, 'MM-DD HH24:MI') AS \"Closed\" FROM trades WHERE closed_at IS NOT NULL ORDER BY closed_at DESC LIMIT 20;",
+          "format": "table",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "grafana-postgresql-datasource"
+          },
+          "instant": true
         }
       ],
       "fieldConfig": {
-        "defaults": {
-          "custom": {
-            "align": "center"
-          }
-        },
+        "defaults": { "custom": { "align": "center" } },
         "overrides": [
           {
-            "matcher": {
-              "id": "byName",
-              "options": "Realized PnL"
-            },
+            "matcher": { "id": "byName", "options": "Realized PnL" },
             "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              },
-              {
-                "id": "custom.displayMode",
-                "value": "color-text"
-              },
-              {
-                "id": "thresholds",
-                "value": {
-                  "steps": [
-                    {
-                      "color": "red",
-                      "value": null
-                    },
-                    {
-                      "color": "green",
-                      "value": 0
-                    }
-                  ]
-                }
-              }
+              { "id": "unit", "value": "currencyUSD" },
+              { "id": "custom.displayMode", "value": "color-text" },
+              { "id": "thresholds", "value": { "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 0 }] } }
             ]
           },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Entry Price"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Exit Price"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "currencyUSD"
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "ROI %"
-            },
-            "properties": [
-              {
-                "id": "unit",
-                "value": "percent"
-              }
-            ]
-          }
+          { "matcher": { "id": "byName", "options": "Entry Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
+          { "matcher": { "id": "byName", "options": "Exit Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }] },
+          { "matcher": { "id": "byName", "options": "ROI %" }, "properties": [{ "id": "unit", "value": "percent" }] }
         ]
       },
-      "options": {
-        "showHeader": true
-      }
+      "options": { "showHeader": true }
     }
   ],
   "schemaVersion": 36

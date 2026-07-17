@@ -45,6 +45,31 @@ skew_value = Gauge(
     ["symbol"],
 )
 
+# ── Pipeline Funnel (flow-stage counters) ──────────────────
+regime_classified_total = Counter(
+    "karsa_regime_classified_total",
+    "Regime classifications performed",
+    ["regime"],
+)
+
+strategy_scored_total = Counter(
+    "karsa_strategy_scored_total",
+    "Signals scored by StrategyRouter",
+    ["regime", "score_bucket"],
+)
+
+signal_confidence_passed_total = Counter(
+    "karsa_signal_confidence_passed_total",
+    "Signals that passed confidence gate",
+    ["regime"],
+)
+
+signals_killed_total = Counter(
+    "karsa_signals_killed_total",
+    "Signals killed at each pipeline stage",
+    ["stage", "reason"],
+)
+
 # ── Alpha Bridge ─────────────────────────────────────────────
 signals_generated = Counter(
     "karsa_signals_generated_total",
@@ -57,6 +82,13 @@ signal_confidence = Histogram(
     "Signal confidence distribution",
     ["symbol"],
     buckets=[0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+)
+
+strategy_score = Histogram(
+    "karsa_strategy_score",
+    "StrategyRouter score per signal (0-100, gate at 65)",
+    ["symbol", "regime"],
+    buckets=[10, 20, 30, 40, 50, 60, 65, 70, 80, 90, 100],
 )
 
 signals_skipped = Counter(
@@ -168,6 +200,11 @@ symbol_universe_total = Gauge(
 symbol_universe_dropped = Gauge(
     "karsa_symbol_universe_dropped",
     "Symbols dropped during cross-exchange validation",
+)
+
+universe_symbols_scored = Counter(
+    "karsa_universe_symbols_scored_total",
+    "Symbols scored by UniverseScorer each cycle",
 )
 
 # ── Network Health ───────────────────────────────────────────
@@ -296,9 +333,15 @@ postgres_write_errors = Counter(
     ["table"],
 )
 
+signals_pipeline_attempted = Counter(
+    "karsa_signals_pipeline_attempted_total",
+    "Symbols attempted through signal pipeline (before generate)",
+    ["symbol"],
+)
+
 signals_entered_pipeline = Counter(
     "karsa_signals_entered_pipeline_total",
-    "Signals entering the full 6-stage pipeline",
+    "Signals entering the full 6-stage pipeline (after generate)",
     ["symbol"],
 )
 
@@ -403,4 +446,60 @@ wallet_total_equity = Gauge(
 max_positions = Gauge(
     "karsa_asm_max_positions",
     "Maximum allowed open positions",
+)
+
+# ── Shadow Mode ─────────────────────────────────────────────
+karsa_shadow_mode_active = Gauge(
+    "karsa_shadow_mode_active",
+    "Shadow mode enabled (1=active, 0=inactive)",
+)
+
+karsa_shadow_orders_placed_total = Counter(
+    "karsa_shadow_orders_placed_total",
+    "Shadow virtual orders placed",
+    ["symbol", "side"],
+)
+
+karsa_shadow_exits_placed_total = Counter(
+    "karsa_shadow_exits_placed_total",
+    "Shadow virtual exits placed",
+    ["symbol", "reason"],
+)
+
+karsa_shadow_pnl_usdt = Histogram(
+    "karsa_shadow_pnl_usdt",
+    "Shadow virtual PnL in USDT",
+    buckets=[-100, -50, -20, -10, -5, -1, 0, 1, 5, 10, 20, 50, 100],
+)
+
+karsa_shadow_fees_total_usdt = Counter(
+    "karsa_shadow_fees_total_usdt",
+    "Total shadow trading fees in USDT",
+)
+
+karsa_shadow_slippage_total_usdt = Counter(
+    "karsa_shadow_slippage_total_usdt",
+    "Total shadow slippage cost in USDT",
+)
+
+karsa_shadow_positions_open = Gauge(
+    "karsa_shadow_positions_open",
+    "Currently open shadow positions",
+)
+
+karsa_shadow_sl_hits_total = Counter(
+    "karsa_shadow_sl_hits_total",
+    "Shadow SL hits triggered",
+    ["symbol", "side"],
+)
+
+karsa_shadow_funding_fees_total_usdt = Counter(
+    "karsa_shadow_funding_fees_total_usdt",
+    "Total shadow funding fees in USDT",
+)
+
+karsa_shadow_limit_orders_unfilled_total = Counter(
+    "karsa_shadow_limit_orders_unfilled_total",
+    "Shadow post-only limit orders expired unfilled",
+    ["symbol"],
 )

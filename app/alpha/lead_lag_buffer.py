@@ -65,5 +65,17 @@ class LeadLagBuffer:
             return None
         return (new_price - old_price) / old_price
 
+    def get_latest_prices(self, symbol: str) -> dict[str, float]:
+        """Return latest price per exchange for cross-exchange sync check.
+
+        Returns {"binance": price, "okx": price, "bybit": price} for
+        whatever exchanges have data. Empty dict if no data.
+        """
+        result: dict[str, float] = {}
+        for exchange, buf in self._buffers.get(symbol, {}).items():
+            if buf:
+                result[exchange] = buf[-1][1]
+        return result
+
     def clear(self) -> None:
         self._buffers.clear()

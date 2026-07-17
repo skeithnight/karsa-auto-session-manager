@@ -29,7 +29,7 @@ Regardless of which component is being built, it must satisfy these five univers
 - [ ] **Pydantic Validation:** Tests verify that invalid data payloads correctly raise `pydantic.ValidationError` before entering the core logic.
 
 ### Pillar 3: Integration & Execution Testing
-- [ ] **Testnet Verification:** Any execution logic must be successfully tested against the **Bybit Testnet**.
+- [ ] **Live Verification (Bybit Main URL):** Any execution logic must be successfully tested against **live Bybit** (main URL). Testnet is not accessible — use the $1 max-loss-per-position SL hard cap and a micro position size as the safety boundary. Never rely on testnet.
 - [ ] **Proxy Verification:** Integration tests must confirm that traffic is successfully routing through the WARP SOCKS5 proxy without authentication errors.
 - [ ] **WebSocket Resilience:** Data and Execution WebSockets must pass a "choke test" (simulating network drops) and prove they auto-reconnect and reconcile state without crashing the bot.
 

@@ -101,6 +101,26 @@ class RedisClient:
         await self.redis.delete(key)
         logger.debug("delete: returning None")
 
+    # --- Per-Symbol Regime ---
+
+    async def set_symbol_regime(self, symbol: str, regime: str) -> None:
+        """Set per-symbol regime. Key: system:regime:{symbol}."""
+        if not self.redis:
+            raise RuntimeError("Redis not connected")
+        key = f"system:regime:{symbol.replace('/', ':')}"
+        await self.redis.set(key, regime)
+
+    async def get_symbol_regime(self, symbol: str) -> str | None:
+        """Get per-symbol regime. Falls back to global if not set."""
+        if not self.redis:
+            return None
+        key = f"system:regime:{symbol.replace('/', ':')}"
+        result = await self.redis.get(key)
+        if result is None:
+            # Fallback to global BTC regime
+            return await self.get_session_config()
+        return result
+
     # --- GlobalState Cache ---
 
     async def set_global_state(self, symbol: str, state: dict) -> None:

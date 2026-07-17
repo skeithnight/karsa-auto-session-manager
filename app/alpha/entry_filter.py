@@ -1,6 +1,10 @@
 """Entry Filter — pre-entry quality checklist before risk gate.
 
-Checks: regime, spread, book depth, time-of-day, existing position.
+Checks: spread (regime-dependent), book depth, time-of-day, existing position.
+Regime gating delegated to StrategyRouter (Phase 6 adaptive multi-strategy).
+
+Phase 6.1: Regime-dependent spread limits. CHOP allows wider spread because
+liquidity sweeps naturally widen the book during micro-structure events.
 """
 
 from __future__ import annotations
@@ -10,13 +14,24 @@ from typing import Optional, Tuple
 
 from loguru import logger
 
-from app.alpha.regime import REGIME_CHOP
+# Regime-dependent spread limits (max spread_pct allowed)
+REGIME_SPREAD_LIMITS: dict[str, float] = {
+    "TREND_BULL": 0.001,   # 0.10% — tight for clean breakouts
+    "TREND_BEAR": 0.001,   # 0.10% — tight for clean breakouts
+    "RANGE": 0.0015,       # 0.15% — standard for mean-reversion
+    "CHOP": 0.003,         # 0.30% — relaxed for liquidity sweep events
+    "MEAN_REVERSION": 0.0015,
+}
 
 
 class EntryFilter:
     """Pre-entry gate between signal generation and risk gate.
 
     Returns (passed: bool, reason: str).
+
+    Phase 6: CHOP regime no longer hard-blocked here. StrategyRouter
+    scores CHOP signals (micro-scalp) and gates at 65+ threshold.
+    Phase 6.1: Spread limits are regime-dependent.
     """
 
     def __init__(
@@ -52,7 +67,7 @@ class EntryFilter:
         """Run all entry checks. Returns (passed, reason).
 
         Args:
-            regime: current market regime
+            regime: current market regime (CHOP allowed — StrategyRouter gates)
             spread_pct: (ask - bid) / mid price
             bid_depth: total bid volume near top of book
             ask_depth: total ask volume near top of book
@@ -61,17 +76,18 @@ class EntryFilter:
         """
         logger.debug("check: entering")
 
-        # 1. Regime check
-        if regime == REGIME_CHOP:
-            logger.debug("check: returning False (CHOP regime)")
-            return False, "CHOP regime"
+        # Regime check removed — StrategyRouter handles regime-specific gating.
+        # CHOP signals now scored by micro-scalp strategy (funding + liquidity sweep).
 
-        # 2. Spread check
-        if spread_pct is not None and spread_pct > self.max_spread_pct:
+        # 1. Spread check (regime-dependent)
+        effective_spread_limit = REGIME_SPREAD_LIMITS.get(
+            regime or "", self.max_spread_pct
+        )
+        if spread_pct is not None and spread_pct > effective_spread_limit:
             logger.debug(
-                f"check: returning False (spread {spread_pct:.4f} > {self.max_spread_pct})"
+                f"check: returning False (spread {spread_pct:.4f} > {effective_spread_limit} [{regime}])"
             )
-            return False, f"spread {spread_pct:.4f} > {self.max_spread_pct}"
+            return False, f"spread {spread_pct:.4f} > {effective_spread_limit} [{regime}]"
 
         # 3. ATR volatility filter (skip dead or chaotic markets)
         if atr is not None:

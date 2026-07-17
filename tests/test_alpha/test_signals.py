@@ -53,7 +53,20 @@ class TestSignalGenerator:
         assert d["symbol"] == "BTC/USDT:USDT"
         assert "id" in d
 
-    def test_chop_forces_flat(self):
+    def test_chop_with_strategy_score_can_generate(self):
+        """Phase 6: CHOP no longer hard-blocked. With strong strategy score, signal passes."""
+        # CHOP multiplier=0.5, so raw confidence gets halved.
+        # Strategy score blending (0.6*conf + 0.4*strategy_norm) pushes it above threshold.
+        signal = self.gen.generate(
+            "BTC/USDT:USDT", Decimal("64000"), 0.8,
+            regime="CHOP", lead_lag_delta=0.003, funding_rate=-0.0005, oi_change=100.0,
+            strategy_score=85.0,
+        )
+        assert signal is not None
+        assert signal.direction in ("LONG", "SHORT")
+
+    def test_chop_without_strategy_score_low_confidence(self):
+        """CHOP without strategy score: 0.5x multiplier keeps confidence below threshold."""
         signal = self.gen.generate(
             "BTC/USDT:USDT", Decimal("64000"), 0.5,
             regime="CHOP", lead_lag_delta=0.003, funding_rate=-0.0005, oi_change=100.0,

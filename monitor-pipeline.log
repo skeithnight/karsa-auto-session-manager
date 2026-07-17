@@ -1,0 +1,8 @@
+=== Pipeline Monitor Started: Fri Jul 17 01:44:21 WIB 2026 ===
+Duration: 3600s, Interval: 300s
+
+[2026-07-17 01:44:21]
+  Regime: 0 (ADX=17.6363399162611, Hurst=0.9806226215893983)
+  Classified=1 Scored=525 Confidence=0 RiskGate=0 Executed=0
+  Buckets: 0-50=0 50-65=0 65-85=0 85-100=0
+  Skips: spread=0 strategy_gate=0 neutral=0

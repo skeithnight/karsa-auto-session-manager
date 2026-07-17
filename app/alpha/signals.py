@@ -9,8 +9,6 @@ from uuid import uuid4
 
 from loguru import logger
 
-from app.alpha.regime import REGIME_CHOP
-
 
 class TradingSignal:
     """Represents a trading signal."""
@@ -65,21 +63,23 @@ class SignalGenerator:
         self.position_size = position_size
         logger.debug("SignalGenerator.__init__: returning")
 
-    # Regime confidence modifiers (Phase 1C)
+    # Regime confidence modifiers (Phase 1C → Phase 6 adaptive)
     REGIME_MULTIPLIERS = {
         "TREND_BULL": 1.2,
         "TREND_BEAR": 1.2,
         "MEAN_REVERSION": 0.8,
-        "CHOP": 0.0,  # Force FLAT
+        "CHOP": 0.5,  # Phase 6: micro-scalp allowed, reduced confidence
     }
 
-    # Composite weights — regime-dependent (Phase 2D enhanced)
+    # Composite weights — regime-dependent (Phase 2D → Phase 6 enhanced)
     # Trend: follow skew/lead-lag, suppress contrarian funding
     # Mean-reversion: amplify contrarian funding, reduce lead-lag
+    # CHOP: funding-heavy contrarian, minimal lead-lag
     REGIME_WEIGHTS: Dict[str, tuple[float, float, float, float]] = {
         "TREND_BULL": (0.4, 0.3, 0.05, 0.25),
         "TREND_BEAR": (0.4, 0.3, 0.05, 0.25),
         "MEAN_REVERSION": (0.3, 0.2, 0.4, 0.1),
+        "CHOP": (0.2, 0.1, 0.5, 0.2),  # Phase 6: contrarian micro-scalp
     }
     DEFAULT_WEIGHTS = (0.4, 0.3, 0.2, 0.1)  # fallback: skew, lead_lag, funding, oi
 
@@ -92,6 +92,7 @@ class SignalGenerator:
         lead_lag_delta: Optional[float] = None,
         funding_rate: Optional[float] = None,
         oi_change: Optional[float] = None,
+        strategy_score: Optional[float] = None,
     ) -> Optional[TradingSignal]:
         """Generate trading signal from composite multi-signal confidence.
 
@@ -103,10 +104,8 @@ class SignalGenerator:
             logger.debug(f"No VWAP for {symbol} — skipping signal")
             return None
 
-        # CHOP regime: no trades, period
-        if regime == REGIME_CHOP:
-            logger.debug(f"Signal {symbol}: CHOP regime — forcing FLAT")
-            return None
+        # CHOP regime: Phase 6 — allowed via StrategyRouter micro-scalp gate.
+        # No longer hard-blocked. CHOP scoring uses funding-heavy contrarian weights.
 
         # --- Individual signal scores (all normalized to [-1, 1]) ---
         # Skew: direct normalization
@@ -124,68 +123,96 @@ class SignalGenerator:
 
         # OI: binary — rising = 1.0, falling = -1.0
         # Dead-band: require meaningful OI change (>0.1% relative) to avoid noise
-        OI_DEAD_BAND = 0.001   # 0.1% minimum relative OI change
+        OI_DEAD_BAND = 0.001  # 0.1% minimum relative OI change
         s_oi = 0.0
         if oi_change is not None and abs(oi_change) > OI_DEAD_BAND:
             s_oi = 1.0 if oi_change > 0 else -1.0
 
-        # --- Composite confidence (regime-dependent weights) ---
-        w_skew, w_lead_lag, w_funding, w_oi = self.REGIME_WEIGHTS.get(
-            regime, self.DEFAULT_WEIGHTS
-        )
-        raw_score = (
-            w_skew * s_skew
-            + w_lead_lag * s_lead_lag
-            + w_funding * s_funding
-            + w_oi * s_oi
-        )
-
-        # Direction from skew (primary), lead-lag contradiction penalizes (not kills)
-        LEAD_LAG_HARD_KILL = 0.5   # strong contradiction → no trade
+        # --- Direction from skew (primary), lead-lag contradiction kills ---
+        LEAD_LAG_HARD_KILL = 0.5  # strong contradiction → no trade
 
         if s_skew > 0:
             direction = "LONG"
             if s_lead_lag < -LEAD_LAG_HARD_KILL:
                 from app.core import metrics as m
+
                 m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
-                logger.debug(f"Signal {symbol}: lead-lag KILL LONG (s_ll={s_lead_lag:.2f})")
-                return None
-            elif s_lead_lag < -0.3:
-                raw_score *= 0.7
+                m.signals_killed_total.labels(stage="signal_gen", reason="lead_lag_kill").inc()
                 logger.debug(
-                    f"Signal {symbol}: lead-lag contradicts LONG — penalized 0.7x"
+                    f"Signal {symbol}: lead-lag KILL LONG (s_ll={s_lead_lag:.2f})"
                 )
+                return None
         elif s_skew < 0:
             direction = "SHORT"
             if s_lead_lag > LEAD_LAG_HARD_KILL:
                 from app.core import metrics as m
+
                 m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
-                logger.debug(f"Signal {symbol}: lead-lag KILL SHORT (s_ll={s_lead_lag:.2f})")
-                return None
-            elif s_lead_lag > 0.3:
-                raw_score *= 0.7
+                m.signals_killed_total.labels(stage="signal_gen", reason="lead_lag_kill").inc()
                 logger.debug(
-                    f"Signal {symbol}: lead-lag contradicts SHORT — penalized 0.7x"
+                    f"Signal {symbol}: lead-lag KILL SHORT (s_ll={s_lead_lag:.2f})"
                 )
+                return None
         else:
             direction = "FLAT"
 
         # In MEAN_REVERSION: direction is contrarian to skew (buy exhaustion, sell euphoria)
         if regime == "MEAN_REVERSION":
-            if s_skew < -0.3 and s_funding > 0.2:   # oversold + positive funding → LONG
+            if s_skew < -0.3 and s_funding > 0.2:  # oversold + positive funding → LONG
                 direction = "LONG"
-            elif s_skew > 0.3 and s_funding < -0.2:  # overbought + negative funding → SHORT
+            elif (
+                s_skew > 0.3 and s_funding < -0.2
+            ):  # overbought + negative funding → SHORT
                 direction = "SHORT"
             else:
-                direction = "FLAT"   # insufficient conviction in MR → no trade
+                direction = "FLAT"  # insufficient conviction in MR → no trade
 
-        # Confidence from (potentially penalized) raw_score
-        confidence = abs(raw_score)
+        # --- Confidence calculation ---
+        if regime == "CHOP" and strategy_score is not None:
+            # CHOP short-circuit: StrategyRouter IS the gate.
+            # Skip composite confidence (skew/lead-lag/funding/oi weights
+            # don't apply to micro-scalp).  strategy_score already gated at
+            # 65 in main.py — only scores ≥ 65 reach here.
+            raw_score = strategy_score / 100.0  # for metrics dict
+            confidence = min(raw_score, 1.0)
+            regime_mult = 1.0
+        else:
+            # Composite confidence (regime-dependent weights)
+            w_skew, w_lead_lag, w_funding, w_oi = self.REGIME_WEIGHTS.get(
+                regime, self.DEFAULT_WEIGHTS
+            )
+            raw_score = (
+                w_skew * s_skew
+                + w_lead_lag * s_lead_lag
+                + w_funding * s_funding
+                + w_oi * s_oi
+            )
 
-        # Apply regime multiplier
-        regime_mult = self.REGIME_MULTIPLIERS.get(regime, 1.0) if regime else 1.0
-        confidence *= regime_mult
-        confidence = min(confidence, 1.0)
+            # Lead-lag soft penalty (hard kill already applied above)
+            if s_skew > 0 and s_lead_lag < -0.3:
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts LONG — penalized 0.7x"
+                )
+            elif s_skew < 0 and s_lead_lag > 0.3:
+                raw_score *= 0.7
+                logger.debug(
+                    f"Signal {symbol}: lead-lag contradicts SHORT — penalized 0.7x"
+                )
+
+            confidence = abs(raw_score)
+
+            # Apply regime multiplier
+            regime_mult = self.REGIME_MULTIPLIERS.get(regime, 1.0) if regime else 1.0
+            confidence *= regime_mult
+            confidence = min(confidence, 1.0)
+
+            # Phase 6: blend StrategyRouter score (0-100) into confidence.
+            # Weight: 40% strategy_score normalized + 60% composite confidence.
+            if strategy_score is not None and strategy_score > 0:
+                normalized_strategy = min(strategy_score / 100.0, 1.0)
+                confidence = 0.6 * confidence + 0.4 * normalized_strategy
+                confidence = min(confidence, 1.0)
 
         from app.core import metrics as m
 
@@ -193,10 +220,14 @@ class SignalGenerator:
 
         if direction == "FLAT" or confidence < self.min_confidence:
             m.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
+            kill_reason = "flat_direction" if direction == "FLAT" else "low_confidence"
+            m.signals_killed_total.labels(stage="confidence_gate", reason=kill_reason).inc()
             logger.debug(
                 f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold"
             )
             return None
+
+        m.signal_confidence_passed_total.labels(regime=regime or "UNKNOWN").inc()
 
         signal = TradingSignal(
             symbol=symbol,
@@ -213,12 +244,10 @@ class SignalGenerator:
                 "s_funding": s_funding,
                 "s_oi": s_oi,
                 "raw_score": raw_score,
+                "strategy_score": strategy_score,
             },
         )
 
-        from app.core import metrics as m
-
-        m.signals_generated.labels(symbol=symbol, direction=direction).inc()
         logger.info(
             f"Signal generated: {symbol} {direction} (conf={confidence:.2f}) regime={regime}"
         )

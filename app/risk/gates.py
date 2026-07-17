@@ -94,6 +94,14 @@ class RiskGate:
         passed_gates = [name for name, ok in gates if ok]
         failed_gate = next((name for name, ok in gates if not ok), None)
 
+        from app.core import metrics as m
+
+        if failed_gate is None:
+            m.risk_gate_pass.labels(symbol="unknown").inc()
+        else:
+            m.risk_gate_reject.labels(symbol="unknown", reason=failed_gate).inc()
+            m.signals_killed_total.labels(stage="risk_gate", reason=failed_gate).inc()
+
         return {
             "passed": failed_gate is None,
             "passed_gates": passed_gates,

@@ -475,6 +475,8 @@ class TradeReconciler:
                 avg_entry = Decimal("0")
                 avg_exit = Decimal("0")
 
+            latest_updated = max((int(r.get("updatedTime", r.get("createdTime", "0"))) for r in records), default=0)
+
             # Check if there's an open local trade that should be closed
             open_candidates = open_index.get(ccxt_sym, [])
             for t in open_candidates:
@@ -490,6 +492,7 @@ class TradeReconciler:
                                 "avg_entry_price": str(avg_entry),
                                 "avg_exit_price": str(avg_exit),
                                 "qty": str(total_qty),
+                                "updated_time_ms": str(latest_updated),
                             },
                             local_trade_id=t.get("id"),
                             severity="CRITICAL",
@@ -629,6 +632,28 @@ class TradeReconciler:
                         "pnl": str(pnl),
                         "trade_id": d.local_trade_id,
                     })
+
+                    # Send normal exit alert if it was recent
+                    try:
+                        updated_time_ms = int(d.bybit_data.get("updated_time_ms", 0))
+                        now_ms = int(now.timestamp() * 1000)
+                        is_recent = (now_ms - updated_time_ms) < (15 * 60 * 1000)  # 15 minutes
+
+                        if is_recent:
+                            from app.bot.utils.formatters import format_tp_alert, format_sl_alert, format_breakeven_alert
+                            entry_price = _safe_decimal(d.bybit_data.get("avg_entry_price", "0"))
+                            pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
+                            if pnl > 0:
+                                msg = format_tp_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                            elif pnl < 0:
+                                msg = format_sl_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                            else:
+                                msg = format_breakeven_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                            await self.alert.send(msg)
+                        else:
+                            logger.info(f"Trade reconciler: skipping Telegram alert for old hanging position {d.symbol} {d.side}")
+                    except Exception as e:
+                        logger.error(f"Trade reconciler: failed to send exit alert: {e}")
             except Exception as e:
                 logger.error(
                     f"Trade reconciler: repair failed for {d.symbol} {d.side}: {e}"
@@ -639,7 +664,7 @@ class TradeReconciler:
 
     async def _alert_discrepancies(self, discrepancies: List[Discrepancy]) -> None:
         """Send Telegram alert for CRITICAL discrepancies."""
-        critical = [d for d in discrepancies if d.severity == "CRITICAL"]
+        critical = [d for d in discrepancies if d.severity == "CRITICAL" and not d.repaired]
         if not critical:
             return
 

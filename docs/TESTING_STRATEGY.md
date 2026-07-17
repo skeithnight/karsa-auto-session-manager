@@ -22,9 +22,9 @@ Three failure modes this strategy is designed to catch before production:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Unit** | Pure functions: math, normalizers, filters, Pydantic models | `pytest`, `pytest-asyncio`, `hypothesis` | None (in-process) | ms | Every commit |
 | **Integration** | Component-to-component: DB writes, proxy routing, WS reconnect | `pytest`, `testcontainers-python` (Postgres), mock WS servers | Docker (ephemeral) | seconds–minutes | Every PR |
-| **Execution/Testnet** | Real order lifecycle on exchange | `pytest` + Bybit Testnet SDK calls | Bybit Testnet via WARP | minutes | Pre-merge to `main`, nightly |
-| **Chaos/Safety** | Kill switch, circuit breakers, proxy failover, reconciliation scenarios | Custom fault-injection harness | Docker + Testnet | minutes | Pre-merge to `main`, nightly |
-| **Soak** | Long-running stability | Manual/scheduled run + Prometheus assertions | Full Docker stack, Testnet | 15 min – 14 days | Pre-release gates (see §6) |
+| **Execution/Live** | Real order lifecycle on exchange | `pytest` + live Bybit SDK calls (micro size + $1 SL cap) | **Bybit Main URL via WARP** | minutes | Pre-merge to `main`, nightly |
+| **Chaos/Safety** | Kill switch, circuit breakers, proxy failover, reconciliation scenarios | Custom fault-injection harness | Docker + live Bybit (mocked where safe) | minutes | Pre-merge to `main`, nightly |
+| **Soak** | Long-running stability | Manual/scheduled run + Prometheus assertions | Full Docker stack, live Bybit | 15 min – 14 days | Pre-release gates (see §6) |
 
 ---
 
@@ -45,7 +45,7 @@ Three failure modes this strategy is designed to catch before production:
 - **Postgres schema conformance:** `testcontainers` spins an ephemeral Postgres 15 instance per test run; migrations apply the exact DDL from `DATA_MODEL.md` §3. Tests insert real `TradeExecution`/`TradingSignal`/`system_events` objects and assert the round-tripped row matches field-for-field, including `JSONB` snapshot shape.
 - **WARP Proxy Verification:** an integration test confirms outbound Bybit traffic actually routes through `socks5h://host.docker.internal:1080` (e.g., asserting egress IP differs from host IP, or asserting connection fails cleanly when the proxy is intentionally down — never silently falls back to direct connection).
 - **WebSocket Resilience ("Choke Test"):** a mock WS server (or `toxiproxy`) intentionally severs Binance/OKX/Bybit connections mid-stream. Assertions: (1) reconnect happens automatically, (2) the exchange is marked `STALE` within the 15s window from `DEFINITION_OF_DONE.md` §3.A, (3) no unhandled exception crashes the event loop.
-- **Bybit Testnet Execution:** place/cancel/verify small real orders on Testnet. Assert the full SOR sequence (Post-Only Limit → Reprice → Market/IOC) executes in order, and that an exchange-side Stop-Loss is placed **atomically with** (not after, not optionally) every fill — this is the single most safety-critical assertion in the suite per DoD anti-pattern #5.
+- **Live Bybit Execution (Main URL):** place/cancel/verify small real orders on **live Bybit main URL** with the $1 max-loss-per-position SL hard cap as the safety boundary. Assert the full SOR sequence (Post-Only Limit → Reprice → Market/IOC) executes in order, and that an exchange-side Stop-Loss is placed **atomically with** (not after, not optionally) every fill — this is the single most safety-critical assertion in the suite per DoD anti-pattern #5. **Note:** Testnet is not accessible — live Bybit with micro-size is the only execution test environment.
 - **Idempotent Execution:** simulate a crash immediately after an order is sent but before the fill is persisted, then restart the reconciliation flow. Assert exactly one order exists on the exchange — never a duplicate.
 
 ---
@@ -80,8 +80,8 @@ Each row below is a required automated test, not a manual QA pass.
 | Gate | Duration | Environment | Pass Criteria (from `MVP_SCOPE.md` / `DEFINITION_OF_DONE.md`) |
 | :--- | :--- | :--- | :--- |
 | Pre-merge smoke | 15 min | Local Docker | No memory leak, no WS drop, no unhandled exception |
-| Phase 4 integration soak | 72 hrs | Bybit Testnet | Zero crashes, zero state divergences, all trades logged correctly |
-| MVP graduation soak | 14 days | Bybit Testnet | Zero unhandled exceptions/divergence, avg latency <800ms, win rate >50% with R:R >1.2, circuit breaker intentionally tripped once and verified to flatten correctly |
+| Phase 4 integration soak | 72 hrs | **Live Bybit main URL** (micro-size, $1 SL cap) | Zero crashes, zero state divergences, all trades logged correctly |
+| MVP graduation soak | 14 days | **Live Bybit main URL** | Zero unhandled exceptions/divergence, avg latency <800ms, win rate >50% with R:R >1.2, circuit breaker intentionally tripped once and verified to flatten correctly |
 
 Soak runs should assert against Prometheus metrics directly (e.g., scrape `karsa_bybit_order_latency_seconds` p95 continuously) rather than relying on end-of-run manual log review.
 
@@ -94,7 +94,7 @@ Soak runs should assert against Prometheus metrics directly (e.g., scrape `karsa
 | Pre-commit | Local `git commit` | `ruff`, `black --check`, `mypy --strict` |
 | PR opened/updated | GitHub Actions | Unit tests + coverage >90% on core logic paths |
 | Merge to `main` | Post-approval merge | Integration suite (testcontainers Postgres, WS choke test, proxy verification) |
-| Nightly | Scheduled | Testnet execution suite + full Chaos/Safety table (§5) |
+| Nightly | Scheduled | Live Bybit execution suite (micro-size) + full Chaos/Safety table (§5) |
 | Pre-release (V1.0 → V1.1) | Manual gate | 14-day soak results reviewed against MVP Success Criteria |
 
 A PR cannot merge if any Chaos/Safety test (§5) is skipped, `xfail`, or commented out — these are the tests most likely to be quietly disabled under deadline pressure, and they're precisely the ones protecting capital.

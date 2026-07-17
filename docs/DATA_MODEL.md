@@ -30,6 +30,12 @@ Redis is used for high-speed state persistence, cross-component caching, and Wat
 | `ai:cache:{hash}` | String | 300s | `{"direction": "LONG", "confidence": 72, "reasoning": "..."}` | AI analyst result cache (5min TTL) |
 | `karsa:position:{symbol}:{side}` | Hash | None | `{entry_price, peak_price, atr, sl_order_id, checkpoint, ...}` | Position lifecycle state |
 | `trade:{trade_id}` | Hash | None | `{symbol, side, entry_price, exit_price, pnl_usdt, status, ...}` | Per-trade lifecycle snapshot (State Manager owned) |
+| `position:{symbol}:risk_profile` | Hash | None | `{"regime": "TREND_BULL", "size_multiplier": "1.0", "max_hold_time_mins": 1440, ...}` | Serialized `RiskProfile` for open position (Phase 6) |
+| `position:{symbol}:entry_regime` | String | None | `"TREND_BULL"` | Regime at fill time — immutable for position lifetime (Phase 6) |
+| `risk:portfolio_cb:daily_loss_fired` | String | None | `"0"` or `"1"` | Daily loss CB state — reset at UTC midnight (Phase 6) |
+| `risk:portfolio_cb:consecutive_loss_count` | String | None | `"3"` | Current consecutive loss streak (Phase 6) |
+| `risk:portfolio_cb:blocked_until` | String | None | `"2024-01-15T15:30:00Z"` | ISO timestamp for entry block expiry (Phase 6) |
+| `risk:portfolio_cb:start_of_day_equity` | String | None | `"1000.00"` | Equity snapshot at UTC 00:00 for daily loss calc (Phase 6) |
 
 ### `GlobalStateCache` Schema
 ```json

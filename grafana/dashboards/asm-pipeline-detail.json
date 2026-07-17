@@ -1,0 +1,2313 @@
+{
+  "title": "ASM - Pipeline Detail",
+  "tags": [
+    "asm",
+    "pipeline",
+    "detail"
+  ],
+  "timezone": "browser",
+  "refresh": "30s",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "uid": "asm-pipeline-detail",
+  "panels": [
+    {
+      "id": 100,
+      "type": "row",
+      "title": "\ud83d\udcca Pipeline Summary",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 1,
+      "title": "Stage Counts (24h)",
+      "type": "stat",
+      "description": "Aggregate count at each pipeline stage.",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "targets": [
+        {
+          "expr": "sum(increase(karsa_signals_pipeline_attempted_total[24h])) or vector(0)",
+          "legendFormat": "Attempted"
+        },
+        {
+          "expr": "sum(increase(karsa_signals_generated_total[24h])) or vector(0)",
+          "legendFormat": "Generated"
+        },
+        {
+          "expr": "sum(increase(karsa_signals_skipped_total[24h])) or vector(0)",
+          "legendFormat": "Skipped"
+        },
+        {
+          "expr": "sum(increase(karsa_ai_calls_total{service='analyst'}[24h])) or vector(0)",
+          "legendFormat": "AI Calls"
+        },
+        {
+          "expr": "sum(increase(karsa_risk_gate_pass_total[24h])) or vector(0)",
+          "legendFormat": "Risk Pass"
+        },
+        {
+          "expr": "sum(increase(karsa_positions_opened_total[24h])) or vector(0)",
+          "legendFormat": "Trades"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "super-light-blue"
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "orientation": "horizontal"
+      }
+    },
+    {
+      "id": 200,
+      "type": "row",
+      "title": "\ud83d\udd0d Symbol Pipeline Status",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      }
+    },
+    {
+      "id": 2,
+      "title": "Symbol Pipeline Status (24h)",
+      "type": "table",
+      "description": "Per-symbol view of where each symbol is in the pipeline. Shows attempted, generated, skipped reasons, and trades.",
+      "gridPos": {
+        "h": 12,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_pipeline_attempted_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_generated_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_skipped_total{reason=~'entry_filter:.*'}[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_skipped_total{reason=~'low_confidence|lead_lag_kill|mtf_penalty_low'}[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "D"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_skipped_total{reason='ai_rejected'}[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "E"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_risk_gate_pass_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "F"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_positions_opened_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "G"
+        },
+        {
+          "expr": "sum by (symbol) (karsa_signal_confidence_sum) / clamp_min(sum by (symbol) (karsa_signal_confidence_count), 1)",
+          "format": "table",
+          "instant": true,
+          "refId": "H"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "symbol"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Time 4": true,
+              "Time 5": true,
+              "Time 6": true,
+              "Time 7": true,
+              "Time 8": true,
+              "Field": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #A": "Attempted",
+              "Value #B": "Generated",
+              "Value #C": "Entry Blocked",
+              "Value #D": "Gen Skipped",
+              "Value #E": "AI Rejected",
+              "Value #F": "Risk Pass",
+              "Value #G": "Trades Opened",
+              "Value #H": "Avg Confidence"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Attempted",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Confidence"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.4
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.65
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Entry Blocked"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 1
+                    },
+                    {
+                      "color": "red",
+                      "value": 10
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trades Opened"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 300,
+      "type": "row",
+      "title": "\ud83d\udeab Skip Reasons by Symbol",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      }
+    },
+    {
+      "id": 3,
+      "title": "Entry Filter Blocks by Symbol",
+      "type": "table",
+      "description": "Which symbols are blocked by entry filter and why. CHOP regime = all symbols blocked.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 19
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol, reason) (increase(karsa_signals_skipped_total{reason=~'entry_filter:.*'}[24h]))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "symbol"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Field": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "reason": "Reason",
+              "Value #A": "Count"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Count",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reason"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 4,
+      "title": "Signal Gen Skips by Symbol",
+      "type": "table",
+      "description": "Symbols that passed entry filter but skipped at signal generation (low confidence, lead-lag kill, multi-TF penalty).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 19
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol, reason) (increase(karsa_signals_skipped_total{reason=~'low_confidence|lead_lag_kill|mtf_penalty_low'}[24h]))",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "symbol"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Field": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "reason": "Reason",
+              "Value #A": "Count"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Count",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Reason"
+            },
+            "properties": [
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "cyan"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 400,
+      "type": "row",
+      "title": "\ud83e\udd16 AI & Risk Detail",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 27
+      }
+    },
+    {
+      "id": 5,
+      "title": "AI Decisions by Symbol",
+      "type": "table",
+      "description": "Recent AI analyst decisions per symbol with confidence, direction, and latency.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 28
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "grafana-postgresql-datasource"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol AS \"Symbol\", COUNT(*) AS \"Calls\", AVG((output_json->>'ai_confidence')::numeric) AS \"Avg AI Conf\", SUM(CASE WHEN decision_type = 'validated' THEN 1 ELSE 0 END) AS \"Validated\", SUM(CASE WHEN decision_type = 'rejected' THEN 1 ELSE 0 END) AS \"Rejected\", AVG(latency_ms) AS \"Avg Latency (ms)\", MAX(TO_CHAR(created_at, 'HH24:MI:SS')) AS \"Last Call\" FROM ai_decisions WHERE created_at > NOW() - INTERVAL '24 hours' GROUP BY symbol ORDER BY COUNT(*) DESC;",
+          "format": "table",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "grafana-postgresql-datasource"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg AI Conf"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              },
+              {
+                "id": "decimals",
+                "value": 1
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 50
+                    },
+                    {
+                      "color": "green",
+                      "value": 75
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Latency (ms)"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "ms"
+              },
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "green",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 2000
+                    },
+                    {
+                      "color": "red",
+                      "value": 10000
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 6,
+      "title": "Risk Gate & Trades by Symbol",
+      "type": "table",
+      "description": "Risk gate pass/fail and trades opened per symbol.",
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 28
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol) (increase(karsa_risk_gate_pass_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_risk_gate_reject_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_positions_opened_total[24h])) or vector(0)",
+          "format": "table",
+          "instant": true,
+          "refId": "C"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "symbol"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Time 3": true,
+              "Field": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #A": "Risk Pass",
+              "Value #B": "Risk Reject",
+              "Value #C": "Trades Opened"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Trades Opened",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trades Opened"
+            },
+            "properties": [
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "text",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 1
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 500,
+      "type": "row",
+      "title": "\ud83d\udcc8 Signal Confidence by Symbol",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      }
+    },
+    {
+      "id": 7,
+      "title": "Signal Confidence Distribution",
+      "type": "table",
+      "description": "Per-symbol average signal confidence with count. Sort by confidence to find strongest/weakest signals.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 39
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol) (karsa_signal_confidence_sum) / clamp_min(sum by (symbol) (karsa_signal_confidence_count), 1)",
+          "format": "table",
+          "instant": true,
+          "refId": "A"
+        },
+        {
+          "expr": "sum by (symbol) (karsa_signal_confidence_count)",
+          "format": "table",
+          "instant": true,
+          "refId": "B"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "seriesToColumns",
+          "options": {
+            "byField": "symbol"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Field": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #A": "Avg Confidence",
+              "Value #B": "Signal Count"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": {},
+            "sort": [
+              {
+                "field": "Avg Confidence",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Avg Confidence"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "decimals",
+                "value": 3
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "yellow",
+                      "value": 0.4
+                    },
+                    {
+                      "color": "green",
+                      "value": 0.65
+                    }
+                  ]
+                }
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Signal Count"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "short"
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 8,
+      "title": "Signal Confidence Over Time (per symbol)",
+      "type": "timeseries",
+      "description": "Signal confidence trend per symbol. Identifies which symbols are producing stronger/weaker signals over time.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 39
+      },
+      "targets": [
+        {
+          "expr": "sum by (symbol) (karsa_signal_confidence_sum) / clamp_min(sum by (symbol) (karsa_signal_confidence_count), 1)",
+          "legendFormat": "{{symbol}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1,
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.4
+              },
+              {
+                "color": "green",
+                "value": 0.65
+              }
+            ]
+          },
+          "custom": {
+            "fillOpacity": 5,
+            "lineWidth": 1,
+            "thresholdsStyle": {
+              "mode": "area"
+            }
+          }
+        }
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "values": [
+            "mean",
+            "lastNotNull"
+          ],
+          "sortBy": "lastNotNull",
+          "sortDesc": true
+        },
+        "tooltip": {
+          "mode": "multi"
+        }
+      }
+    },
+    {
+      "id": 600,
+      "type": "row",
+      "title": "\ud83d\udcb0 Trade History by Symbol",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      }
+    },
+    {
+      "id": 9,
+      "title": "Recent Trades by Symbol",
+      "type": "table",
+      "description": "Trade history from Postgres. Shows which symbols actually made it through the full pipeline to execution.",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 48
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "grafana-postgresql-datasource"
+      },
+      "targets": [
+        {
+          "rawSql": "SELECT symbol AS \"Symbol\", side AS \"Side\", entry_price AS \"Entry Price\", exit_price AS \"Exit Price\", quantity AS \"Qty\", realized_pnl AS \"Realized PnL\", roi_pct AS \"ROI %\", exit_reason AS \"Exit Reason\", TO_CHAR(opened_at, 'MM-DD HH24:MI') AS \"Opened\", TO_CHAR(closed_at, 'MM-DD HH24:MI') AS \"Closed\" FROM trades ORDER BY COALESCE(closed_at, opened_at) DESC LIMIT 30;",
+          "format": "table",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "grafana-postgresql-datasource"
+          },
+          "instant": true
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Realized PnL"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              },
+              {
+                "id": "custom.displayMode",
+                "value": "color-text"
+              },
+              {
+                "id": "thresholds",
+                "value": {
+                  "steps": [
+                    {
+                      "color": "red",
+                      "value": null
+                    },
+                    {
+                      "color": "green",
+                      "value": 0
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Entry Price"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Exit Price"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "currencyUSD"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "ROI %"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percent"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true
+      }
+    },
+    {
+      "id": 700,
+      "type": "row",
+      "title": "\ud83d\udd04 Pipeline Flow \u2014 Top 5 per Stage",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 56
+      }
+    },
+    {
+      "id": 701,
+      "title": "1\ufe0f\u20e3 Entry Filter",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 1\ufe0f\u20e3 Entry Filter",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 0,
+        "y": 57
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #701-A": "Symbol_Label",
+              "Value #701-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_skipped_total{reason=~\"entry_filter:.*\"}[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 720,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 7,
+        "y": 57
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 702,
+      "title": "2\ufe0f\u20e3 Strategy Gate",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 2\ufe0f\u20e3 Strategy Gate",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 8,
+        "y": 57
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #702-A": "Symbol_Label",
+              "Value #702-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_skipped_total{reason=~\"strategy_gate:.*\"}[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 721,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 15,
+        "y": 57
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 703,
+      "title": "3\ufe0f\u20e3 Strategy Score",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 3\ufe0f\u20e3 Strategy Score",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 16,
+        "y": 57
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #703-A": "Symbol_Label",
+              "Value #703-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_strategy_score_count[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 732,
+      "type": "text",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='text-align:center;font-size:24px'>\u2b07\ufe0f \u2b07\ufe0f \u2b07\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 704,
+      "title": "4\ufe0f\u20e3 Pipeline Entered",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 4\ufe0f\u20e3 Pipeline Entered",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 0,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #704-A": "Symbol_Label",
+              "Value #704-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_pipeline_attempted_total[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 723,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 7,
+        "y": 64
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 705,
+      "title": "5\ufe0f\u20e3 Signal Generated",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 5\ufe0f\u20e3 Signal Generated",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 8,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #705-A": "Symbol_Label",
+              "Value #705-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_signals_entered_pipeline_total[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 724,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 15,
+        "y": 64
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 706,
+      "title": "6\ufe0f\u20e3 AI Analyst",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 6\ufe0f\u20e3 AI Analyst",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 16,
+        "y": 64
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #706-A": "Symbol_Label",
+              "Value #706-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_ai_calls_total{service=\"analyst\"}[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 735,
+      "type": "text",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='text-align:center;font-size:24px'>\u2b07\ufe0f \u2b07\ufe0f \u2b07\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 707,
+      "title": "7\ufe0f\u20e3 Risk Pass",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 7\ufe0f\u20e3 Risk Pass",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 0,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #707-A": "Symbol_Label",
+              "Value #707-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_risk_gate_pass_total[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 726,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 7,
+        "y": 71
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 708,
+      "title": "8\ufe0f\u20e3 Orders Placed",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 8\ufe0f\u20e3 Orders Placed",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 8,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #708-A": "Symbol_Label",
+              "Value #708-B": "Value",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_orders_placed_total[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    },
+    {
+      "id": 727,
+      "type": "text",
+      "gridPos": {
+        "h": 6,
+        "w": 1,
+        "x": 15,
+        "y": 71
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "<div style='display:flex;align-items:center;justify-content:center;height:100%;font-size:28px'>\u27a1\ufe0f</div>"
+      },
+      "transparent": true
+    },
+    {
+      "id": 709,
+      "title": "9\ufe0f\u20e3 Positions Opened",
+      "type": "table",
+      "description": "Top 5 symbols \u2014 9\ufe0f\u20e3 Positions Opened",
+      "gridPos": {
+        "h": 6,
+        "w": 7,
+        "x": 16,
+        "y": 71
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "PBFA97CFB590B2093"
+      },
+      "options": {
+        "showHeader": true,
+        "footer": {
+          "show": false
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center"
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Symbol"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Value"
+            },
+            "properties": [
+              {
+                "id": "custom.align",
+                "value": "right"
+              },
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "symbol",
+            "mode": "inner"
+          }
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true,
+              "Time 1": true,
+              "Time 2": true,
+              "Value #A": true
+            },
+            "renameByName": {
+              "symbol": "Symbol",
+              "Value #B": "Value"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "fields": [
+              {
+                "field": "Value",
+                "desc": true
+              }
+            ],
+            "sort": []
+          }
+        }
+      ],
+      "targets": [
+        {
+          "expr": "topk(5, sum by (symbol) (increase(karsa_strategy_score_count[24h])))",
+          "legendFormat": "{{symbol}}",
+          "refId": "A",
+          "instant": true,
+          "format": "table"
+        },
+        {
+          "expr": "sum by (symbol) (increase(karsa_positions_opened_total[24h]))",
+          "legendFormat": "{{symbol}}",
+          "refId": "B",
+          "instant": true,
+          "format": "table"
+        }
+      ]
+    }
+  ],
+  "schemaVersion": 36
+}

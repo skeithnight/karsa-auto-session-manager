@@ -180,7 +180,10 @@ class CryptoAnalyst:
                 )
             except Exception:
                 logger.debug(f"Analyst cache write failed for {symbol}")
-        logger.info(f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence}")
+        reasoning_preview = (result.reasoning or "")[:150].replace("\n", " ")
+        logger.info(
+            f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence} | {reasoning_preview}"
+        )
         return result
 
     def _parse_response(self, response: str) -> AnalystResult | None:

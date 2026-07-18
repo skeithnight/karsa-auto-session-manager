@@ -65,8 +65,11 @@ async def _on_signal_shadow(
         logger.info("shadow skip %s — position already open", symbol)
         return
 
-    # AI Analyst gate (mandatory for safe positions)
-    if crypto_analyst and signal.score >= 40.0:
+    # AI Analyst gate — skip for high-confidence signals (score >= 75)
+    # High-confidence = multiple confluence components aligned; AI veto was
+    # blocking all trades due to systematic direction disagreement.
+    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
+    if crypto_analyst and signal.score >= 40.0 and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD:
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,

@@ -40,7 +40,8 @@ class AIClient:
                 headers["Authorization"] = f"Bearer {self.auth_token}"
             timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
             self._session = aiohttp.ClientSession(
-                headers=headers, timeout=timeout,
+                headers=headers,
+                timeout=timeout,
             )
         return self._session
 
@@ -73,7 +74,9 @@ class AIClient:
                         choices = data.get("choices", [])
                         if choices:
                             msg = choices[0].get("message", {})
-                            content = msg.get("content", "") or msg.get("reasoning_content", "")
+                            content = (
+                                msg.get("content", "") or msg.get("reasoning_content", "") or msg.get("reasoning", "")
+                            )
                             metrics.ai_analyst_calls.labels(result="success").inc()
                             logger.debug(f"AI complete: model={self.model}")
                             return content
@@ -83,7 +86,7 @@ class AIClient:
                     if resp.status == 429:
                         body = await resp.text()
                         last_error = f"rate_limited: {body}"
-                        wait = 2 ** attempt
+                        wait = 2**attempt
                         logger.warning(f"AI rate limited, retry in {wait}s")
                         await asyncio.sleep(wait)
                         continue
@@ -95,7 +98,7 @@ class AIClient:
 
                     body = await resp.text()
                     last_error = f"status_{resp.status}: {body}"
-                    wait = 2 ** attempt
+                    wait = 2**attempt
                     logger.warning(f"AI server error {resp.status}, retry {attempt + 1}/{self.max_retries} in {wait}s")
                     await asyncio.sleep(wait)
 

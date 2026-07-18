@@ -35,8 +35,13 @@ class RedisClient:
         self.redis: Optional[aioredis.Redis] = None
         logger.debug("RedisClient.__init__: returning")
 
-    async def connect(self) -> None:
-        """Establish Redis connection."""
+    async def connect(self, socket_timeout: float = 5.0) -> None:
+        """Establish Redis connection.
+
+        Args:
+            socket_timeout: Per-socket read/write timeout in seconds.
+                Default 5s for interactive use. Pass 45+ for BLPOP workers.
+        """
         logger.debug("connect: entering")
         pool = aioredis.BlockingConnectionPool.from_url(
             self.settings.redis_url,
@@ -44,7 +49,7 @@ class RedisClient:
             decode_responses=True,
             max_connections=50,
             timeout=10,               # wait up to 10s for a free connection
-            socket_timeout=5.0,
+            socket_timeout=socket_timeout,
             socket_connect_timeout=5.0,
             retry_on_timeout=True,
         )

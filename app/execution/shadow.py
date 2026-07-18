@@ -73,7 +73,7 @@ class ShadowExecutor:
         """Fee asymmetry: maker (post-only) vs taker (market/IOC)."""
         return self._maker_fee if is_post_only else self._taker_fee
 
-    async def _get_mid_price(self, symbol: str) -> Decimal:
+    async def _get_mid_price(self, symbol: str, fallback_price: Decimal | None = None) -> Decimal:
         """Read live mid price from Redis system:state:{symbol}."""
         raw = await self._redis.get(f"system:state:{symbol}")
         if raw:
@@ -97,6 +97,8 @@ class ShadowExecutor:
                     return last
             except Exception:
                 pass
+        if fallback_price is not None and fallback_price > 0:
+            return fallback_price
         raise ValueError(f"ShadowExecutor: no price for {symbol}")
 
     def _apply_slippage(self, price: Decimal, side: str) -> Decimal:
@@ -127,7 +129,7 @@ class ShadowExecutor:
         if amount <= 0:
             return None
 
-        mid = await self._get_mid_price(symbol)
+        mid = await self._get_mid_price(symbol, fallback_price=price)
         fill_price = self._apply_slippage(mid, side)
 
         fee_rate = self._pick_fee(is_post_only)

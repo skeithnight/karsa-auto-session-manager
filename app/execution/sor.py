@@ -1,19 +1,33 @@
-"""Smart Order Routing — Post-Only → Reprice → Market fallback."""
+"""Smart Order Routing — Post-Only → Reprice → Market fallback.
+
+Regime-aware routing (Phase 12):
+  CHOP/RANGE: force Post-Only (maker fee, no aggressive fills)
+  TREND: allow Market fallback on reprice failure
+  Spread gate: reject entries when bid-ask spread > threshold
+"""
 
 from __future__ import annotations
 
 import asyncio
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
 from app.core import metrics
 from app.execution.bybit_client import BybitClient
 
+# Regime-aware routing constants
+CHOP_RANGE_MAX_REPRICE = 1  # fewer reprices for CHOP/RANGE — reject faster
+CHOP_RANGE_SPREAD_PCT = Decimal("0.002")  # 0.2% max spread for CHOP/RANGE
+TREND_SPREAD_PCT = Decimal("0.005")  # 0.5% max spread for TREND
+
 
 class SmartOrderRouter:
-    """3-step order routing: Post-Only → Reprice → Market/IOC."""
+    """3-step order routing: Post-Only → Reprice → Market/IOC.
+
+    Regime-aware: enforces Post-Only + tighter spread gate for CHOP/RANGE.
+    """
 
     def __init__(self, bybit_client: BybitClient, max_reprice_attempts: int = 2, reprice_delay_seconds: float = 2.0, alert_service: object | None = None) -> None:
         logger.debug("SmartOrderRouter.__init__: entering")
@@ -32,7 +46,7 @@ class SmartOrderRouter:
         price: Decimal,
         price_tick: Decimal = Decimal("0.01"),
         max_loss_usd: Decimal = Decimal("1.00"),
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Execute order with 3-step fallback + exchange-side SL on fill.
         Callers: executor_task in main.py.
         API change: sl_distance_pct replaced with max_loss_usd (absolute USD loss cap).
@@ -43,7 +57,7 @@ class SmartOrderRouter:
         4. Place exchange-side Stop-Loss immediately on fill (CLAUDE.md Rule 5)
         """
         logger.debug(f"execute: entering symbol={symbol} side={side}")
-        order: Optional[Dict[str, Any]] = None
+        order: dict[str, Any] | None = None
 
         # Reject invalid price
         if price <= 0:
@@ -135,7 +149,7 @@ class SmartOrderRouter:
         amount: Decimal,
         price: Decimal,
         price_tick: Decimal = Decimal("0.01"),
-    ) -> Optional[Dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Execute profitable exit via Post-Only → Reprice → Market.
 
         No SL placement (position is closing). For loss exits / hard fails,
@@ -168,7 +182,7 @@ class SmartOrderRouter:
             else:
                 current_price -= effective_tick
                 if current_price <= 0:
-                    logger.warning(f"Exit reprice would go negative, falling back to market")
+                    logger.warning("Exit reprice would go negative, falling back to market")
                     break
 
             logger.info(f"SOR exit Step 2: Reprice attempt {attempt + 1} @ {current_price}")
@@ -197,7 +211,7 @@ class SmartOrderRouter:
 
     async def _place_sl_after_fill(
         self, symbol: str, side: str, fill_price: Decimal, amount: Decimal, max_loss_usd: Decimal, price_tick: Decimal
-    ) -> Optional[str]:
+    ) -> str | None:
         """Place exchange-side SL immediately after fill. CLAUDE.md Rule 5.
         SL price: loss = max_loss_usd / amount, so SL is at fill_price - loss (LONG) or + loss (SHORT)."""
         sl_order_id = None
@@ -208,7 +222,7 @@ class SmartOrderRouter:
                 raw_sl_price = fill_price - sl_distance
             else:
                 raw_sl_price = fill_price + sl_distance
-            
+
             # Round sl_price to price_tick to avoid Bybit precision errors
             sl_price = (raw_sl_price / price_tick).quantize(Decimal("1")) * price_tick
 
@@ -259,3 +273,179 @@ class SmartOrderRouter:
             logger.error(f"Cancel all positions failed: {e}")
             logger.debug(f"cancel_all_positions: error={e}")
         logger.debug("cancel_all_positions: returning None")
+
+    # ------------------------------------------------------------------
+    # Regime-aware execution (Phase 12)
+    # ------------------------------------------------------------------
+
+    async def execute_regime_aware(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        use_post_only: bool = False,
+        regime: str = "",
+        price_tick: Decimal = Decimal("0.01"),
+        max_loss_usd: Decimal = Decimal("1.00"),
+    ) -> dict[str, Any] | None:
+        """Regime-aware order execution.
+
+        CHOP/RANGE: force Post-Only only — reject if not filled, no market fallback.
+        TREND: allow full Post-Only → Reprice → Market pipeline.
+        Spread gate: reject if bid-ask spread exceeds regime threshold.
+        """
+        if price <= 0:
+            logger.warning("SOR: invalid price %s for %s, skipping", price, symbol)
+            return None
+
+        # Spread gate
+        spread_ok = await self._check_spread_gate(symbol, regime)
+        if not spread_ok:
+            metrics.orders_rejected.labels(
+                symbol=symbol, reason="spread_gate"
+            ).inc()
+            return None
+
+        # CHOP/RANGE: Post-Only only — no market fallback
+        if use_post_only:
+            order = await self._try_post_only(symbol, side, amount, price)
+            if order is not None:
+                sl_id = await self._place_sl_after_fill(
+                    symbol, side, price, amount, max_loss_usd, price_tick
+                )
+                order["sl_order_id"] = sl_id
+                return order
+            logger.info(
+                "SOR: Post-Only rejected for %s (CHOP/RANGE) — no market fallback",
+                symbol,
+            )
+            metrics.orders_rejected.labels(
+                symbol=symbol, reason="chop_range_post_only"
+            ).inc()
+            return None
+
+        # TREND: full pipeline with regime-adjusted reprices
+        max_reprices = (
+            self.max_reprice_attempts if regime not in ("CHOP", "RANGE")
+            else CHOP_RANGE_MAX_REPRICE
+        )
+        return await self._execute_full_pipeline(
+            symbol, side, amount, price,
+            price_tick, max_loss_usd, max_reprices,
+        )
+
+    async def _check_spread_gate(
+        self, symbol: str, regime: str
+    ) -> bool:
+        """Reject if bid-ask spread exceeds regime threshold."""
+        try:
+            tickers = await self.client.fetch_tickers(symbol=symbol)
+            if not tickers:
+                return True
+            ticker = tickers[0] if isinstance(tickers, list) else tickers
+            bid = Decimal(str(ticker.get("bid", 0)))
+            ask = Decimal(str(ticker.get("ask", 0)))
+            if bid <= 0 or ask <= 0:
+                return True
+            spread = (ask - bid) / bid
+            threshold = (
+                CHOP_RANGE_SPREAD_PCT if regime in ("CHOP", "RANGE")
+                else TREND_SPREAD_PCT
+            )
+            if spread > threshold:
+                logger.warning(
+                    "SOR: spread %.4f exceeds threshold %.4f for %s (%s)",
+                    float(spread), float(threshold), symbol, regime,
+                )
+                return False
+            return True
+        except Exception:
+            logger.debug("SOR: spread check failed for %s, allowing", symbol)
+            return True
+
+    async def _try_post_only(
+        self, symbol: str, side: str, amount: Decimal, price: Decimal
+    ) -> dict[str, Any] | None:
+        """Attempt a single Post-Only limit order."""
+        try:
+            order = await self.client.create_limit_order(
+                symbol, side, amount, price
+            )
+            if order.get("status") == "open":
+                metrics.orders_placed.labels(
+                    symbol=symbol, side=side
+                ).inc()
+                return order
+        except Exception as exc:
+            logger.warning("SOR: Post-Only failed: %s", exc)
+        return None
+
+    async def _execute_full_pipeline(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        price_tick: Decimal,
+        max_loss_usd: Decimal,
+        max_reprices: int,
+    ) -> dict[str, Any] | None:
+        """Post-Only → Reprice → Market pipeline with configurable reprices."""
+        # Step 1: Post-Only
+        order = await self._try_post_only(symbol, side, amount, price)
+        if order is not None:
+            sl_id = await self._place_sl_after_fill(
+                symbol, side, price, amount, max_loss_usd, price_tick
+            )
+            order["sl_order_id"] = sl_id
+            return order
+
+        # Step 2: Reprice attempts
+        current_price = price
+        effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
+        for attempt in range(max_reprices):
+            await asyncio.sleep(self.reprice_delay_seconds)
+            if side == "buy":
+                current_price += effective_tick
+            else:
+                current_price -= effective_tick
+            if current_price <= 0:
+                break
+            if order and order.get("id"):
+                await self.client.cancel_order(order["id"], symbol)
+            try:
+                order = await self.client.create_limit_order(
+                    symbol, side, amount, current_price
+                )
+                if order.get("status") == "open":
+                    sl_id = await self._place_sl_after_fill(
+                        symbol, side, current_price, amount,
+                        max_loss_usd, price_tick,
+                    )
+                    order["sl_order_id"] = sl_id
+                    return order
+            except Exception:
+                logger.debug("SOR: reprice %d failed", attempt + 1)
+
+        # Step 3: Market fallback
+        if order and order.get("id"):
+            await self.client.cancel_order(order["id"], symbol)
+        try:
+            market_order = await self.client.create_market_order(
+                symbol, side, amount
+            )
+            metrics.orders_placed.labels(
+                symbol=symbol, side=side
+            ).inc()
+            sl_id = await self._place_sl_after_fill(
+                symbol, side, price, amount, max_loss_usd, price_tick
+            )
+            market_order["sl_order_id"] = sl_id
+            return market_order
+        except Exception as exc:
+            metrics.orders_failed.labels(
+                symbol=symbol, error_type=type(exc).__name__
+            ).inc()
+            logger.error("SOR: market fallback failed: %s", exc)
+            return None

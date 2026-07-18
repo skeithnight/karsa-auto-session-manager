@@ -8,7 +8,7 @@
 
 An autonomous crypto perpetuals trading bot that reads market data from multiple exchanges (Binance, OKX, Bybit) to build a "true" global price picture, but only ever *trades* on Bybit — because Bybit requires a proxy (geo-restriction) and multi-venue execution would compound that latency into a fatal flaw. To make the proxy latency irrelevant, the strategy trades 15m–4h swing/intraday structure instead of HFT. Everything runs as a single Python `asyncio` process (not microservices) specifically to avoid internal state-sync bugs on top of an already-fragile external proxy dependency.
 
-Currently: **Phase 6 — Adaptive Multi-Strategy Upgrade in progress.** Phase 5 code is complete and deployed. The system is being upgraded from a static trend-following strategy into an Institutional-Grade Adaptive Multi-Strategy Bot using a Hub-and-Spoke architecture.
+Currently: **Phase 2 (Core Trading Engine) ~90% built. Phase 3.1 (Shadow Mode) fully built with all 4 refinements.** The system has been upgraded from a static trend-following strategy into an Institutional-Grade Adaptive Multi-Strategy Bot using a Hub-and-Spoke architecture. Backtest Worker (Phase 3.2), Commander (Phase 4), and full Telemetry (Phase 5) remain unbuilt — see §8 for blueprint phase completion breakdown.
 
 ---
 
@@ -27,7 +27,8 @@ Currently: **Phase 6 — Adaptive Multi-Strategy Upgrade in progress.** Phase 5 
 | 1 | Global Data Engine | CCXT Pro WS ingestion, normalization, bad-tick filtering | `app/data/` |
 | 2 | Alpha Bridge *(expanded)* | Regime classification (Hub), strategy routing (Spokes), VWAP/Skew/Lead-Lag, AI analyst, multi-TF | `app/alpha/` |
 | 3 | Risk Gate *(expanded)* | 3-layer liquidity/spread/circuit-breaker + new `PortfolioRiskManager` (correlation, exposure) | `app/risk/` |
-| 4 | Bybit Executor + APM | SOR (Post-Only → Reprice → Market) + `ActivePositionManager` (continuous post-trade lifecycle) | `app/execution/` |
+| 4a | Bybit Executor + APM | SOR (Post-Only → Reprice → Market) + `ActivePositionManager` (continuous post-trade lifecycle) | `app/execution/` |
+| 4b | Shadow Mode *(Phase 3.1, built)* | Virtual execution with asymmetric fees, wick detection, funding drag, pending limit fills | `app/execution/shadow.py`, `app/core/shadow_store.py` |
 | 5 | State Manager | Postgres sync, startup reconciliation | `app/core/state.py` |
 | 6 | Watchdog & Telemetry | Heartbeats, latency tracking, dead man's switch, Prometheus | `app/watchdog/` |
 | 7 | Telegram Bot | Command interface, alerts, kill switch | `app/bot/` |
@@ -179,28 +180,45 @@ The infra actually running today is a self-hosted WireGuard VPN (DigitalOcean Sy
 
 ## 8. Current Status
 
-- **Phase:** Phase 6 — Adaptive Multi-Strategy upgrade. Phase 5 code complete and deployed live.
+### Blueprint Phase Completion (per `docs/plan/backtest-shadow/BLUEPRINT_BACKTEST_SHADOW.md`)
+
+| Phase | Name | % Complete | Notes |
+|:---|:---|:---|:---|
+| 1 | 5-Container Fleet | **0%** | Single-process monolith. No karsa-data-engine, no Redis Pub/Sub proxy, no separate containers. |
+| 2 | Core Trading Engine | **~90%** | RegimeClassifier, StrategyRouter, APM, PortfolioRiskManager, EntryFilter, SOR all built. |
+| 3 | Shadow & Backtest | **~50%** | Shadow fully built (all 4 refinements). Backtest worker: 0% — no code, no queue, no table. |
+| 4 | Commander & Telegram | **0%** | Zero code. |
+| 5 | Telemetry & Observability | **~40%** | 16 Prometheus metrics + Grafana funnel dashboard exist. No Loki, no JSON log format, no regime WR tracking. |
+| 6 | Go-Live Protocol | **N/A** | Process doc, not code. |
+
+### What's Built (Phase 2 + Phase 3.1)
 - **Test suite:** 250+ tests passing, 0 failures (Phase 5 baseline).
 - **AI Layer:** MANDATORY. Pre-entry CryptoAnalyst + post-entry PositionJudge via 9router proxy. Not optional toggles.
 - **Multi-exchange:** Binance + OKX + Bybit via CCXT Pro WebSocket. Cross-exchange VWAP + lead-lag are ASM's structural edge.
 - **Full trade lifecycle (6 stages):** Universe Selection → Regime Detection → Signal Generation (with AI) → Risk Gate → SOR Execution → Post-Entry (trailing stop + checkpoints + AI judge).
-- **Watchdog:** Per-exchange heartbeat, execution latency tracker, event loop lag monitor, Dead Man's Switch.
-- **Phase 5 additions:**
-  - `scripts/init_db.sql` — trades + ai_decisions Postgres tables
-  - `app/core/trade_store.py` — Postgres CRUD for trade history + AI audit trail
-  - `BYBIT_TESTNET` config flag was added in Phase 5 but is not used in deployment — **Bybit main URL (live) is the only configured endpoint. Testnet is not accessible and not used.**
-  - Position sizing: balance-based (available * risk_pct / price)
-  - SL hard cap: $1 max loss per position (SL price = fill_price +/- $1/amount)
-  - Trade store wired into executor_task + CheckpointManager
-  - PositionStore uses json.loads/dumps (replaced ast.literal_eval)
-- **Phase 6 target (in progress):**
-  - `RegimeClassifier` (Hub) — ADX/Hurst/ATR classification
-  - `StrategyRouter` (Spokes) — regime-specific confidence scoring
-  - `DynamicRiskGate` — regime-specific risk profiles
-  - `ActivePositionManager` — 2s post-trade lifecycle loop
-  - `PortfolioRiskManager` — pre-trade correlation/exposure gate
-- **Next step:** Implement `RegimeClassifier` + `StrategyRouter` in shadow mode (log only, no execution change). See `docs/architecture/adaptive_multi_strategy.md`.
-- **Blocking items:** Issue #10 and Issue #11 (consecutive loss threshold and portfolio CB daily loss % need team ratification before implementation).
+- **Phase 2 engines (all built):**
+  - `RegimeClassifier` (Hub) — per-coin ADX/Hurst/ATR → TREND/RANGE/CHOP
+  - `StrategyRouter` (Spokes) — regime-specific granular confluence scoring
+  - `DynamicRiskGate` — regime-specific risk profiles (spread, sizing)
+  - `ActivePositionManager` — 2s post-trade loop, +1R scale-out, breakeven, trailing stop, time-based kills
+  - `PortfolioRiskManager` — pre-trade correlation/exposure check
+- **Phase 3.1 Shadow Mode (fully built, all 4 refinements applied):**
+  - `ShadowExecutor` — simulated SOR with asymmetric fees (maker vs taker) + 0.05% slippage
+  - `ShadowAPM` — virtual SL/TP via worst_price_seen (wick detection), 8h funding rate drag, pending limit fill state machine
+  - `ShadowExchangeClient` — Redis-backed mock BybitClient
+  - `ShadowPositionStore` + `ShadowTradeStore` — `shadow:position:*` Redis keys, `shadow_trades` Postgres table
+  - Wired in `main.py` — conditional substitution when `SHADOW_MODE_ENABLED=true` (skips reconciliation, skips position_reconciler)
+  - 10 Prometheus metrics (pnl, fees, funding, SL hits, pending expiry, etc.)
+
+### What's NOT Built (next priorities)
+- **Backtest Worker (Phase 3.2):** No `karsa-backtest` worker, no `backtest_jobs` Redis queue, no `backtest_results` table
+- **Commander (Phase 4):** Zero Telegram bot code for risk selection, dashboards, or auto-adjustments
+- **Tests for shadow system:** Zero shadow tests exist
+- **Loki + JSON logging:** Not configured
+- **5-Container Docker fleet (Phase 1):** Not started
+
+### Next Step
+- Choose: Build backtest worker (Phase 3.2) for historical validation, or write shadow system tests first, or begin Phase 1 Docker separation.
 
 ---
 

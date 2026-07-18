@@ -326,6 +326,10 @@ class TradeReconciler:
         # Group Bybit fills by (symbol, side, orderId) to handle partial fills
         grouped: Dict[str, List[Dict[str, Any]]] = {}
         for f in bybit_fills:
+            # Skip closing fills (missing_exit handles them)
+            if _safe_decimal(f.get("closedSize", "0")) > 0:
+                continue
+            
             bybit_sym = f.get("symbol", "")
             # Convert Bybit symbol to ccxt format
             reverse_map = {v: k for k, v in self.client._symbol_map.items()}
@@ -432,8 +436,9 @@ class TradeReconciler:
         for t in closed_trades:
             closed_index.setdefault(t["symbol"], []).append(t)
 
-        # Group Bybit closed PnL records by (symbol, position_side) to combine partial fills
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        # Process each closed PnL record independently
+        matched_local_ids = set()
+
         for r in bybit_records:
             bybit_sym = r.get("symbol", "")
             ccxt_sym = reverse_map.get(bybit_sym, bybit_sym)
@@ -444,40 +449,15 @@ class TradeReconciler:
             closing_side = _normalize_side(r.get("side", ""))
             side = "Buy" if closing_side == "Sell" else "Sell"
             
-            key = f"{ccxt_sym}:{side}"
-            grouped.setdefault(key, []).append(r)
+            pnl = _safe_decimal(r.get("closedPnl", "0"))
+            qty = _safe_decimal(r.get("qty", "0"))
+            entry = _safe_decimal(r.get("avgEntryPrice", "0"))
+            exit_price = _safe_decimal(r.get("avgExitPrice", "0"))
+            updated_time_ms = int(r.get("updatedTime", r.get("createdTime", "0")))
 
-        matched_local_ids = set()
-
-        for key, records in grouped.items():
-            ccxt_sym, side = key.split(":")
+            matched = False
             
-            total_pnl = Decimal("0")
-            total_qty = Decimal("0")
-            weighted_entry = Decimal("0")
-            weighted_exit = Decimal("0")
-            
-            for r in records:
-                qty = _safe_decimal(r.get("qty", "0"))
-                pnl = _safe_decimal(r.get("closedPnl", "0"))
-                entry = _safe_decimal(r.get("avgEntryPrice", "0"))
-                exit_price = _safe_decimal(r.get("avgExitPrice", "0"))
-                
-                total_pnl += pnl
-                total_qty += qty
-                weighted_entry += qty * entry
-                weighted_exit += qty * exit_price
-                
-            if total_qty > 0:
-                avg_entry = weighted_entry / total_qty
-                avg_exit = weighted_exit / total_qty
-            else:
-                avg_entry = Decimal("0")
-                avg_exit = Decimal("0")
-
-            latest_updated = max((int(r.get("updatedTime", r.get("createdTime", "0"))) for r in records), default=0)
-
-            # Check if there's an open local trade that should be closed
+            # 1. Check if there's an open local trade to close
             open_candidates = open_index.get(ccxt_sym, [])
             for t in open_candidates:
                 if _normalize_side(t["side"]) == side and t.get("id") not in matched_local_ids:
@@ -488,43 +468,75 @@ class TradeReconciler:
                             symbol=ccxt_sym,
                             side=side,
                             bybit_data={
-                                "closed_pnl": str(total_pnl),
-                                "avg_entry_price": str(avg_entry),
-                                "avg_exit_price": str(avg_exit),
-                                "qty": str(total_qty),
-                                "updated_time_ms": str(latest_updated),
+                                "closed_pnl": str(pnl),
+                                "avg_entry_price": str(entry),
+                                "avg_exit_price": str(exit_price),
+                                "qty": str(qty),
+                                "updated_time_ms": str(updated_time_ms),
                             },
                             local_trade_id=t.get("id"),
                             severity="CRITICAL",
                         )
                     )
+                    matched = True
                     break
-            else:
-                # No open trade found — check PnL match on closed trades
-                closed_candidates = closed_index.get(ccxt_sym, [])
-                for t in closed_candidates:
-                    if _normalize_side(t["side"]) != side or t.get("id") in matched_local_ids:
-                        continue
-                        
-                    local_pnl = _safe_decimal(t.get("pnl", "0"))
-                    if total_pnl != Decimal("0") and local_pnl != Decimal("0"):
-                        diff = abs(local_pnl - total_pnl) / abs(total_pnl)
-                        if diff > self.PNL_TOLERANCE:
-                            matched_local_ids.add(t.get("id"))
-                            discrepancies.append(
-                                Discrepancy(
-                                    kind="pnl_mismatch",
-                                    symbol=ccxt_sym,
-                                    side=side,
-                                    bybit_data={
-                                        "bybit_pnl": str(total_pnl),
-                                        "local_pnl": str(local_pnl),
-                                    },
-                                    local_trade_id=t.get("id"),
-                                    severity="WARNING",
+            
+            if matched:
+                continue
+                
+            # 2. Check if it matches an already closed trade
+            closed_candidates = closed_index.get(ccxt_sym, [])
+            for t in closed_candidates:
+                if _normalize_side(t["side"]) != side or t.get("id") in matched_local_ids:
+                    continue
+                    
+                local_pnl = _safe_decimal(t.get("pnl", "0"))
+                
+                # Check if it matches closely enough in time (within a few hours) or exact PnL
+                local_exit_time = t.get("exit_time")
+                if local_exit_time:
+                    bybit_exit_time = datetime.fromtimestamp(updated_time_ms / 1000, tz=timezone.utc)
+                    time_diff = abs((local_exit_time - bybit_exit_time).total_seconds())
+                    if time_diff < 1800: # 30 mins
+                        matched_local_ids.add(t.get("id"))
+                        matched = True
+                        # Check PnL mismatch
+                        if pnl != Decimal("0") and local_pnl != Decimal("0"):
+                            diff = abs(local_pnl - pnl) / max(abs(pnl), Decimal("0.0001"))
+                            if diff > self.PNL_TOLERANCE:
+                                discrepancies.append(
+                                    Discrepancy(
+                                        kind="pnl_mismatch",
+                                        symbol=ccxt_sym,
+                                        side=side,
+                                        bybit_data={
+                                            "bybit_pnl": str(pnl),
+                                            "local_pnl": str(local_pnl),
+                                        },
+                                        local_trade_id=t.get("id"),
+                                        severity="WARNING",
+                                    )
                                 )
-                            )
-                            break
+                        break
+                        
+            if not matched:
+                # No open trade to close, no closed trade matched -> Backfill as complete trade
+                discrepancies.append(
+                    Discrepancy(
+                        kind="missing_exit",
+                        symbol=ccxt_sym,
+                        side=side,
+                        bybit_data={
+                            "closed_pnl": str(pnl),
+                            "avg_entry_price": str(entry),
+                            "avg_exit_price": str(exit_price),
+                            "qty": str(qty),
+                            "updated_time_ms": str(updated_time_ms),
+                        },
+                        local_trade_id=None,
+                        severity="WARNING",
+                    )
+                )
 
         return discrepancies
 

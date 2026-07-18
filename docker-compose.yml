@@ -81,6 +81,8 @@ services:
       timeout: 10s
       retries: 5
       start_period: 30s
+    ports:
+      - "20129:20128"
     networks:
       - karsa-backend
 
@@ -106,6 +108,7 @@ services:
     env_file: .env
     environment:
       - KARSA_ROLE=data-engine
+      - PROMETHEUS_PORT=8003
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -132,6 +135,7 @@ services:
     environment:
       - KARSA_ROLE=live
       - SHADOW_MODE_ENABLED=false
+      - PROMETHEUS_PORT=8001
     network_mode: "service:gluetun"
     depends_on:
       gluetun:
@@ -160,11 +164,15 @@ services:
     environment:
       - KARSA_ROLE=shadow
       - SHADOW_MODE_ENABLED=true
+      - PROMETHEUS_PORT=8002
     depends_on:
+      gluetun:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+    network_mode: "service:gluetun"
     ulimits:
       nofile:
         soft: 65536
@@ -172,8 +180,6 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
-    networks:
-      - karsa-backend
 
   # -- Karsa Backtest (historical worker) -------------------------
 
@@ -184,6 +190,7 @@ services:
     env_file: .env
     environment:
       - KARSA_ROLE=backtest
+      - PROMETHEUS_PORT=8005
     depends_on:
       postgres:
         condition: service_healthy
@@ -204,7 +211,11 @@ services:
     env_file: .env
     environment:
       - KARSA_ROLE=commander
+      - PROMETHEUS_PORT=8004
+    network_mode: "service:gluetun"
     depends_on:
+      gluetun:
+        condition: service_healthy
       postgres:
         condition: service_healthy
       redis:
@@ -212,9 +223,6 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
-    networks:
-      - karsa-backend
-      - karsa-frontend
 
   # -- Monitoring --------------------------------------------------
 
@@ -239,6 +247,9 @@ services:
     restart: unless-stopped
     environment:
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/signal-confidence.json
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
     ports:
       - "3000:3000"
     volumes:

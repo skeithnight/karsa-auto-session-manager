@@ -1169,7 +1169,8 @@ async def main() -> None:
     # Prometheus metrics HTTP endpoint — start early so metrics available even if Bybit fails
     from prometheus_client import start_http_server
 
-    start_http_server(8001)
+    if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
+        start_http_server(int(prom_port))
     logger.info("Prometheus metrics server on :8001")
 
     bybit_client = BybitClient()
@@ -1468,6 +1469,7 @@ async def main() -> None:
                 session_manager,
                 db_engine,
                 alert_service,
+                trade_reconciler=trade_reconciler,
             )
         ),
         asyncio.create_task(

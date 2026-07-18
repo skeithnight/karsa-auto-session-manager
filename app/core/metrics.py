@@ -503,3 +503,47 @@ karsa_shadow_limit_orders_unfilled_total = Counter(
     "Shadow post-only limit orders expired unfilled",
     ["symbol"],
 )
+
+def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
+    """Helper to sum prometheus metric values across all labels via Prometheus API."""
+    import urllib.request
+    import urllib.parse
+    import json
+    from loguru import logger
+    
+    total = 0.0
+    try:
+        query_name = metric_name
+        if is_counter and not query_name.endswith("_total"):
+            query_name += "_total"
+            
+        url = f"http://prometheus:9090/api/v1/query?query={urllib.parse.quote(query_name)}"
+        req = urllib.request.Request(url)
+        
+        with urllib.request.urlopen(req, timeout=2.0) as response:
+            data = json.loads(response.read())
+            
+        if data.get("status") == "success":
+            for res in data.get("data", {}).get("result", []):
+                val_str = res.get("value", [0, "0"])[1]
+                total += float(val_str)
+    except Exception as e:
+        logger.error(f"Failed to fetch {metric_name} from Prometheus: {e}")
+        
+    return total
+
+def get_funnel_metrics() -> dict:
+    """Fetch all funnel metrics for the shadow pipeline."""
+    return {
+        "universe_attempted": int(get_metric_sum("karsa_signals_pipeline_attempted")),
+        "universe_processed": int(get_metric_sum("karsa_signals_entered_pipeline")),
+        "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
+        "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
+        "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
+        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_calls")) - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
+        "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
+        "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
+        "trade_sl_hits": int(get_metric_sum("karsa_shadow_sl_hits")),
+        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed"))
+    }

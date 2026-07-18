@@ -22,6 +22,7 @@ def _make_prm(
     sector_map: dict[str, str] | None = None,
 ) -> PortfolioRiskManager:
     redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
     position_store = AsyncMock()
     position_store.list_all.return_value = positions or []
     trade_store = AsyncMock()

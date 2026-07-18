@@ -1,6 +1,7 @@
 # Data Model & Schema Dictionary
 **Project Name:** `karsa-auto-session-manager`  
 **Document Status:** Approved / Locked  
+**Last Revised:** 2026-07-17 — Shadow Mode schema added (Phase 3.1)  
 **Purpose:** Define exact data structures, serialization rules, and storage schemas across the entire pipeline.
 
 ---
@@ -36,6 +37,14 @@ Redis is used for high-speed state persistence, cross-component caching, and Wat
 | `risk:portfolio_cb:consecutive_loss_count` | String | None | `"3"` | Current consecutive loss streak (Phase 6) |
 | `risk:portfolio_cb:blocked_until` | String | None | `"2024-01-15T15:30:00Z"` | ISO timestamp for entry block expiry (Phase 6) |
 | `risk:portfolio_cb:start_of_day_equity` | String | None | `"1000.00"` | Equity snapshot at UTC 00:00 for daily loss calc (Phase 6) |
+
+#### Shadow Mode Redis Keys
+
+| Key Pattern | Type | TTL | Description |
+| :--- | :--- | :--- | :--- |
+| `shadow:position:{symbol}:{side}` | JSON string | None | Shadow position state. Fields: `entry_price`, `virtual_sl`, `virtual_tp`, `amount`, `worst_price_seen`, `last_funding_ts`, `status` ("PENDING_VIRTUAL_FILL" or "OPEN"), `pending_since`, `total_funding_fees`, `entry_confidence`, `regime`, `strategy`, `fee_type` |
+
+**State isolation:** Shadow keys use `shadow:position:*` prefix. NEVER `position:*`. Live and shadow positions are in separate namespaces — zero collision risk.
 
 ### `GlobalStateCache` Schema
 ```json
@@ -87,6 +96,40 @@ CREATE TABLE trades (
 CREATE INDEX idx_trades_timestamp ON trades(timestamp DESC);
 CREATE INDEX idx_trades_symbol_status ON trades(symbol, status);
 ```
+
+### Shadow Trades Table (`shadow_trades`)
+
+Mirrors `trades` table structure + shadow-specific columns. Used when `SHADOW_MODE_ENABLED=true`.
+
+| Column | Type | Default | Description |
+|:---|:---|:---|:---|
+| id | SERIAL PRIMARY KEY | — | Auto-incrementing ID |
+| symbol | VARCHAR(20) NOT NULL | — | Trading symbol |
+| side | VARCHAR(10) NOT NULL | — | "buy" or "sell" |
+| amount | DECIMAL(20,8) NOT NULL | — | Position size |
+| entry_price | DECIMAL(20,8) NOT NULL | — | Virtual fill price (with slippage applied) |
+| exit_price | DECIMAL(20,8) | NULL | Virtual exit price |
+| pnl | DECIMAL(20,8) | NULL | Net PnL after fees + funding |
+| regime | VARCHAR(30) | NULL | Market regime at entry |
+| entry_time | TIMESTAMPTZ NOT NULL | — | UTC entry timestamp |
+| exit_time | TIMESTAMPTZ | NULL | UTC exit timestamp |
+| exit_reason | VARCHAR(50) | NULL | "sl_hit", "time_kill", "manual", etc. |
+| ai_confidence | INTEGER | NULL | AI confidence at entry |
+| created_at | TIMESTAMPTZ | NOW() | Row creation time |
+| entry_regime | VARCHAR(20) | NULL | Regime at entry |
+| initial_risk_per_unit | NUMERIC(20,8) | NULL | Risk per unit at entry |
+| moved_to_breakeven | BOOLEAN | FALSE | Whether breakeven SL was triggered |
+| current_sl | NUMERIC(20,8) | NULL | Current stop-loss price |
+| risk_profile_json | JSONB | NULL | Serialized RiskProfile at entry |
+| is_shadow | BOOLEAN | TRUE | Always TRUE for shadow trades |
+| slippage_applied | NUMERIC(20,8) | NULL | Slippage applied to fill price |
+| fees_applied | NUMERIC(20,8) | NULL | Total fees charged |
+
+**Indexes:**
+- `idx_shadow_trades_symbol` on `symbol`
+- `idx_shadow_trades_entry_time` on `entry_time`
+
+**Source:** `scripts/migrations/003_shadow_trades.sql`
 
 ### Table: `signals`
 Stores every alpha signal generated, regardless of whether it passed the risk gate.

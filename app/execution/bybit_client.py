@@ -44,15 +44,19 @@ class BybitClient:
         self._price_ticks: Dict[str, Decimal] = {}  # ccxt symbol → price tick size
         logger.debug("BybitClient.__init__: returning")
 
-    async def connect(self) -> None:
-        """Initialize pybit HTTP session and build symbol mapping."""
-        logger.debug("connect: entering")
+    def _create_session(self) -> None:
+        """Create or recreate pybit HTTP session."""
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
             api_secret=self.settings.bybit_api_secret,
             testnet=self.settings.bybit_testnet,
         )
         self.connected = True
+
+    async def connect(self) -> None:
+        """Initialize pybit HTTP session and build symbol mapping."""
+        logger.debug("connect: entering")
+        self._create_session()
         mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
         # Build symbol map: ccxt "PEPE/USDT" → bybit "1000PEPEUSDT"
         try:
@@ -123,12 +127,19 @@ class BybitClient:
             price = max(price, tick)
         return price
 
+    _MAX_RETRIES = 3
+
     async def _execute(self, func, *args, **kwargs) -> dict:
-        """Run sync pybit call in thread with retry and timeout."""
+        """Run sync pybit call in thread with exponential backoff and session recovery."""
         async with self._lock:
             last_exc = None
-            for attempt in range(3):
+            for attempt in range(self._MAX_RETRIES):
                 try:
+                    # Auto-recover dead session
+                    if not self.connected or self.session is None:
+                        logger.warning("pybit_session_recovery attempt=%d", attempt + 1)
+                        self._create_session()
+
                     start = time.monotonic()
                     resp = await asyncio.wait_for(
                         asyncio.to_thread(func, *args, **kwargs),
@@ -141,19 +152,31 @@ class BybitClient:
                     ret_code = resp.get("retCode")
                     ret_msg = resp.get("retMsg", "")
                     if ret_code in (10001, 10002, 10003):
-                        raise Exception(f"Bybit auth error: {ret_msg}")
-                    raise Exception(f"Bybit API error [{ret_code}]: {ret_msg}")
+                        raise RuntimeError(f"Bybit auth error: {ret_msg}")
+                    raise RuntimeError(f"Bybit API error [{ret_code}]: {ret_msg}")
                 except asyncio.TimeoutError:
-                    last_exc = Exception(f"Bybit timeout on attempt {attempt + 1}")
-                    logger.warning(f"pybit_timeout attempt={attempt + 1}")
-                    if attempt < 2:
-                        await asyncio.sleep(1 * (attempt + 1))
+                    last_exc = RuntimeError(f"Bybit timeout on attempt {attempt + 1}")
+                    logger.warning("pybit_timeout attempt=%d", attempt + 1)
+                    self.connected = False  # force session recovery next attempt
                 except Exception as e:
                     last_exc = e
-                    logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
-                    if attempt < 2:
-                        await asyncio.sleep(1 * (attempt + 1))
-            raise last_exc or Exception("Bybit call failed after 3 attempts")
+                    logger.warning("pybit_error attempt=%d: %s", attempt + 1, e)
+                    if "auth" in str(e).lower():
+                        self.connected = False  # force session recovery on auth failure
+
+                # Exponential backoff: 1s, 2s, 4s
+                if attempt < self._MAX_RETRIES - 1:
+                    backoff = 2 ** attempt
+                    await asyncio.sleep(backoff)
+
+            raise last_exc or RuntimeError("Bybit call failed after retries")
+
+    async def reconnect(self) -> None:
+        """Public reconnect — recreate session and rebuild symbol mapping."""
+        logger.info("BybitClient: reconnecting")
+        self.connected = False
+        self.session = None
+        await self.connect()
 
     async def set_leverage(self, symbol: str, leverage: int) -> Dict[str, Any]:
         """Set leverage for a symbol."""

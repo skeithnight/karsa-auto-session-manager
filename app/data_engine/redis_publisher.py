@@ -124,7 +124,6 @@ class RedisPublisher:
         """
         for candle in candles:
             await self.publish_candle(exchange_id, symbol, timeframe, candle)
-        count = len(candles)
-        logger.info("published %d %s %s candles to %s",
-                     count, symbol, timeframe, exchange_id)
-        return count
+        import logging
+        logging.getLogger(__name__).info(f"published {len(candles)} candles to {exchange_id}:{symbol}:{timeframe}")
+        return len(candles)

@@ -1,0 +1,43 @@
+# Karsa ASM — pyproject.toml (pytest + ruff + black + mypy config)
+
+[project]
+name = "karsa-auto-session-manager"
+version = "0.1.0"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+markers = [
+    "slow: marks tests as slow (deselect with -m 'not slow')",
+    "integration: marks integration tests requiring mock infra",
+]
+addopts = [
+    "--strict-markers",
+    "--tb=short",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "PLW", "PLR"]
+ignore = ["E501"]           # line length handled by black
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["PLR2004"]    # magic values in assertions are fine
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.black]
+target-version = ["py311"]
+line-length = 120
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true

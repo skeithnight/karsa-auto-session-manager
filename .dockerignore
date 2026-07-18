@@ -1,5 +1,6 @@
 .git
 .github
+.gitignore
 __pycache__
 *.pyc
 *.pyo
@@ -13,3 +14,11 @@ graphify-out/
 .claude/
 *.md
 !pyproject.toml
+venv/
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+build/

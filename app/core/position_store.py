@@ -65,13 +65,13 @@ class PositionStore:
             "initial_risk_per_unit": initial_risk_per_unit or "",
             "risk_profile_json": risk_profile_json or "",
         }
-        await self.redis.redis.set(key, json.dumps(data))
+        await self.redis.set(key, json.dumps(data))
         logger.info(f"Position saved: {symbol} {side} @ {entry_price}")
 
     async def get(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
         """Get position state."""
         key = self._key(symbol, side)
-        raw = await self.redis.redis.get(key)
+        raw = await self.redis.get(key)
         if not raw:
             return None
         try:
@@ -88,7 +88,7 @@ class PositionStore:
         if price > peak:
             pos["peak_price"] = str(price)
             pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-            await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
+            await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_sl(self, symbol: str, side: str, sl_order_id: str) -> None:
         """Update SL order ID."""
@@ -97,7 +97,7 @@ class PositionStore:
             return
         pos["sl_order_id"] = sl_order_id
         pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-        await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
+        await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_checkpoint(self, symbol: str, side: str, checkpoint: str) -> None:
         """Update checkpoint state."""
@@ -106,12 +106,12 @@ class PositionStore:
             return
         pos["checkpoint"] = checkpoint
         pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
-        await self.redis.redis.set(self._key(symbol, side), json.dumps(pos))
+        await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def remove(self, symbol: str, side: str) -> None:
         """Remove position (on close)."""
         key = self._key(symbol, side)
-        await self.redis.redis.delete(key)
+        await self.redis.delete(key)
         logger.info(f"Position removed: {symbol} {side}")
 
     async def has_position(self, symbol: str, side: Optional[str] = None) -> bool:
@@ -124,10 +124,10 @@ class PositionStore:
 
     async def list_all(self) -> list[Dict[str, Any]]:
         """List all active positions."""
-        keys = await self.redis.redis.keys("karsa:position:*")
+        keys = await self.redis.keys("karsa:position:*")
         positions = []
         for key in keys:
-            raw = await self.redis.redis.get(key)
+            raw = await self.redis.get(key)
             if raw:
                 try:
                     positions.append(json.loads(raw))
@@ -144,13 +144,13 @@ class PositionStore:
         Returns:
             Number of orphaned keys removed.
         """
-        keys = await self.redis.redis.keys("karsa:position:*")
+        keys = await self.redis.keys("karsa:position:*")
         removed = 0
         for key in keys:
             key_str = key if isinstance(key, str) else key.decode()
-            raw = await self.redis.redis.get(key)
+            raw = await self.redis.get(key)
             if not raw:
-                await self.redis.redis.delete(key_str)
+                await self.redis.delete(key_str)
                 removed += 1
                 continue
             try:
@@ -159,10 +159,10 @@ class PositionStore:
                 # Convert ccxt format (BTC/USDT) to Bybit format (BTCUSDT)
                 bybit_sym = sym.replace("/", "")
                 if bybit_sym not in exchange_symbols:
-                    await self.redis.redis.delete(key_str)
+                    await self.redis.delete(key_str)
                     logger.info(f"Cleaned orphaned position: {sym} {pos.get('side', '')}")
                     removed += 1
             except Exception:
-                await self.redis.redis.delete(key_str)
+                await self.redis.delete(key_str)
                 removed += 1
         return removed

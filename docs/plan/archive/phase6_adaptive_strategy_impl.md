@@ -1,7 +1,8 @@
 # Phase 6 Implementation Plan: Adaptive Multi-Strategy Engine
 **Project:** `karsa-auto-session-manager`  
-**Status:** Ready for execution — Phase 5 live-deployed  
-**Environment:** Bybit **main URL** (live) via Cloudflare WARP proxy. No testnet. $1 max-loss-per-position SL hard cap as safety boundary.
+**Status:** Ready for execution — Phase 5 live-deployed
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
+**Environment:** Bybit **main URL** (live) via WireGuard VPN (gluetun sidecar). No testnet. $1 max-loss-per-position SL hard cap as safety boundary.
 
 ---
 

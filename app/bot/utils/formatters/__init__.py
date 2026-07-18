@@ -265,3 +265,5 @@ __all__ = [
     "format_entry_alert",
     "TradeHistoryFormatter",
 ]
+from .shadow_funnel_formatter import format_shadow_funnel
+__all__.append("format_shadow_funnel")

@@ -2,6 +2,7 @@
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft — Proposed
 **Purpose:** Define every in-process event (asyncio.Queue messages, Redis state updates, kill switch, watchdog triggers, Telegram commands) with producer, consumer, payload, idempotency, and ordering guarantees.
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
 
 ---
 
@@ -187,7 +188,7 @@ Components communicate via Redis keys (not pub/sub). Each key has a single write
 | :--- | :--- | :--- | :--- |
 | Kill switch activated | Kill switch triggered | CRITICAL | Yes |
 | Circuit breaker tripped | Daily drawdown / consecutive losses | CRITICAL | Yes |
-| Proxy degraded | WARP latency > 2000ms | WARNING | Yes |
+| Proxy degraded | VPN tunnel latency > 2000ms | WARNING | Yes |
 | Stale data | WS silent > 15s | WARNING | Yes |
 | AI offline | 9router unreachable 3× | CRITICAL | Yes |
 | Position opened | SOR fill confirmed | INFO | If alerts_enabled |

@@ -53,9 +53,9 @@ class TradeMemory:
         key = self._key(symbol)
 
         try:
-            await self.redis.redis.zadd(key, {json.dumps(entry): score})
+            await self.redis.zadd(key, {json.dumps(entry): score})
             # FIFO eviction: keep only latest MAX_ENTRIES
-            await self.redis.redis.zremrangebyrank(key, 0, -(MAX_ENTRIES_PER_SYMBOL + 1))
+            await self.redis.zremrangebyrank(key, 0, -(MAX_ENTRIES_PER_SYMBOL + 1))
             metrics.trade_memory_stored.labels(symbol=symbol).inc()
             logger.info(f"Trade memory: stored {symbol} pnl={pnl_pct}% exit={exit_reason}")
         except Exception as e:
@@ -68,7 +68,7 @@ class TradeMemory:
         """
         key = self._key(symbol)
         try:
-            raw = await self.redis.redis.zrevrange(key, 0, count * 3 - 1)
+            raw = await self.redis.zrevrange(key, 0, count * 3 - 1)
             if not raw:
                 return []
 

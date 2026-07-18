@@ -386,7 +386,7 @@ class ShadowAPM:
             pos["worst_price_seen"] = str(entry_price)
             pos["last_funding_ts"] = datetime.now(timezone.utc).isoformat()
             key = self._pos_store._key(symbol, side)
-            await self._redis.redis.set(key, _json.dumps(pos))
+            await self._redis.set(key, _json.dumps(pos))
 
     # --- Refinement 2: Wick miss prevention + SL detection ---
 
@@ -415,7 +415,7 @@ class ShadowAPM:
 
         # Persist worst_price_seen back to Redis
         key = self._pos_store._key(symbol, side)
-        await self._redis.redis.set(key, _json.dumps(pos))
+        await self._redis.set(key, _json.dumps(pos))
 
         # Update peak for trailing stop logic
         await self._pos_store.update_peak(symbol, side, mid)
@@ -482,7 +482,7 @@ class ShadowAPM:
         pos["last_funding_ts"] = now.isoformat()
 
         key = self._pos_store._key(symbol, side)
-        await self._redis.redis.set(key, _json.dumps(pos))
+        await self._redis.set(key, _json.dumps(pos))
 
         if funding_fee > 0:
             logger.info(

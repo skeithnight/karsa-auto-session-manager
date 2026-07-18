@@ -56,20 +56,27 @@ app/
 │   ├── trade_store.py      # Postgres trade CRUD
 │   ├── ai_client.py        # 9router async HTTP client (AI layer)
 │   ├── metrics.py          # Prometheus metrics (counters, gauges, histograms)
-│   └── position_store.py   # Redis-backed position lifecycle state
+│   ├── position_store.py   # Redis-backed position lifecycle state
+│   ├── shadow_store.py     # [BUILT] ShadowPositionStore + ShadowTradeStore (Phase 3.1)
+│   ├── state_reconciliation.py  # Startup reconciliation (Postgres ↔ Bybit)
+│   ├── dependencies.py     # Dependency injection container
+│   ├── telemetry.py        # System telemetry collection
+│   └── migrate.py          # DB migration runner
 ├── data/                  # Key 1 — Global Data Engine
 │   ├── ccxt_manager.py     # CCXT Pro WS + load_markets() symbol validation
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
 │   ├── filters.py            # Bad tick rejection
 │   ├── ohlcv_fetcher.py      # Cached OHLCV REST fetcher
 │   ├── universe_scorer.py    # Dynamic universe scoring (Volume+Momentum+Squeeze+Overextension)
+│   ├── universe_scanner.py   # Periodic universe re-scan (new listings, delistings)
+│   ├── market_data_ingestor.py  # Historical data ingestion for backtest
 │   └── sector_mapping.py     # Static sector classification with keyword fallback
 ├── alpha/                  # Key 2 — Alpha Bridge (Hub-and-Spoke, Phase 6)
 │   ├── metrics.py
 │   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
 │   ├── regime.py             # Hurst + ADX regime classifier (existing)
-│   ├── regime_classifier.py  # [PLANNED] RegimeClassifier — The Hub (ADX+Hurst+ATR, Phase 6)
-│   ├── strategy_router.py    # [PLANNED] StrategyRouter — The Spokes (per-regime scoring, Phase 6)
+│   ├── regime_classifier.py  # [BUILT] RegimeClassifier — The Hub (ADX+Hurst+ATR, Phase 6)
+│   ├── strategy_router.py    # [BUILT] StrategyRouter — The Spokes (per-regime scoring, Phase 6)
 │   ├── lead_lag_buffer.py    # 15-min rolling price buffer
 │   ├── entry_filter.py       # Pre-entry structural checklist (5 checks)
 │   ├── ta_tools.py           # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
@@ -81,16 +88,40 @@ app/
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market
 │   ├── position_lifecycle.py # Trailing stop + performance checkpoints (existing)
-│   └── position_manager.py   # [PLANNED] ActivePositionManager — 2s async loop (Phase 6)
+│   ├── position_manager.py   # [BUILT] ActivePositionManager — 2s async loop (Phase 6)
+│   └── shadow.py             # [BUILT] ShadowExecutor + ShadowAPM + ShadowExchangeClient (Phase 3.1)
 ├── risk/                     # Key 3 — Risk Gate (expanded, Phase 6)
 │   ├── gates.py              # 3-Layer: liquidity, spread, circuit breaker
 │   ├── circuit_breaker.py    # Per-session hard stop at -2% drawdown
 │   ├── sector_cap.py         # Sector diversity cap (max 2 per sector)
-│   ├── dynamic_risk_gate.py  # [PLANNED] Regime-specific RiskProfile (Phase 6)
-│   └── portfolio_risk_manager.py  # [PLANNED] Pre-trade: correlation, exposure, CB (Phase 6)
+│   ├── dynamic_risk_gate.py  # [BUILT] Regime-specific RiskProfile (Phase 6)
+│   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade: correlation, exposure, CB (Phase 6)
+│   └── portfolio_hedge.py    # [PLANNED] Cross-portfolio delta hedge (post-MVP)
+├── consumer/                 # Market data consumer (live + shadow loops)
+│   ├── market_consumer.py    # CCXT WS consumer, normalizes feeds into GlobalState
+│   ├── candle_buffer.py      # Aggregates ticks into OHLCV candles per timeframe
+│   ├── decision_engine.py    # Orchestrates alpha→risk→execution pipeline per candle
+│   ├── live_loop.py          # Main live trading async loop
+│   └── shadow_loop.py        # Shadow mode async loop (same pipeline, no real orders)
+├── commander/                # CLI command interface
+│   └── main.py               # Typer CLI for bot management (start, status, backtest)
+├── backtest/                 # Backtesting engine
+│   ├── engine.py             # Core backtest runner: replays candles through pipeline
+│   ├── orchestrator.py       # Multi-symbol/strategy backtest coordinator
+│   ├── worker.py             # Worker process for parallel backtest execution
+│   └── formatter.py          # Results formatting (tables, equity curves)
+├── analytics/                # Performance analytics
+│   ├── performance.py        # Sharpe, Sortino, max drawdown, win rate calculations
+│   └── reconciliation.py     # Trade reconciliation (expected vs actual fills)
+├── data_engine/              # Standalone data ingestion service
+│   ├── main.py               # Entry point for data-engine container
+│   ├── exchange_connector.py # CCXT exchange connection manager
+│   ├── postgres_cacher.py    # Persists OHLCV candles to Postgres
+│   └── redis_publisher.py    # Publishes live ticks to Redis streams
 ├── watchdog/                 # Key 6
 │   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
-│   └── dead_mans_switch.py     # External health ping
+│   ├── dead_mans_switch.py     # External health ping
+│   └── system_watchdog.py      # System-level health checks (disk, memory, CPU)
 └── bot/                      # Key 7 — Telegram Command Interface
     ├── handlers.py           # All command & callback handlers
     ├── runner.py             # PTB app builder, bot_data wiring, startup
@@ -119,6 +150,8 @@ docs/
 3. If the change touches execution, risk gates, or the watchdog, re-read the relevant section of `docs/RISK_AND_RUNBOOK.md` — these are the parts of the system where a plausible-looking shortcut can lose real money.
 4. Check `CONTEXT.md` §7 for whether this area of the system has an open doc conflict. If yes, do not silently resolve it — ask.
 5. **Phase 6 additions:** If the change touches `RegimeClassifier`, `StrategyRouter`, `ActivePositionManager`, or `PortfolioRiskManager`, also read the corresponding spec doc in `docs/architecture/`, `docs/execution/`, or `docs/risk/` before writing a single line.
+6. **Shadow Mode:** If the change touches `ShadowExecutor`, `ShadowAPM`, or shadow stores → read `docs/review/refinement_shadom_plan.md` for the 4 critical refinements (fee asymmetry, wick miss, funding drag, pending limits) before writing code.
+7. **New modules:** If the change touches `app/consumer/`, `app/commander/`, `app/backtest/`, `app/analytics/`, or `app/data_engine/`, also read the corresponding agent section in §8 of this file before writing.
 
 ---
 
@@ -126,7 +159,7 @@ docs/
 
 Full detail in `docs/TESTING_STRATEGY.md`. Minimum bar for any PR:
 
-- New logic in `app/alpha/`, `app/risk/`, `app/data/normalizer.py`, or `app/data/filters.py` → unit tests with >90% coverage, including the mandatory edge cases (divide-by-zero, missing exchange, bad tick, empty book).
+- New logic in `app/alpha/`, `app/risk/`, `app/data/normalizer.py`, `app/data/filters.py`, `app/consumer/`, `app/backtest/`, or `app/data_engine/` → unit tests with >90% coverage, including the mandatory edge cases (divide-by-zero, missing exchange, bad tick, empty book).
 - New DB writes → integration test asserting the row matches `docs/DATA_MODEL.md` schema exactly.
 - Anything touching kill switch, circuit breakers, reconciliation, or proxy failover → a corresponding test from `docs/TESTING_STRATEGY.md` §5 must exist and pass. If no such test exists yet for the behavior you're adding, write it — don't skip it.
 - **Phase 6 specifics:**
@@ -134,6 +167,11 @@ Full detail in `docs/TESTING_STRATEGY.md`. Minimum bar for any PR:
   - `StrategyRouter` → unit tests for all 3 scoring branches; mock `global_data` to verify fakeout detection.
   - `ActivePositionManager` → integration tests verifying `amend_stop_loss()` is called on the +1R trigger and on regime shift.
   - `PortfolioRiskManager` → unit tests for correlation cap (exact cap-3 scenario), gross/net exposure math, circuit breaker state propagation.
+  - **Shadow system (zero tests exist today — flag gap):**
+    - `ShadowExecutor` → unit tests for fee asymmetry (maker vs taker routing), slippage calculation, pending limit order state machine, order ID generation
+    - `ShadowAPM` → unit tests for worst_price_seen wick detection, funding rate deduction timing (8h boundary), PENDING→OPEN state transition, TTL expiry
+    - `ShadowPositionStore` / `ShadowTradeStore` → integration test asserting `shadow_trades` table round-trip matches `docs/DATA_MODEL.md`
+    - Integration: shadow mode skips reconciliation + position_reconciler when `SHADOW_MODE_ENABLED=true`; shadow and live Redis keys never collide
 - Run locally before claiming done: `pytest`, `ruff check .`, `black --check .`, `mypy --strict app/`.
 
 ---
@@ -243,3 +281,98 @@ BybitExecutor.execute()          ← never call without passing all above
 - APM loops must have `try/except Exception` + `await asyncio.sleep(5)` on the error path. A crashing APM loop must not take down the entire event loop.
 - On any `amend_stop_loss()` failure, log CRITICAL and alert Telegram. Do not silently swallow the error.
 - `initial_risk_per_unit` must be set at trade entry using `Decimal` and stored in Postgres. The APM reads it from DB — it does not recalculate it.
+
+---
+
+### 👻 Shadow Execution Agent (`app/execution/shadow.py` + `app/core/shadow_store.py`)
+
+**Mission:** Simulate the full trade lifecycle on live market data without placing real orders. Validate strategy math, fee impact, and slippage assumptions before going live.
+
+**Owns:**
+- `ShadowExecutor`: Simulated order routing. Same `execute()`/`execute_exit()` interface as SmartOrderRouter. Applies asymmetric fees (maker vs taker based on `is_post_only`) and simulated slippage.
+- `ShadowAPM`: Virtual position management. Monitors live Redis prices. Detects SL hits via `worst_price_seen` (wick miss prevention). Deducts 8-hour funding rate drag. Processes `PENDING_VIRTUAL_FILL` limit orders.
+- `ShadowExchangeClient`: Redis-backed mock BybitClient for APM compatibility.
+- `ShadowPositionStore`: Redis position state with `shadow:position:*` key prefix.
+- `ShadowTradeStore`: Postgres CRUD targeting `shadow_trades` table.
+
+**State Isolation Rules:**
+- Shadow positions use `shadow:position:{symbol}:{side}` Redis keys. NEVER `position:{symbol}:{side}`.
+- Shadow trades write to `shadow_trades` table. NEVER `trades`.
+- Startup reconciliation is explicitly skipped when `SHADOW_MODE_ENABLED=true`.
+- Position reconciler task is not started when `SHADOW_MODE_ENABLED=true`.
+
+**Invariants the Shadow Agent must never violate:**
+- Fee type must match order type: `is_post_only=True` → `shadow_maker_fee_pct`; `is_post_only=False` → `shadow_taker_fee_pct`.
+- `worst_price_seen` must be updated every 2s cycle and persisted to Redis. SL detection uses worst price, not current price.
+- Funding fee deduction triggers at 8-hour intervals using live funding rate from Redis.
+- Pending limit orders expire after `SHADOW_PENDING_TTL_SECS` (600s) if price doesn't cross virtual entry.
+- Shadow mode activation is via `SHADOW_MODE_ENABLED=true` env var — not a runtime toggle.
+
+### 📡 Market Consumer Agent (`app/consumer/`)
+
+**Mission:** Ingest market data from exchanges, buffer into candles, and drive the live/shadow trading loops.
+
+**Owns:**
+- `MarketConsumer`: CCXT WebSocket consumer that normalizes raw exchange data into `GlobalState`.
+- `CandleBuffer`: Aggregates raw ticks into OHLCV candles per timeframe (1m, 5m, 15m, 1h, 4h).
+- `DecisionEngine`: Orchestrates the alpha→risk→execution pipeline on each candle close.
+- `LiveLoop`: Main live trading async loop. Runs DecisionEngine on real market data.
+- `ShadowLoop`: Shadow mode async loop. Same pipeline as LiveLoop but routes through ShadowExecutor/SOR.
+
+**Invariants:**
+- Both `LiveLoop` and `ShadowLoop` must include `try/except` + `await asyncio.sleep()` on error paths (same crash-safety rule as APM).
+- `CandleBuffer` must validate candle completeness before emitting close events.
+- `MarketConsumer` must handle WS reconnection gracefully — never silently drop a feed.
+
+### ⌨️ Commander Agent (`app/commander/`)
+
+**Mission:** CLI interface for bot management — start, status, backtest launch.
+
+**Owns:**
+- `main.py`: Typer CLI entrypoint. Commands for starting the bot, checking status, launching backtests.
+
+**Invariants:**
+- Commander must not bypass any safety gate (risk check, reconciliation) when starting the bot.
+- All CLI commands must validate environment/config before executing.
+
+### 🔬 Backtest Agent (`app/backtest/`)
+
+**Mission:** Replay historical candles through the full pipeline to validate strategies before live deployment.
+
+**Owns:**
+- `engine.py`: Core backtest runner. Replays candles through alpha→risk→execution pipeline.
+- `orchestrator.py`: Multi-symbol/strategy coordinator for batch backtesting.
+- `worker.py`: Worker process for parallel backtest execution.
+- `formatter.py`: Results formatting — tables, equity curves, trade summaries.
+
+**Invariants:**
+- Backtest engine must use identical pipeline code as live — no simplified "backtest-only" shortcuts.
+- Results must be stored in Postgres (`backtest_results` table) per `docs/DATA_MODEL.md`.
+- Fee/slippage model must match ShadowExecutor's fee asymmetry (maker vs taker).
+
+### 📊 Analytics Agent (`app/analytics/`)
+
+**Mission:** Compute performance metrics and reconcile trades.
+
+**Owns:**
+- `performance.py`: Sharpe ratio, Sortino ratio, max drawdown, win rate, profit factor.
+- `reconciliation.py`: Compares expected fills (from DecisionEngine) vs actual fills (from Bybit).
+
+**Invariants:**
+- All PnL calculations must use `decimal.Decimal` — never `float`.
+- Reconciliation must flag discrepancies for operator review via Telegram alert.
+
+### 🗄️ Data Engine Agent (`app/data_engine/`)
+
+**Mission:** Standalone data ingestion service. Runs as a separate Docker container (routed through gluetun VPN).
+
+**Owns:**
+- `main.py`: Entry point for data-engine container.
+- `exchange_connector.py`: CCXT exchange connection manager with VPN-aware config.
+- `postgres_cacher.py`: Persists OHLCV candles to Postgres for backtest use.
+- `redis_publisher.py`: Publishes live ticks to Redis streams for consumer pickup.
+
+**Invariants:**
+- Data engine must be routed through gluetun VPN sidecar for Bybit API access.
+- Published Redis stream keys must match what `MarketConsumer` expects.
+- Postgres candle schema must match `docs/DATA_MODEL.md` (`historical_candles` table).

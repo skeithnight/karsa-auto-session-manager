@@ -22,12 +22,17 @@ Our architecture is split into critical paths ensuring robustness and modularity
 | # | Component | Responsibility | Location |
 |---|---|---|---|
 | 1 | **Global Data Engine** | CCXT Pro WS ingestion, normalization, bad-tick filtering | `app/data/` |
-| 2 | **Alpha Bridge** | VWAP/Skew/Lead-Lag calculation, signal generation | `app/alpha/` |
-| 3 | **3-Layer Risk Gate** | Liquidity, spread health, circuit breaker checks | `app/risk/` |
-| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), private WS via WireGuard VPN (`gluetun` sidecar) | `app/execution/` |
-| 5 | **State Manager** | Postgres sync, startup reconciliation | `app/core/state.py` |
-| 6 | **Watchdog & Telemetry** | Heartbeats, latency tracking, dead man's switch, Prometheus | `app/watchdog/` |
+| 2 | **Alpha Bridge** | Multi-signal composite, regime classification, strategy routing, AI analysis | `app/alpha/` |
+| 3 | **3-Layer Risk Gate** | Liquidity, spread health, circuit breaker, portfolio risk, sector cap | `app/risk/` |
+| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), APM, shadow execution | `app/execution/` |
+| 5 | **State Manager** | Postgres sync, startup reconciliation, trade store | `app/core/state.py` |
+| 6 | **Watchdog & Telemetry** | Heartbeats, latency tracking, dead man's switch, system health | `app/watchdog/` |
 | 7 | **Session Orchestrator** | UTC time-block regime logic | `app/core/session.py` |
+| 8 | **Market Consumer** | Live/shadow loops, candle buffering, decision engine | `app/consumer/` |
+| 9 | **Backtest Engine** | Historical candle replay, multi-symbol orchestration, results formatting | `app/backtest/` |
+| 10 | **Commander** | CLI interface for bot management | `app/commander/` |
+| 11 | **Analytics** | Performance metrics (Sharpe, Sortino, drawdown), trade reconciliation | `app/analytics/` |
+| 12 | **Data Engine Service** | Standalone data ingestion container (gluetun VPN) | `app/data_engine/` |
 
 ## 🛡 Key Architectural Decisions
 

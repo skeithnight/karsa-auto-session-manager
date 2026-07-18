@@ -1,6 +1,7 @@
 # Minimum Viable Product (MVP) Scope
 **Project Name:** `karsa-auto-session-manager`  
-**Document Status:** Approved / Locked  
+**Document Status:** Approved / Locked
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
 **Target Environment:** Local Docker (Paper Trading / Bybit Testnet)  
 
 ---
@@ -42,7 +43,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 
 ### D. Execution (The "Write" Pipeline)
 *   **Bybit-Only Execution:** The bot will strictly place, amend, and cancel orders on Bybit.
-*   **WARP Proxy Integration:** All Bybit traffic (REST and Private WebSockets) must be routed through the Cloudflare WARP SOCKS5 proxy (`socks5h://host.docker.internal:1080`).
+*   **WireGuard VPN Integration:** All Bybit traffic (REST and Private WebSockets) must be routed through the WireGuard VPN tunnel (gluetun sidecar).
 *   **Private WebSockets:** Use Bybit's Private WebSocket channel for order management to minimize proxy handshake latency.
 *   **Basic Smart Order Routing (SOR):** A simple 3-step execution logic: 
     1. Try Post-Only Limit Order. 
@@ -84,10 +85,10 @@ We will build the MVP in four strict, sequential phases. We do not move to the n
 *   *Deliverable:* A script that runs continuously, prints normalized global VWAP/Skew to the console, and survives network drops.
 
 ### Phase 2: The Hands (Execution & Proxy)
-*   Implement Bybit Private WebSocket connection via WARP proxy.
+*   Implement Bybit Private WebSocket connection via WireGuard VPN tunnel.
 *   Implement the Basic SOR (Limit -> Reprice -> Market).
 *   Implement State Reconciliation on startup.
-*   *Deliverable:* A script that can successfully place, track, and close a dummy market order on Bybit Testnet through the WARP proxy, logging the exact latency.
+*   *Deliverable:* A script that can successfully place, track, and close a dummy market order on Bybit Testnet through the WireGuard VPN tunnel, logging the exact latency.
 
 ### Phase 3: The Brain & The Shield (Alpha & Risk)
 *   Implement the Basic Lead-Lag and Global Skew math.
@@ -105,7 +106,7 @@ We will build the MVP in four strict, sequential phases. We do not move to the n
 ## 6. MVP Success Criteria (Graduating to V1.1)
 The MVP is considered **successful** and ready for live capital (V1.1) only when:
 1.  **Stability:** It has run for 14 consecutive days on Bybit Testnet without a single unhandled exception or state divergence.
-2.  **Execution:** Average execution latency (Signal -> Bybit Fill) is consistently under 800ms via the WARP proxy.
+2.  **Execution:** Average execution latency (Signal -> Bybit Fill) is consistently under 800ms via the WireGuard VPN tunnel.
 3.  **Safety:** The Hard Circuit Breaker was intentionally triggered during testing and successfully flattened the account and halted the bot.
 4.  **Profitability (Paper):** The basic Global Skew/Lead-Lag math yields a positive expectancy (win rate > 50% with a reward/risk ratio > 1.2) over the 14-day testnet period.
 

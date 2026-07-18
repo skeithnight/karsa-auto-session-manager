@@ -1,6 +1,6 @@
 # Definition of Done (DoD)
 **Project Name:** `karsa-auto-session-manager`  
-**Document Status:** Approved / Locked  
+**Document Status:** Approved / Locked _(rev. 2 — added Shadow Mode 3.L checklist, WARP -> gluetun)_  
 **Purpose:** Establish the strict, non-negotiable quality gates that every feature, module, or bugfix must pass before it is merged into the `main` branch and deployed to the live paper-trading environment.
 
 ---
@@ -30,7 +30,7 @@ Regardless of which component is being built, it must satisfy these five univers
 
 ### Pillar 3: Integration & Execution Testing
 - [ ] **Live Verification (Bybit Main URL):** Any execution logic must be successfully tested against **live Bybit** (main URL). Testnet is not accessible — use the $1 max-loss-per-position SL hard cap and a micro position size as the safety boundary. Never rely on testnet.
-- [ ] **Proxy Verification:** Integration tests must confirm that traffic is successfully routing through the WARP SOCKS5 proxy without authentication errors.
+- [ ] **Proxy Verification:** Integration tests must confirm that traffic is successfully routing through the WireGuard VPN via gluetun without authentication errors.
 - [ ] **WebSocket Resilience:** Data and Execution WebSockets must pass a "choke test" (simulating network drops) and prove they auto-reconnect and reconcile state without crashing the bot.
 
 ### Pillar 4: Observability & Telemetry
@@ -112,6 +112,19 @@ When working on specific modules, the following additional criteria apply:
 - [x] Position store registration after fill (`position_store.save()`).
 - [x] Duplicate position prevention via `position_store.has_position()`.
 - [ ] Circuit breaker updated on trade results (`update_pnl`, `record_loss`).
+
+### L. Shadow Mode (Phase 3.1)
+
+- [ ] `ShadowExecutor.execute()` correctly routes to maker vs taker fee based on `is_post_only` parameter
+- [ ] `ShadowAPM` tracks `worst_price_seen` and triggers SL on wick hits (not just current price at polling interval)
+- [ ] `ShadowAPM` deducts 8-hour funding rate drag on held positions
+- [ ] Pending limit orders transition from `PENDING_VIRTUAL_FILL` to `OPEN` when live price crosses virtual entry in the correct direction
+- [ ] Shadow positions use `shadow:position:*` Redis namespace — zero collision with live `position:*` keys
+- [ ] Shadow trades write to `shadow_trades` table — zero writes to `trades` table
+- [ ] Startup reconciliation is explicitly skipped when `SHADOW_MODE_ENABLED=true`
+- [ ] Position reconciler task is not started when `SHADOW_MODE_ENABLED=true`
+- [ ] Switching from shadow to live mode does not leave orphaned shadow state that interferes with live operation
+- [ ] Unit tests exist for fee asymmetry (maker vs taker), wick detection (worst_price_seen), funding deduction, and pending limit state machine
 
 ---
 

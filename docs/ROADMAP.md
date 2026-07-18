@@ -1,6 +1,8 @@
 # Roadmap
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft — Proposed (the uploaded `ROADMAP.md` was empty; this fills `CONTEXT.md` Open Issue #4)
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
+
 **Note on approach:** Progression here is **criteria-gated, not date-gated** — consistent with `MVP_SCOPE.md`'s own phased philosophy ("we do not move to the next phase until the current one passes the Definition of Done"). No calendar dates are given because none exist in the source docs; adding fake ones would misrepresent certainty that isn't there.
 
 ---
@@ -21,7 +23,7 @@ Different duration, different win-rate bar, and different risk-adjusted-return m
 | :-- | :--- | :--- | :--- |
 | 0 | Design & Docs | This doc set | All core docs approved; open conflicts in `CONTEXT.md` §7 resolved |
 | 1 | The Nervous System (Data & Infra) | `MVP_SCOPE.md` §5 | Continuous console output of normalized Global VWAP/Skew; survives network drops |
-| 2 | The Hands (Execution & Proxy) | `MVP_SCOPE.md` §5 | Dummy order placed/tracked/closed on **live Bybit (main URL)** via WARP with $1 SL cap, latency logged |
+| 2 | The Hands (Execution & Proxy) | `MVP_SCOPE.md` §5 | Dummy order placed/tracked/closed on **live Bybit (main URL)** via WireGuard VPN with $1 SL cap, latency logged |
 | 3 | The Brain & The Shield (Alpha & Risk) | `MVP_SCOPE.md` §5 | Signals generated, filtered through Risk Gate, decisions logged to Postgres |
 | 4 | Integration & Paper Trading | `MVP_SCOPE.md` §5 | 72 hours on **live Bybit (main URL)** with $1 SL cap, zero crashes, zero state divergence |
 | 4.5 | AI Integration & 6-Stage Lifecycle | New (this doc) | Full 6-stage pipeline running with mandatory AI (see below) |

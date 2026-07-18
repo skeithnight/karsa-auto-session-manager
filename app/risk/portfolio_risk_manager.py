@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from loguru import logger
 
@@ -191,18 +191,52 @@ class PortfolioRiskManager:
     # ------------------------------------------------------------------
 
     async def _check_daily_loss_circuit_breaker(self) -> CheckResult:
-        """Daily loss CB — PENDING Issue #11 resolution."""
-        # TODO: implement when PRM_DAILY_LOSS_LIMIT is confirmed
-        return CheckResult(passed=True)
+        """Block if daily PnL loss exceeds threshold (-2% relative or $500 absolute).
 
-    # ------------------------------------------------------------------
-    # Check 4: Consecutive loss circuit breaker
-    # ------------------------------------------------------------------
+        Reads from Redis: system:circuit_breaker
+        """
+        try:
+            if self._redis is None:
+                return CheckResult(passed=True)
+
+            raw = await self._redis.get("system:circuit_breaker")
+            if raw is None:
+                return CheckResult(passed=True)
+
+            import json
+            state = json.loads(raw)
+            if state.get("status") == "TRIGGERED" and state.get("reason", "").startswith("daily"):
+                logger.warning("PRM: daily loss circuit breaker TRIGGERED")
+                return CheckResult(passed=False, reason=f"daily loss CB: {state.get('reason', '')}")
+            return CheckResult(passed=True)
+
+        except Exception:
+            logger.exception("PRM: daily loss CB check failed — BLOCKING")
+            return CheckResult(passed=False, reason="daily loss CB check unavailable")
 
     async def _check_consecutive_loss_circuit_breaker(self) -> CheckResult:
-        """Consecutive loss CB — PENDING Issue #10 resolution."""
-        # TODO: implement when PRM_MAX_CONSECUTIVE_LOSSES is confirmed
-        return CheckResult(passed=True)
+        """Block if 3+ consecutive losses detected.
+
+        Reads from Redis: system:circuit_breaker
+        """
+        try:
+            if self._redis is None:
+                return CheckResult(passed=True)
+
+            raw = await self._redis.get("system:circuit_breaker")
+            if raw is None:
+                return CheckResult(passed=True)
+
+            import json
+            state = json.loads(raw)
+            if state.get("status") == "TRIGGERED" and "consecutive" in state.get("reason", "").lower():
+                logger.warning("PRM: consecutive loss circuit breaker TRIGGERED")
+                return CheckResult(passed=False, reason=f"consecutive loss CB: {state.get('reason', '')}")
+            return CheckResult(passed=True)
+
+        except Exception:
+            logger.exception("PRM: consecutive loss CB check failed — BLOCKING")
+            return CheckResult(passed=False, reason="consecutive loss CB check unavailable")
 
     # ------------------------------------------------------------------
     # Daily reset loop
@@ -212,7 +246,7 @@ class PortfolioRiskManager:
         """Background task: reset daily CB state at UTC midnight."""
         while True:
             try:
-                now = datetime.now(timezone.utc)
+                now = datetime.now(UTC)
                 tomorrow = now.replace(hour=0, minute=0, second=0, microsecond=0)
                 if now >= tomorrow:
                     tomorrow += timedelta(days=1)
@@ -221,8 +255,11 @@ class PortfolioRiskManager:
                 await asyncio.sleep(wait_seconds)
 
                 if self._redis is not None:
-                    await self._redis.set("risk:portfolio_cb:daily_loss_fired", "0")  # type: ignore[attr-defined]
-                    await self._redis.set("risk:portfolio_cb:consecutive_loss_count", "0")  # type: ignore[attr-defined]
+                    import json as _json
+                    await self._redis.set(
+                        "system:circuit_breaker",
+                        _json.dumps({"status": "RESET", "reason": "midnight reset"}),
+                    )
                     logger.info(
                         "PortfolioRiskManager: daily CB state reset at UTC midnight"
                     )

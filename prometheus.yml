@@ -4,4 +4,4 @@ global:
 scrape_configs:
   - job_name: "karsa"
     static_configs:
-      - targets: ["gluetun:8001"]
+      - targets: ["gluetun:8001", "gluetun:8002", "gluetun:8003", "gluetun:8004"]

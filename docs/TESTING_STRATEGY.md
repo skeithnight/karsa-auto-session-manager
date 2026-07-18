@@ -1,6 +1,7 @@
 # Testing Strategy
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft — Proposed (derived from `DEFINITION_OF_DONE.md`, `RISK_AND_RUNBOOK.md`, `ARCHITECTURE.md`)
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
 **Purpose:** Define exactly what gets tested, how, with what tools, and at what stage of the pipeline — so "passes DoD" is a checkable fact, not a feeling.
 
 ---
@@ -22,7 +23,7 @@ Three failure modes this strategy is designed to catch before production:
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Unit** | Pure functions: math, normalizers, filters, Pydantic models | `pytest`, `pytest-asyncio`, `hypothesis` | None (in-process) | ms | Every commit |
 | **Integration** | Component-to-component: DB writes, proxy routing, WS reconnect | `pytest`, `testcontainers-python` (Postgres), mock WS servers | Docker (ephemeral) | seconds–minutes | Every PR |
-| **Execution/Live** | Real order lifecycle on exchange | `pytest` + live Bybit SDK calls (micro size + $1 SL cap) | **Bybit Main URL via WARP** | minutes | Pre-merge to `main`, nightly |
+| **Execution/Live** | Real order lifecycle on exchange | `pytest` + live Bybit SDK calls (micro size + $1 SL cap) | **Bybit Main URL via WireGuard VPN** | minutes | Pre-merge to `main`, nightly |
 | **Chaos/Safety** | Kill switch, circuit breakers, proxy failover, reconciliation scenarios | Custom fault-injection harness | Docker + live Bybit (mocked where safe) | minutes | Pre-merge to `main`, nightly |
 | **Soak** | Long-running stability | Manual/scheduled run + Prometheus assertions | Full Docker stack, live Bybit | 15 min – 14 days | Pre-release gates (see §6) |
 
@@ -43,7 +44,7 @@ Three failure modes this strategy is designed to catch before production:
 ## 4. Integration Testing (DoD Pillar 3)
 
 - **Postgres schema conformance:** `testcontainers` spins an ephemeral Postgres 15 instance per test run; migrations apply the exact DDL from `DATA_MODEL.md` §3. Tests insert real `TradeExecution`/`TradingSignal`/`system_events` objects and assert the round-tripped row matches field-for-field, including `JSONB` snapshot shape.
-- **WARP Proxy Verification:** an integration test confirms outbound Bybit traffic actually routes through `socks5h://host.docker.internal:1080` (e.g., asserting egress IP differs from host IP, or asserting connection fails cleanly when the proxy is intentionally down — never silently falls back to direct connection).
+- **VPN Tunnel Verification:** an integration test confirms outbound Bybit traffic actually routes through the WireGuard VPN tunnel (gluetun sidecar) (e.g., asserting egress IP differs from host IP, or asserting connection fails cleanly when the VPN tunnel is intentionally down — never silently falls back to direct connection).
 - **WebSocket Resilience ("Choke Test"):** a mock WS server (or `toxiproxy`) intentionally severs Binance/OKX/Bybit connections mid-stream. Assertions: (1) reconnect happens automatically, (2) the exchange is marked `STALE` within the 15s window from `DEFINITION_OF_DONE.md` §3.A, (3) no unhandled exception crashes the event loop.
 - **Live Bybit Execution (Main URL):** place/cancel/verify small real orders on **live Bybit main URL** with the $1 max-loss-per-position SL hard cap as the safety boundary. Assert the full SOR sequence (Post-Only Limit → Reprice → Market/IOC) executes in order, and that an exchange-side Stop-Loss is placed **atomically with** (not after, not optionally) every fill — this is the single most safety-critical assertion in the suite per DoD anti-pattern #5. **Note:** Testnet is not accessible — live Bybit with micro-size is the only execution test environment.
 - **Idempotent Execution:** simulate a crash immediately after an order is sent but before the fill is persisted, then restart the reconciliation flow. Assert exactly one order exists on the exchange — never a duplicate.
@@ -127,7 +128,7 @@ tests/
 │   └── test_config.py
 ├── integration/
 │   ├── test_postgres_schema.py
-│   ├── test_warp_proxy.py
+│   ├── test_vpn_tunnel.py
 │   ├── test_ws_choke.py
 │   └── test_testnet_execution.py
 └── chaos/

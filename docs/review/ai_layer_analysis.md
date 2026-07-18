@@ -1,5 +1,7 @@
 # AI in ASM: Where It Helps, Where It Hurts
 
+> **Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
+
 ## Why the Original "No LLM" Rule Exists
 
 `CONTEXT.md §4` is very precise about this:
@@ -25,7 +27,7 @@ ASM's Trade Timeline (15m–4h timeframe):
       │  ← Deterministic ONLY. No tolerance for latency.
       ▼
 [Order Execution — SOR]
-      │  WARP Proxy: +100–300ms
+      │  WireGuard VPN: +100–300ms
       │  Exchange: +50–100ms
       │  Total: ~150–400ms
       │
@@ -41,7 +43,7 @@ ASM's Trade Timeline (15m–4h timeframe):
 [Position Closed]
 ```
 
-**The WARP proxy adds ~150ms. A GPT-4o API call adds ~800ms–2000ms.**
+**The VPN tunnel adds ~100–300ms. A GPT-4o API call adds ~800ms–2000ms.**
 
 For a 15-minute candle trade, a 1-second LLM call is **completely irrelevant to performance**. For a 1-millisecond scalp, it's fatal. ASM trades 15m–4h, so AI is safe in 2 specific places.
 
@@ -87,7 +89,7 @@ signal_queue → risk_gate → SOR → Bybit
 ```
 
 No AI touches this. Not because AI is bad, but because:
-1. The WARP proxy already makes this timing-sensitive
+1. The VPN tunnel already makes this timing-sensitive
 2. Risk decisions must be deterministic and auditable
 3. Exchange-side SL (not AI) is the safety net if the process dies
 
@@ -137,7 +139,7 @@ No AI touches this. Not because AI is bad, but because:
                                ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │  LAYER 4: SOR EXECUTION  (deterministic)                         │
-│  Post-Only → Reprice → Market/IOC via WARP                       │
+│  Post-Only → Reprice → Market/IOC via WireGuard VPN               │
 │  → Exchange-side SL placed immediately on fill                   │
 │  ← NO AI HERE →                                                  │
 └──────────────────────────────┬───────────────────────────────────┘

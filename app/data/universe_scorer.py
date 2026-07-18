@@ -170,7 +170,7 @@ class UniverseScorer:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
-            await self.redis.redis.set("system:universe:symbols", json.dumps(payload, default=str))
+            await self.redis.set("system:universe:symbols", json.dumps(payload, default=str))
             logger.info(f"Universe refreshed: {len(symbols)} symbols active")
         except Exception as e:
             logger.error(f"Universe Redis write failed: {e}")

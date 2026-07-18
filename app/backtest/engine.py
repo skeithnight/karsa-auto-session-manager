@@ -115,7 +115,7 @@ class BacktestEngine:
             directions = self._determine_directions(regime)
 
             for direction in directions:
-                score = self._router.evaluate_signal(
+                score, vol_factor = self._router.evaluate_signal(
                     context, regime, direction,
                     global_prices=global_prices,
                     orderbook_delta=orderbook_delta,

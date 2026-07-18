@@ -400,7 +400,7 @@ async def alpha_bridge_task(
                                 metrics.signals_skipped.labels(symbol=symbol, reason="strategy_neutral_skew").inc()
                                 continue
 
-                            strategy_score = strategy_router.evaluate_signal(
+                            strategy_score, vol_factor = strategy_router.evaluate_signal(
                                 candles=candles_1h if candles_1h else [],
                                 regime=regime_enum,
                                 direction=_direction,
@@ -412,15 +412,16 @@ async def alpha_bridge_task(
                             metrics.strategy_score.labels(symbol=symbol, regime=regime).observe(strategy_score)
                             from app.alpha.strategy_router import STRATEGY_GATE_THRESHOLD
 
-                            if strategy_score < STRATEGY_GATE_THRESHOLD:
+                            effective_gate = STRATEGY_GATE_THRESHOLD * vol_factor
+                            if strategy_score < effective_gate:
                                 metrics.signals_skipped.labels(
                                     symbol=symbol,
                                     reason=f"strategy_gate:{strategy_score:.0f}",
                                 ).inc()
                                 logger.debug(
                                     f"StrategyRouter rejected {symbol}: "
-                                    f"score={strategy_score:.0f} < {STRATEGY_GATE_THRESHOLD} "
-                                    f"(regime={regime})"
+                                    f"score={strategy_score:.0f} < {effective_gate:.0f} "
+                                    f"(regime={regime} vol_factor={vol_factor:.2f})"
                                 )
                                 continue
                             logger.info(

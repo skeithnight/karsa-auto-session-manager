@@ -138,7 +138,7 @@ class DecisionEngine:
         for direction in directions:
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
-            score = self._router.evaluate_signal(
+            score, vol_factor = self._router.evaluate_signal(
                 arr,
                 regime,
                 direction,
@@ -147,9 +147,10 @@ class DecisionEngine:
                 funding_rate=funding_rate,
                 oi_change=oi_change,
             )
-            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f)", symbol, direction, score, self._gate)
+            effective_gate = float(self._gate) * vol_factor
+            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)", symbol, direction, score, effective_gate, vol_factor)
 
-            if score >= self._gate:
+            if score >= effective_gate:
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
                 return self._build_signal(symbol, direction, regime, score, arr)
 

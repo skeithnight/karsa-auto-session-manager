@@ -34,7 +34,7 @@ def _build_engine(
     classifier.classify.return_value = regime
 
     router = MagicMock()
-    router.evaluate_signal.return_value = score
+    router.evaluate_signal.return_value = (score, 1.0)
 
     risk_gate = MagicMock()
     risk_gate.get_profile.return_value = MagicMock(

@@ -85,7 +85,7 @@ class StrategyRouter:
 
         if candles.shape[0] < 20:
             logger.warning(f"StrategyRouter: only {candles.shape[0]} candles (< 20), returning 0")
-            return 0.0
+            return 0.0, 1.0
 
         # Cross-asset volatility normalization
         atr_pct = self._calculate_atr_pct(candles)
@@ -99,32 +99,31 @@ class StrategyRouter:
             score = self._score_chop_strategy(candles, direction, orderbook_delta, funding_rate, oi_change)
         else:
             logger.warning(f"StrategyRouter: unknown regime {regime}, returning 0")
-            return 0.0
+            return 0.0, 1.0
 
-        # Cross-asset normalization: scale score by volatility factor
-        # High-vol assets (altcoins) need stronger signals to pass gate
-        adjusted_score = score * vol_factor
+        # Cross-asset normalization: vol_factor returned for gate threshold scaling
+        # High-vol assets (altcoins) get vol_factor > 1.0 → higher effective gate
+        # Low-vol assets get vol_factor < 1.0 → lower effective gate (easier pass)
 
         logger.info(
             f"StrategyRouter: regime={regime.value} dir={direction} "
-            f"score={score} atr_pct={atr_pct:.2f} vol_factor={vol_factor:.2f} "
-            f"adjusted={adjusted_score:.1f}"
+            f"score={score} atr_pct={atr_pct:.2f} vol_factor={vol_factor:.2f}"
         )
 
         from app.core import metrics as m
 
-        if adjusted_score < 50:
+        if score < 50:
             bucket = "0-50"
-        elif adjusted_score < 65:
+        elif score < 65:
             bucket = "50-65"
-        elif adjusted_score < 85:
+        elif score < 85:
             bucket = "65-85"
         else:
             bucket = "85-100"
 
         m.strategy_scored_total.labels(regime=regime.value, score_bucket=bucket).inc()
 
-        return float(adjusted_score)
+        return float(score), float(vol_factor)
 
     # ------------------------------------------------------------------
     # TREND scoring

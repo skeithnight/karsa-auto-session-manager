@@ -19,8 +19,8 @@ class Settings(BaseSettings):
     )
 
     # ── Bybit API credentials ──────────────────────────────────
-    bybit_api_key: str
-    bybit_api_secret: str
+    bybit_api_key: str = ""
+    bybit_api_secret: str = ""
     bybit_testnet: bool = False
 
     # ── Shadow Mode ────────────────────────────────────────────

@@ -267,7 +267,7 @@ async def main() -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
 
         class _SectorMapping:
-            def get_sector(self, s: str) -> str:
+            async def get_sector(self, s: str) -> str:
                 from app.data.sector_mapping import get_sector as _get
                 return _get(s)
 

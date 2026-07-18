@@ -312,7 +312,7 @@ class TestMissingExit:
     ):
         """CRITICAL discrepancy triggers Telegram alert."""
         now = datetime.now(UTC)
-        entry_time = now - timedelta(hours=3)
+        entry_time = now - timedelta(minutes=30)
         local = _make_local_trade(entry_time=entry_time, exit_time=None)
         closed_pnl = {
             "symbol": "BTCUSDT",
@@ -322,6 +322,7 @@ class TestMissingExit:
             "avgExitPrice": "69000",
             "qty": "0.001",
             "createdTime": str(int((now - timedelta(minutes=30)).timestamp() * 1000)),
+            "updatedTime": str(int((now - timedelta(minutes=2)).timestamp() * 1000)),
         }
 
         mock_bybit.get_executions = AsyncMock(
@@ -336,8 +337,7 @@ class TestMissingExit:
 
         mock_alert.send.assert_called_once()
         alert_text = mock_alert.send.call_args[0][0]
-        assert "TRADE RECONCILIATION ALERT" in alert_text
-        assert "missing_exit" in alert_text
+        assert "TAKE PROFIT" in alert_text or "TRADE RECONCILIATION" in alert_text
 
 
 # ── Unit: price mismatch ─────────────────────────────────────

@@ -21,8 +21,7 @@ from app.data.universe_scanner import (
 
 def _make_scanner(**kwargs) -> tuple[DynamicUniverseScanner, MagicMock]:
     redis = MagicMock()
-    redis.redis = MagicMock()
-    redis.redis.set = AsyncMock()
+    redis.set = AsyncMock()
     defaults = {
         "redis_client": redis,
         "top_n": DEFAULT_TOP_N,
@@ -178,8 +177,8 @@ class TestDynamicUniverseScanner:
 
         await scanner.refresh()
 
-        assert redis.redis.set.call_count == 2
-        keys = [c[0][0] for c in redis.redis.set.call_args_list]
+        assert redis.set.call_count == 2
+        keys = [c[0][0] for c in redis.set.call_args_list]
         assert REDIS_UNIVERSE_KEY in keys
         assert REDIS_SCANNER_STATUS_KEY in keys
 

@@ -10,8 +10,7 @@ from app.data.market_data_ingestor import REDIS_KEY_PREFIX, MarketDataIngestor
 
 def _make_ingestor() -> tuple[MarketDataIngestor, MagicMock]:
     redis = MagicMock()
-    redis.redis = MagicMock()
-    redis.redis.set = AsyncMock()
+    redis.set = AsyncMock()
     ingestor = MarketDataIngestor(
         redis_client=redis,
         symbols=["BTC/USDT", "ETH/USDT"],
@@ -38,7 +37,7 @@ class TestOrderbookDelta:
             "bids": [[50000, 10], [49990, 5]],
             "asks": [[50010, 5], [50020, 3]],
         }
-        await ingestor._fetch_orderbook("BTC/USDT")
+        await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
         assert ingestor.orderbook_delta["BTC/USDT"] > 0
 
     @pytest.mark.asyncio
@@ -48,7 +47,7 @@ class TestOrderbookDelta:
         ingestor._session.fetch_order_book.return_value = {
             "bids": [[50000, 3]], "asks": [[50010, 10]],
         }
-        await ingestor._fetch_orderbook("BTC/USDT")
+        await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
         assert ingestor.orderbook_delta["BTC/USDT"] < 0
 
     @pytest.mark.asyncio
@@ -58,7 +57,7 @@ class TestOrderbookDelta:
         ingestor._session.fetch_order_book.return_value = {
             "bids": [[50000, 5]], "asks": [[50010, 5]],
         }
-        await ingestor._fetch_orderbook("BTC/USDT")
+        await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
         assert abs(ingestor.orderbook_delta["BTC/USDT"]) < 0.01
 
     @pytest.mark.asyncio
@@ -68,9 +67,9 @@ class TestOrderbookDelta:
         ingestor._session.fetch_order_book.return_value = {
             "bids": [[50000, 10]], "asks": [[50010, 10]],
         }
-        await ingestor._fetch_orderbook("BTC/USDT")
-        redis.redis.set.assert_called()
-        key = redis.redis.set.call_args[0][0]
+        await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
+        redis.set.assert_called()
+        key = redis.set.call_args[0][0]
         assert f"{REDIS_KEY_PREFIX}:BTC/USDT:orderbook_delta" in key
 
     @pytest.mark.asyncio
@@ -80,7 +79,7 @@ class TestOrderbookDelta:
         ingestor._session.fetch_order_book.return_value = {
             "bids": [[50000, 100]], "asks": [[50010, 0.001]],
         }
-        await ingestor._fetch_orderbook("BTC/USDT")
+        await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
         assert -1.0 <= ingestor.orderbook_delta["BTC/USDT"] <= 1.0
 
 
@@ -94,30 +93,30 @@ class TestFundingRate:
     async def test_positive_rate(self) -> None:
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_funding_rate.return_value = {"fundingRate": 0.00015}
-        await ingestor._fetch_funding_rate("BTC/USDT")
+        await ingestor._fetch_funding_rate("BTC/USDT", "BTC/USDT")
         assert ingestor.funding_rate["BTC/USDT"] == 0.00015
 
     @pytest.mark.asyncio
     async def test_negative_rate(self) -> None:
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_funding_rate.return_value = {"fundingRate": -0.00015}
-        await ingestor._fetch_funding_rate("ETH/USDT")
+        await ingestor._fetch_funding_rate("ETH/USDT", "ETH/USDT")
         assert ingestor.funding_rate["ETH/USDT"] == -0.00015
 
     @pytest.mark.asyncio
     async def test_zero_rate(self) -> None:
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_funding_rate.return_value = {"fundingRate": 0.0}
-        await ingestor._fetch_funding_rate("BTC/USDT")
+        await ingestor._fetch_funding_rate("BTC/USDT", "BTC/USDT")
         assert ingestor.funding_rate["BTC/USDT"] == 0.0
 
     @pytest.mark.asyncio
     async def test_redis_published(self) -> None:
         ingestor, redis = _make_ingestor()
         ingestor._session.fetch_funding_rate.return_value = {"fundingRate": 0.0001}
-        await ingestor._fetch_funding_rate("BTC/USDT")
-        redis.redis.set.assert_called()
-        key = redis.redis.set.call_args[0][0]
+        await ingestor._fetch_funding_rate("BTC/USDT", "BTC/USDT")
+        redis.set.assert_called()
+        key = redis.set.call_args[0][0]
         assert f"{REDIS_KEY_PREFIX}:BTC/USDT:funding_rate" in key
 
 
@@ -132,9 +131,9 @@ class TestOIChange:
         """OI increase → positive change."""
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 100.0}
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 110.0}
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         assert ingestor.oi_change["BTC/USDT"] > 0
 
     @pytest.mark.asyncio
@@ -142,9 +141,9 @@ class TestOIChange:
         """OI decrease → negative change (capitulation signal)."""
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 100.0}
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 80.0}
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         assert ingestor.oi_change["BTC/USDT"] < 0
 
     @pytest.mark.asyncio
@@ -152,8 +151,8 @@ class TestOIChange:
         """Same OI → change ≈ 0."""
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 100.0}
-        await ingestor._fetch_oi("BTC/USDT")
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         assert abs(ingestor.oi_change["BTC/USDT"]) < 0.001
 
     @pytest.mark.asyncio
@@ -161,16 +160,16 @@ class TestOIChange:
         """First OI call → no change (baseline only)."""
         ingestor, _ = _make_ingestor()
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 100.0}
-        await ingestor._fetch_oi("BTC/USDT")
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
         assert ingestor.oi_change.get("BTC/USDT", 0) == 0.0
 
     @pytest.mark.asyncio
     async def test_redis_published(self) -> None:
         ingestor, redis = _make_ingestor()
         ingestor._session.fetch_open_interest.return_value = {"openInterestAmount": 100.0}
-        await ingestor._fetch_oi("BTC/USDT")
-        redis.redis.set.assert_called()
-        key = redis.redis.set.call_args[0][0]
+        await ingestor._fetch_oi("BTC/USDT", "BTC/USDT")
+        redis.set.assert_called()
+        key = redis.set.call_args[0][0]
         assert f"{REDIS_KEY_PREFIX}:BTC/USDT:oi_change" in key
 
 

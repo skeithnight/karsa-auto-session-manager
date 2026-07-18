@@ -99,10 +99,14 @@ class CryptoAnalyst:
         """Run AI analysis on an ambiguous signal. Returns None if unavailable."""
         cache_key = f"analyst:{symbol}:{int(time.time()) // self.cache_ttl}"
         if self.redis:
-            cached = await self.redis.get_ai_cache(cache_key)
-            if cached:
-                logger.debug(f"Analyst cache hit: {symbol}")
-                return AnalystResult(**cached)
+            try:
+                raw = await self.redis.get(f"ai:cache:{cache_key}")
+                if raw:
+                    cached = json.loads(raw)
+                    logger.debug(f"Analyst cache hit: {symbol}")
+                    return AnalystResult(**cached)
+            except Exception:
+                logger.debug(f"Analyst cache read failed for {symbol}")
 
         candles = await self.fetcher.fetch(symbol, "1h", 200)
         if len(candles) < 50:
@@ -148,7 +152,7 @@ class CryptoAnalyst:
         if recent_trades:
             prompt = recent_trades + "\n\n" + prompt
 
-        response = await self.ai_client.complete(prompt, max_tokens=256)
+        response = await self.ai_client.complete(prompt, max_tokens=1024)
         if not response:
             metrics.ai_analyst_calls.labels(result="unavailable").inc()
             logger.warning(f"Analyst: AI unavailable for {symbol}")
@@ -163,12 +167,19 @@ class CryptoAnalyst:
         metrics.ai_analyst_calls.labels(result="success").inc()
 
         if self.redis:
-            await self.redis.set_ai_cache(cache_key, {
-                "direction": result.direction,
-                "ai_confidence": result.ai_confidence,
-                "reasoning": result.reasoning,
-                "model_used": result.model_used,
-            }, ttl=self.cache_ttl)
+            try:
+                await self.redis.set(
+                    f"ai:cache:{cache_key}",
+                    json.dumps({
+                        "direction": result.direction,
+                        "ai_confidence": result.ai_confidence,
+                        "reasoning": result.reasoning,
+                        "model_used": result.model_used,
+                    }),
+                    ex=self.cache_ttl,
+                )
+            except Exception:
+                logger.debug(f"Analyst cache write failed for {symbol}")
         logger.info(f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence}")
         return result
 

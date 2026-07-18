@@ -29,8 +29,8 @@ def mock_fetcher():
 @pytest.fixture
 def mock_redis():
     client = MagicMock()
-    client.get_ai_cache = AsyncMock(return_value=None)
-    client.set_ai_cache = AsyncMock()
+    client.get = AsyncMock(return_value=None)
+    client.set = AsyncMock()
     return client
 
 
@@ -68,7 +68,7 @@ class TestCryptoAnalyst:
 
         await analyst.analyze("ETH/USDT", "SHORT", 0.60, "TREND_BEAR", 0.001, 0.0, 0.0, Decimal("3000"))
         # Second call hits Redis cache
-        mock_redis.get_ai_cache.return_value = {"direction": "SHORT", "ai_confidence": 60, "reasoning": "reversal", "model_used": "test"}
+        mock_redis.get.return_value = json.dumps({"direction": "SHORT", "ai_confidence": 60, "reasoning": "reversal", "model_used": "test"})
         await analyst.analyze("ETH/USDT", "SHORT", 0.60, "TREND_BEAR", 0.001, 0.0, 0.0, Decimal("3000"))
         # AI called once (first call), cache hit on second
         analyst.ai_client.complete.assert_called_once()

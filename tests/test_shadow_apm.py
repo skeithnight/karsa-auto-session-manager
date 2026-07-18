@@ -24,7 +24,7 @@ def mock_redis():
     """RedisClient mock for ShadowAPM."""
     redis = AsyncMock()
     redis.get = AsyncMock(return_value=None)
-    redis.redis = AsyncMock()
+    redis.set = AsyncMock()
     return redis
 
 
@@ -271,7 +271,7 @@ class TestShadowAPMPendingFill:
         assert pos["status"] == "OPEN"
         assert "worst_price_seen" in pos
         assert pos["worst_price_seen"] == "50000"
-        mock_redis.redis.set.assert_called_once()
+        mock_redis.set.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_pending_sell_fills_when_mid_rises_to_entry(self, shadow_apm, mock_executor, mock_pos_store, mock_redis):

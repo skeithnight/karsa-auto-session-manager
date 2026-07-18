@@ -193,7 +193,7 @@ class TestRefreshFallback:
         scorer = _mock_scorer(symbols=["BTC/USDT"], top_n=5, min_score=Decimal("100"))
         scorer.redis.get_global_state.return_value = _make_state()
         # refresh writes to redis.redis.set(...)
-        scorer.redis.redis = SimpleNamespace(set=AsyncMock())
+        scorer.redis.set = AsyncMock()
 
         # select will return [] because score_symbol returns None (insufficient candles)
         scorer.fetcher.fetch.return_value = _make_candles(5)
@@ -203,4 +203,4 @@ class TestRefreshFallback:
 
         assert result == config_symbols[:5]
         assert len(result) == 5
-        scorer.redis.redis.set.assert_called_once()
+        scorer.redis.set.assert_called_once()

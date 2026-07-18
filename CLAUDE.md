@@ -50,6 +50,21 @@ Rationale + full detail: `AGENTS.md` §2 and §8.
 pytest && ruff check . && black --check . && mypy --strict app/
 ```
 
+### Compose (split infra / apps)
+
+Infra = `docker-compose.infra.yml` (postgres, redis, gluetun, 9router, prometheus, grafana).
+Apps = `docker-compose.apps.yml` (data-engine, live, shadow, backtest, commander).
+
+| Command | What it does |
+|---------|-------------|
+| `make up` | Cold start — both stacks together |
+| `make rebuild` | Rebuild apps only, infra untouched |
+| `make down` | Stop everything |
+| `make logs` | Tail app logs |
+| `make logs-infra` | Tail infra logs |
+
+**Never** run `docker compose up -d --build` without specifying apps file — it recreates infra containers (kills 9router state). Always use `make rebuild` or target apps file explicitly.
+
 \>90% unit coverage for `app/alpha/`, `app/risk/`, `app/data/normalizer.py`, `app/data/filters.py`, incl. edge cases (empty candles, single-candle, all-flat, divide-by-zero, bad tick). Full bar: `AGENTS.md` §5 / `docs/TESTING_STRATEGY.md`.
 
 ---

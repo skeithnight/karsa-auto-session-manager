@@ -12,6 +12,24 @@ import pytest
 from app.data_engine.exchange_connector import ExchangeConnector, _make_exchange
 
 
+@pytest.fixture(autouse=True)
+def _mock_make_exchange(monkeypatch):
+    """Patch _make_exchange to avoid real API calls in tests.
+
+    TestMakeExchange uses the local import reference so is unaffected.
+    """
+    mock_ex = AsyncMock()
+    mock_ex.id = "bybit"
+    mock_ex.apiKey = ""
+    mock_ex.secret = ""
+    mock_ex.fetch_ohlcv = AsyncMock(return_value=[])
+    mock_ex.close = AsyncMock()
+    monkeypatch.setattr(
+        "app.data_engine.exchange_connector._make_exchange",
+        lambda *a, **kw: mock_ex,
+    )
+
+
 class TestMakeExchange:
     def test_creates_bybit(self) -> None:
         ex = _make_exchange("bybit")

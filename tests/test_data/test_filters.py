@@ -1,8 +1,7 @@
 """Tests for Bad Tick Filter."""
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-
 
 from app.data.filters import BadTickFilter
 from app.data.normalizer import ExchangeData
@@ -20,7 +19,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64000"),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
 
         assert self.filter.is_bad_tick(data) is False
@@ -32,7 +31,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64000"),
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),
         )
         self.filter.is_bad_tick(data1)
 
@@ -41,7 +40,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64320"),  # +0.5%
-            timestamp=datetime(2024, 1, 15, 14, 30, 2, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 2, tzinfo=UTC),
         )
 
         assert self.filter.is_bad_tick(data2) is False
@@ -53,7 +52,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64000"),
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),
         )
         self.filter.is_bad_tick(data1)
 
@@ -62,7 +61,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("70400"),  # +10%
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),  # Same second
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),  # Same second
         )
 
         assert self.filter.is_bad_tick(data2) is True
@@ -74,7 +73,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64000"),
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),
         )
         self.filter.is_bad_tick(data1)
 
@@ -83,7 +82,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("70400"),  # +10%
-            timestamp=datetime(2024, 1, 15, 14, 30, 5, tzinfo=timezone.utc),  # 5 seconds later
+            timestamp=datetime(2024, 1, 15, 14, 30, 5, tzinfo=UTC),  # 5 seconds later
         )
 
         assert self.filter.is_bad_tick(data2) is False
@@ -95,7 +94,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("64000"),
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),
         )
         self.filter.filter_orderbook(data1)
 
@@ -104,7 +103,7 @@ class TestBadTickFilter:
             exchange="binance",
             symbol="BTC/USDT:USDT",
             last_price=Decimal("70400"),
-            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 15, 14, 30, 0, tzinfo=UTC),
         )
 
         result = self.filter.filter_orderbook(data2)

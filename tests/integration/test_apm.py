@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from app.alpha.regime_classifier import MarketRegime
 from app.execution.position_manager import (
-    APM_BREAKEVEN_FEE_PCT,
     REGIME_SHIFT_CONFIRM_COUNT,
     ActivePositionManager,
 )
@@ -40,7 +39,7 @@ def _make_pos(
         "sl_order_id": sl_order_id,
         "amount": amount,
         "entry_regime": entry_regime,
-        "entry_time": datetime.now(timezone.utc) - timedelta(minutes=10),
+        "entry_time": datetime.now(UTC) - timedelta(minutes=10),
         "max_hold_time_mins": max_hold,
         "current_sl": "95.0",
     }
@@ -128,7 +127,7 @@ class TestTimeExit:
         apm, client, store, regime, alert = _make_apm()
         pos = _make_pos(entry_regime="CHOP", max_hold=30)
         # Position held for 60 min
-        pos["entry_time"] = datetime.now(timezone.utc) - timedelta(minutes=60)
+        pos["entry_time"] = datetime.now(UTC) - timedelta(minutes=60)
         await apm._manage_single_position(pos)
         client.create_market_order.assert_called()
 

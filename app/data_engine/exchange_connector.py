@@ -82,6 +82,32 @@ class ExchangeConnector:
     ) -> None:
         self.exchange_id = exchange_id
         self.exchange = _make_exchange(exchange_id, api_key, api_secret, sandbox=sandbox)
+        self._markets_loaded = False
+
+    async def _ensure_markets(self) -> None:
+        """Load exchange markets once on first use for symbol resolution."""
+        if not self._markets_loaded:
+            await self.exchange.load_markets()
+            self._markets_loaded = True
+            logger.info("ExchangeConnector: loaded %d markets for %s", len(self.exchange.markets), self.exchange_id)
+
+    def _resolve_symbol(self, symbol: str) -> str:
+        """Resolve short symbol (e.g. 'BTC/USDT') to full perpetual form ('BTC/USDT:USDT').
+
+        Handles the universe scanner output format where :USDT suffix is stripped.
+        """
+        # Already has swap suffix — return as-is
+        if ":USDT" in symbol:
+            return symbol
+
+        # Try common perpetual suffixes
+        for suffix in (":USDT", ":USDC"):
+            candidate = f"{symbol}{suffix}"
+            if candidate in self.exchange.markets:
+                return candidate
+
+        # Fallback: return original, let ccxt raise if truly invalid
+        return symbol
 
     async def close(self) -> None:
         """Close the underlying exchange connection."""
@@ -107,10 +133,14 @@ class ExchangeConnector:
             List of [timestamp_ms, open, high, low, close, volume] lists.
             Returns empty list on persistent failure.
         """
+        # Load markets once so _resolve_symbol can map short forms to perpetual symbols
+        await self._ensure_markets()
+        resolved = self._resolve_symbol(symbol)
+
         for attempt in range(_MAX_RETRIES):
             try:
                 candles = await self.exchange.fetch_ohlcv(
-                    symbol, timeframe, since=since, limit=limit
+                    resolved, timeframe, since=since, limit=limit
                 )
                 return candles  # type: ignore[no-any-return]
             except Exception as exc:
@@ -125,11 +155,11 @@ class ExchangeConnector:
                     backoff = _BASE_BACKOFF_S * (2 ** attempt)
                     logger.warning(
                         "fetch_ohlcv error on %s %s (attempt %d/%d): %s — retrying in %.1fs",
-                        self.exchange_id, symbol, attempt + 1, _MAX_RETRIES, exc, backoff,
+                        self.exchange_id, resolved, attempt + 1, _MAX_RETRIES, exc, backoff,
                     )
                 await asyncio.sleep(backoff)
 
-        logger.error("fetch_ohlcv failed after %d retries for %s %s", _MAX_RETRIES, self.exchange_id, symbol)
+        logger.error("fetch_ohlcv failed after %d retries for %s %s", _MAX_RETRIES, self.exchange_id, resolved)
         return []
 
     async def fetch_all_candles(

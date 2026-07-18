@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Dict
-
 from loguru import logger
-
 
 # Static mapping: symbol → sector
 # Stablecoins intentionally excluded (not tradeable)
-SECTOR_MAP: Dict[str, str] = {
+SECTOR_MAP: dict[str, str] = {
     # Tier 1 — Majors (own sector)
     "BTC/USDT": "MAJORS",
     "ETH/USDT": "MAJORS",

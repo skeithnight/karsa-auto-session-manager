@@ -506,30 +506,31 @@ karsa_shadow_limit_orders_unfilled_total = Counter(
 
 def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
     """Helper to sum prometheus metric values across all labels via Prometheus API."""
-    import urllib.request
-    import urllib.parse
     import json
+    import urllib.parse
+    import urllib.request
+
     from loguru import logger
-    
+
     total = 0.0
     try:
         query_name = metric_name
         if is_counter and not query_name.endswith("_total"):
             query_name += "_total"
-            
+
         url = f"http://prometheus:9090/api/v1/query?query={urllib.parse.quote(query_name)}"
         req = urllib.request.Request(url)
-        
+
         with urllib.request.urlopen(req, timeout=2.0) as response:
             data = json.loads(response.read())
-            
+
         if data.get("status") == "success":
             for res in data.get("data", {}).get("result", []):
                 val_str = res.get("value", [0, "0"])[1]
                 total += float(val_str)
     except Exception as e:
         logger.error(f"Failed to fetch {metric_name} from Prometheus: {e}")
-        
+
     return total
 
 def get_funnel_metrics() -> dict:

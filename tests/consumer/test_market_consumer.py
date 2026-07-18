@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.consumer.market_consumer import MarketConsumer, _CHANNEL_RE
+from app.consumer.market_consumer import _CHANNEL_RE, MarketConsumer
 
 
 class TestChannelRegex:

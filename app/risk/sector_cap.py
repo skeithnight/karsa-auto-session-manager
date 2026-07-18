@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Dict
-
 from loguru import logger
 
 from app.core.position_store import PositionStore
@@ -21,10 +19,10 @@ class SectorCap:
         self.position_store = position_store
         self.max_per_sector = max_per_sector
 
-    async def _count_by_sector(self) -> Dict[str, int]:
+    async def _count_by_sector(self) -> dict[str, int]:
         """Count active positions per sector."""
         positions = await self.position_store.list_all()
-        counts: Dict[str, int] = {}
+        counts: dict[str, int] = {}
         for pos in positions:
             sector = get_sector(pos.get("symbol", ""))
             counts[sector] = counts.get(sector, 0) + 1
@@ -50,7 +48,7 @@ class SectorCap:
         logger.debug(f"Sector cap: {sector} at {current}/{self.max_per_sector}, allowing {symbol}")
         return True
 
-    async def get_status(self) -> Dict[str, Dict[str, int]]:
+    async def get_status(self) -> dict[str, dict[str, int]]:
         """Get current sector allocation for status display."""
         counts = await self._count_by_sector()
         return {sector: {"current": count, "max": self.max_per_sector} for sector, count in counts.items()}

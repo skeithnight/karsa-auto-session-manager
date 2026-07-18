@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import time
 from collections import defaultdict, deque
-from typing import Optional
 
 from loguru import logger
 
@@ -36,7 +35,7 @@ class LeadLagBuffer:
         while buf and buf[0][0] < now - self.window_seconds:
             buf.popleft()
 
-    def get_lead_lag_delta(self, symbol: str, lead: str = "binance", lag: str = "bybit") -> Optional[float]:
+    def get_lead_lag_delta(self, symbol: str, lead: str = "binance", lag: str = "bybit") -> float | None:
         """Return lead 15m return minus lag 15m return.
 
         Positive = lead outperforming → lag likely to catch up.
@@ -54,7 +53,7 @@ class LeadLagBuffer:
         logger.debug(f"get_lead_lag_delta: returning {delta:.6f}")
         return delta
 
-    def _return(self, symbol: str, exchange: str) -> Optional[float]:
+    def _return(self, symbol: str, exchange: str) -> float | None:
         """15-min return for a symbol/exchange pair."""
         buf = self._buffers[symbol][exchange]
         if len(buf) < 2:

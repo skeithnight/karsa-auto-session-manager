@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Optional
 
 import aiohttp
 from loguru import logger
@@ -32,7 +31,7 @@ class AIClient:
         self.model = model
         self.timeout_seconds = timeout_seconds
         self.max_retries = max_retries
-        self._session: Optional[aiohttp.ClientSession] = None
+        self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
@@ -50,7 +49,7 @@ class AIClient:
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.0,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Send chat completion request. Returns response text or None on failure."""
         session = await self._get_session()
         start_time = time.monotonic()
@@ -100,7 +99,7 @@ class AIClient:
                     logger.warning(f"AI server error {resp.status}, retry {attempt + 1}/{self.max_retries} in {wait}s")
                     await asyncio.sleep(wait)
 
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = "timeout"
                 metrics.ai_analyst_calls.labels(result="timeout").inc()
                 logger.warning(f"AI timeout, retry {attempt + 1}/{self.max_retries}")

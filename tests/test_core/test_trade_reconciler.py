@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -64,7 +64,7 @@ def _make_bybit_fill(
     """Create a Bybit execution record."""
     if exec_time is None:
         exec_time = int(
-            (datetime.now(timezone.utc) - timedelta(hours=1)).timestamp() * 1000
+            (datetime.now(UTC) - timedelta(hours=1)).timestamp() * 1000
         )
     return {
         "execId": "exec1",
@@ -90,7 +90,7 @@ def _make_local_trade(
 ):
     """Create a local trade record dict."""
     if entry_time is None:
-        entry_time = datetime.now(timezone.utc) - timedelta(hours=1)
+        entry_time = datetime.now(UTC) - timedelta(hours=1)
     return {
         "id": trade_id,
         "symbol": symbol,
@@ -165,7 +165,7 @@ class TestReconcileClean:
         self, reconciler, mock_bybit, mock_store
     ):
         """Bybit fill matches local trade — no discrepancy."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=1)
         fill = _make_bybit_fill(exec_time=int(exec_time.timestamp() * 1000))
         local = _make_local_trade(entry_time=exec_time)
@@ -191,7 +191,7 @@ class TestMissingEntry:
     @pytest.mark.asyncio
     async def test_detects_missing_entry(self, reconciler, mock_bybit, mock_store):
         """Bybit fill with no local trade — missing_entry."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=2)
         fill = _make_bybit_fill(exec_time=int(exec_time.timestamp() * 1000))
 
@@ -212,7 +212,7 @@ class TestMissingEntry:
     @pytest.mark.asyncio
     async def test_auto_repairs_missing_entry(self, reconciler, mock_bybit, mock_store):
         """Missing entry gets auto-repaired."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=2)
         fill = _make_bybit_fill(
             price="64000.00",
@@ -243,7 +243,7 @@ class TestMissingEntry:
     @pytest.mark.asyncio
     async def test_max_repairs_guard(self, reconciler, mock_bybit, mock_store):
         """If more than MAX_REPAIRS_PER_CYCLE missing, skip auto-repair."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=2)
         fills = [
             _make_bybit_fill(
@@ -279,7 +279,7 @@ class TestMissingExit:
     @pytest.mark.asyncio
     async def test_detects_missing_exit(self, reconciler, mock_bybit, mock_store):
         """Bybit closed PnL with no local exit — missing_exit (CRITICAL)."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry_time = now - timedelta(hours=3)
         local = _make_local_trade(entry_time=entry_time, exit_time=None)  # Still open
         closed_pnl = {
@@ -311,7 +311,7 @@ class TestMissingExit:
         self, reconciler, mock_bybit, mock_store, mock_alert
     ):
         """CRITICAL discrepancy triggers Telegram alert."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry_time = now - timedelta(hours=3)
         local = _make_local_trade(entry_time=entry_time, exit_time=None)
         closed_pnl = {
@@ -347,7 +347,7 @@ class TestPriceMismatch:
     @pytest.mark.asyncio
     async def test_detects_price_mismatch(self, reconciler, mock_bybit, mock_store):
         """Bybit fill price differs >0.1% from local — price_mismatch."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=1)
         fill = _make_bybit_fill(
             price="65000.00", exec_time=int(exec_time.timestamp() * 1000)
@@ -373,7 +373,7 @@ class TestPriceMismatch:
         self, reconciler, mock_bybit, mock_store
     ):
         """Price within 0.1% tolerance — no mismatch."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=1)
         fill = _make_bybit_fill(
             price="64050.00", exec_time=int(exec_time.timestamp() * 1000)
@@ -400,7 +400,7 @@ class TestGracePeriod:
     @pytest.mark.asyncio
     async def test_skips_recent_fills(self, reconciler, mock_bybit, mock_store):
         """Fills within grace period (5min) are skipped."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         recent_time = now - timedelta(minutes=2)  # Within grace
         fill = _make_bybit_fill(exec_time=int(recent_time.timestamp() * 1000))
 
@@ -425,7 +425,7 @@ class TestMultipleFills:
     @pytest.mark.asyncio
     async def test_aggregates_partial_fills(self, reconciler, mock_bybit, mock_store):
         """Multiple fills for same order aggregated before matching."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=2)
         ts = int(exec_time.timestamp() * 1000)
         fill1 = _make_bybit_fill(
@@ -471,7 +471,7 @@ class TestErrorHandling:
     @pytest.mark.asyncio
     async def test_repair_failure_continues(self, reconciler, mock_bybit, mock_store):
         """Repair failure for one entry doesn't block others."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         exec_time = now - timedelta(hours=2)
         ts = int(exec_time.timestamp() * 1000)
         fill1 = _make_bybit_fill(order_id="o1", exec_time=ts)
@@ -502,7 +502,7 @@ class TestBackfill:
         self, reconciler, mock_bybit, mock_store
     ):
         """Backfill inserts trades for Bybit records with no local match."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         ts = int((now - timedelta(hours=2)).timestamp() * 1000)
         closed_pnl = {
             "symbol": "BTCUSDT",
@@ -535,7 +535,7 @@ class TestBackfill:
         self, reconciler, mock_bybit, mock_store
     ):
         """Backfill skips Bybit records that already exist locally."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry_time = now - timedelta(hours=2)
         ts = int(entry_time.timestamp() * 1000)
         closed_pnl = {
@@ -582,7 +582,7 @@ class TestMissingExitRepair:
     @pytest.mark.asyncio
     async def test_auto_repairs_missing_exit(self, reconciler, mock_bybit, mock_store):
         """Missing exit gets auto-repaired with record_full_trade."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         entry_time = now - timedelta(hours=3)
         local = _make_local_trade(entry_time=entry_time, exit_time=None)
         closed_pnl = {

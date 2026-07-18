@@ -8,7 +8,7 @@ Decimal for storage, matching the project's money-is-Decimal rule.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -53,7 +53,7 @@ def _candle_to_row(
         with prices as Decimals.
     """
     ts_ms, open_p, high_p, low_p, close_p, volume = candle
-    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
+    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
 
     return (
         symbol,

@@ -156,11 +156,11 @@ def _start_ingestor(
 async def main() -> None:  # noqa: PLR0915
     _configure_logging()
     settings = get_settings()
-    
+
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
         start_http_server(int(prom_port))
-        
+
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:

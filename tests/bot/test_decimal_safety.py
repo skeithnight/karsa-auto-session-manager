@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.bot.utils.formatters import format_price, format_position_card
+from app.bot.utils.formatters import format_position_card, format_price
 
 
 class TestDecimalSafety:

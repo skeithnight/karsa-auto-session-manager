@@ -8,9 +8,8 @@ Mirrors ShadowAPM's worst_price_seen / funding / fee logic exactly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Optional
 
 import numpy as np
 from loguru import logger
@@ -31,10 +30,10 @@ class BacktestReport:
     regime: MarketRegime
     score: float
     entry_price: Decimal
-    exit_price: Optional[Decimal]
-    exit_reason: Optional[str]
-    sl_price: Optional[Decimal]
-    tp_price: Optional[Decimal]
+    exit_price: Decimal | None
+    exit_reason: str | None
+    sl_price: Decimal | None
+    tp_price: Decimal | None
     amount: Decimal
     size_multiplier: Decimal
     pnl_gross: Decimal
@@ -42,8 +41,8 @@ class BacktestReport:
     total_fees: Decimal
     total_funding: Decimal
     bars_held: int
-    entry_time: Optional[datetime]
-    exit_time: Optional[datetime]
+    entry_time: datetime | None
+    exit_time: datetime | None
     risk_profile: RiskProfile
     trade_taken: bool
 
@@ -203,7 +202,7 @@ class BacktestEngine:
         last_funding_bar = entry_candle_idx
         bars_held = 0
         ts_ms = entry_candle[0]
-        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
+        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
 
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
@@ -307,7 +306,7 @@ class BacktestEngine:
     def _compute_tp_price(
         self, entry_price: Decimal, direction: str, atr: Decimal,
         trail_mult: Decimal, tp_type: str,
-    ) -> Optional[Decimal]:
+    ) -> Decimal | None:
         if tp_type == "TRAILING":
             return None
         offset = atr * trail_mult
@@ -322,7 +321,7 @@ class BacktestEngine:
         entry_time, exit_ts_ms, bars_held,
         accumulated_funding,
     ) -> BacktestReport:
-        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc)
+        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=UTC)
 
         if direction == "LONG":
             pnl_gross = (exit_price - entry_price) * amount

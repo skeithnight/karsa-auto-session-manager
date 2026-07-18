@@ -9,9 +9,9 @@ Change: switch from ast.literal_eval(str(dict)) to json.dumps/loads for safety.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -38,13 +38,13 @@ class PositionStore:
         side: str,
         entry_price: Decimal,
         amount: Decimal,
-        sl_order_id: Optional[str] = None,
-        atr: Optional[Decimal] = None,
-        entry_confidence: Optional[float] = None,
-        regime: Optional[str] = None,
-        entry_regime: Optional[str] = None,
-        initial_risk_per_unit: Optional[str] = None,
-        risk_profile_json: Optional[str] = None,
+        sl_order_id: str | None = None,
+        atr: Decimal | None = None,
+        entry_confidence: float | None = None,
+        regime: str | None = None,
+        entry_regime: str | None = None,
+        initial_risk_per_unit: str | None = None,
+        risk_profile_json: str | None = None,
     ) -> None:
         """Save new position state."""
         key = self._key(symbol, side)
@@ -59,8 +59,8 @@ class PositionStore:
             "entry_confidence": str(entry_confidence) if entry_confidence is not None else "",
             "regime": regime or "",
             "checkpoint": "OPEN",
-            "entered_at": datetime.now(timezone.utc).isoformat(),
-            "last_check_at": datetime.now(timezone.utc).isoformat(),
+            "entered_at": datetime.now(UTC).isoformat(),
+            "last_check_at": datetime.now(UTC).isoformat(),
             "entry_regime": entry_regime or regime or "",
             "initial_risk_per_unit": initial_risk_per_unit or "",
             "risk_profile_json": risk_profile_json or "",
@@ -68,7 +68,7 @@ class PositionStore:
         await self.redis.set(key, json.dumps(data))
         logger.info(f"Position saved: {symbol} {side} @ {entry_price}")
 
-    async def get(self, symbol: str, side: str) -> Optional[Dict[str, Any]]:
+    async def get(self, symbol: str, side: str) -> dict[str, Any] | None:
         """Get position state."""
         key = self._key(symbol, side)
         raw = await self.redis.get(key)
@@ -87,7 +87,7 @@ class PositionStore:
         peak = Decimal(pos.get("peak_price", "0"))
         if price > peak:
             pos["peak_price"] = str(price)
-            pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
+            pos["last_check_at"] = datetime.now(UTC).isoformat()
             await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_sl(self, symbol: str, side: str, sl_order_id: str) -> None:
@@ -96,7 +96,7 @@ class PositionStore:
         if not pos:
             return
         pos["sl_order_id"] = sl_order_id
-        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
+        pos["last_check_at"] = datetime.now(UTC).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_checkpoint(self, symbol: str, side: str, checkpoint: str) -> None:
@@ -105,7 +105,7 @@ class PositionStore:
         if not pos:
             return
         pos["checkpoint"] = checkpoint
-        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
+        pos["last_check_at"] = datetime.now(UTC).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def remove(self, symbol: str, side: str) -> None:
@@ -114,7 +114,7 @@ class PositionStore:
         await self.redis.delete(key)
         logger.info(f"Position removed: {symbol} {side}")
 
-    async def has_position(self, symbol: str, side: Optional[str] = None) -> bool:
+    async def has_position(self, symbol: str, side: str | None = None) -> bool:
         """Check if position exists."""
         if side:
             return await self.get(symbol, side) is not None
@@ -122,7 +122,7 @@ class PositionStore:
         short_pos = await self.get(symbol, "sell")
         return long_pos is not None or short_pos is not None
 
-    async def list_all(self) -> list[Dict[str, Any]]:
+    async def list_all(self) -> list[dict[str, Any]]:
         """List all active positions."""
         keys = await self.redis.keys("karsa:position:*")
         positions = []

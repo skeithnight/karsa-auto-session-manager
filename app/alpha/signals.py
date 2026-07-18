@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 from uuid import uuid4
 
 from loguru import logger
@@ -19,8 +19,8 @@ class TradingSignal:
         direction: str,
         confidence: float,
         size: Decimal,
-        metrics: Optional[Dict[str, Any]] = None,
-        atr: Optional[Decimal] = None,
+        metrics: dict[str, Any] | None = None,
+        atr: Decimal | None = None,
     ) -> None:
         logger.debug(f"TradingSignal.__init__: entering symbol={symbol}")
         self.id = str(uuid4())
@@ -29,11 +29,11 @@ class TradingSignal:
         self.confidence = confidence  # 0.0 - 1.0
         self.size = size
         self.metrics = metrics or {}
-        self.generated_at = datetime.now(timezone.utc)
+        self.generated_at = datetime.now(UTC)
         self.atr = atr  # 1H ATR for position lifecycle (trailing stop, partial TP)
         logger.debug("TradingSignal.__init__: returning")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         logger.debug("to_dict: entering")
         result = {
             "id": self.id,
@@ -75,7 +75,7 @@ class SignalGenerator:
     # Trend: follow skew/lead-lag, suppress contrarian funding
     # Mean-reversion: amplify contrarian funding, reduce lead-lag
     # CHOP: funding-heavy contrarian, minimal lead-lag
-    REGIME_WEIGHTS: Dict[str, tuple[float, float, float, float]] = {
+    REGIME_WEIGHTS: dict[str, tuple[float, float, float, float]] = {
         "TREND_BULL": (0.4, 0.3, 0.05, 0.25),
         "TREND_BEAR": (0.4, 0.3, 0.05, 0.25),
         "MEAN_REVERSION": (0.3, 0.2, 0.4, 0.1),
@@ -86,14 +86,14 @@ class SignalGenerator:
     def generate(
         self,
         symbol: str,
-        global_vwap: Optional[Decimal],
+        global_vwap: Decimal | None,
         aggregate_skew: float,
-        regime: Optional[str] = None,
-        lead_lag_delta: Optional[float] = None,
-        funding_rate: Optional[float] = None,
-        oi_change: Optional[float] = None,
-        strategy_score: Optional[float] = None,
-    ) -> Optional[TradingSignal]:
+        regime: str | None = None,
+        lead_lag_delta: float | None = None,
+        funding_rate: float | None = None,
+        oi_change: float | None = None,
+        strategy_score: float | None = None,
+    ) -> TradingSignal | None:
         """Generate trading signal from composite multi-signal confidence.
 
         confidence = regime_mult × (0.4×S_skew + 0.3×S_lead_lag + 0.2×S_funding + 0.1×S_oi)

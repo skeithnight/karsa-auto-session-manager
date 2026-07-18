@@ -8,17 +8,14 @@ Separate namespace from live stores — zero collision risk.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Optional
 
 from loguru import logger
 from sqlalchemy import text
 
 from app.core import metrics
-from app.core.database import DatabaseEngine
 from app.core.position_store import PositionStore
-from app.core.redis_client import RedisClient
 from app.core.trade_store import TradeStore
 
 
@@ -42,14 +39,14 @@ class ShadowTradeStore(TradeStore):
         side: str,
         amount: Decimal,
         entry_price: Decimal,
-        regime: Optional[str] = None,
-        ai_confidence: Optional[int] = None,
-        entry_regime: Optional[str] = None,
-        initial_risk_per_unit: Optional[Decimal] = None,
-        risk_profile_json: Optional[str] = None,
+        regime: str | None = None,
+        ai_confidence: int | None = None,
+        entry_regime: str | None = None,
+        initial_risk_per_unit: Decimal | None = None,
+        risk_profile_json: str | None = None,
     ) -> int:
         """Record shadow trade entry. Returns trade id."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             async with self.db.engine.connect() as conn:
                 result = await conn.execute(
@@ -91,11 +88,11 @@ class ShadowTradeStore(TradeStore):
         exit_price: Decimal,
         pnl: Decimal,
         exit_reason: str,
-        trade_id: Optional[int] = None,
-        regime: Optional[str] = None,
+        trade_id: int | None = None,
+        regime: str | None = None,
     ) -> int:
         """Close shadow trade. Updates most recent open shadow trade for symbol."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         regime_clause = ", regime = :regime" if regime else ""
         try:
             async with self.db.engine.connect() as conn:

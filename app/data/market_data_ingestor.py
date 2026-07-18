@@ -106,7 +106,7 @@ class MarketDataIngestor:
         """Fetch orderbook, funding, OI for a single symbol."""
         if not self._session:
             return
-        
+
         ccxt_sym = self._to_ccxt_symbol(symbol)
 
         try:

@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.core.state import StateManager, Position
 from app.core.redis_client import RedisClient
+from app.core.state import Position, StateManager
 from app.execution.bybit_client import BybitClient
 
 

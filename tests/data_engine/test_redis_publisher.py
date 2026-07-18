@@ -7,6 +7,7 @@ with strict Decimal-to-string serialization.
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from decimal import Decimal
 from unittest.mock import AsyncMock
 
@@ -24,9 +25,9 @@ class TestDecimalEncoder:
         assert json.dumps({"price": Decimal("100.123")}, cls=DecimalEncoder) == '{"price": "100.123"}'
 
     def test_datetime_to_iso(self) -> None:
-        from datetime import datetime, timezone
+        from datetime import datetime
 
-        dt = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+        dt = datetime(2025, 1, 15, 12, 0, 0, tzinfo=UTC)
         assert json.dumps({"ts": dt}, cls=DecimalEncoder) == '{"ts": "2025-01-15T12:00:00+00:00"}'
 
     def test_int_passthrough(self) -> None:

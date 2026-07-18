@@ -5,7 +5,7 @@ Mocks CCXT and asyncpg to test pagination, normalization, and error handling.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,11 +13,10 @@ import pytest
 from scripts.ingest_historical_candles import (
     _standardize_symbol,
     _timeframe_to_ms,
-    fetch_candles_range,
-    fetch_all_candles_for_symbol,
     bulk_upsert_candles,
+    fetch_all_candles_for_symbol,
+    fetch_candles_range,
 )
-
 
 # ── Test _standardize_symbol ───────────────────────────────
 
@@ -202,7 +201,7 @@ class TestBulkUpsertCandles:
             {
                 "symbol": "BTC/USDT",
                 "timeframe": "1h",
-                "ts": datetime.now(timezone.utc),
+                "ts": datetime.now(UTC),
                 "open": "100.0",
                 "high": "102.0",
                 "low": "99.0",
@@ -232,7 +231,7 @@ class TestBulkUpsertCandles:
             {
                 "symbol": "BTC/USDT",
                 "timeframe": "1h",
-                "ts": datetime.now(timezone.utc),
+                "ts": datetime.now(UTC),
                 "open": "100.0",
                 "high": "102.0",
                 "low": "99.0",

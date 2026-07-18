@@ -9,11 +9,9 @@ import numpy as np
 import pytest
 
 from app.alpha.regime_classifier import (
-    MIN_CANDLES_FOR_CLASSIFICATION,
     MarketRegime,
     RegimeClassifier,
 )
-
 
 # ------------------------------------------------------------------
 # Fixtures

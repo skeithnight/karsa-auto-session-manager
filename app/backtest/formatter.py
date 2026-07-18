@@ -12,6 +12,7 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass, field
 from decimal import Decimal
+from typing import Any
 
 from app.backtest.orchestrator import BacktestJobStatus, BacktestTradeResult
 
@@ -209,30 +210,30 @@ def _format_equity_spark(trades: list[BacktestTradeResult]) -> list[str]:
 def format_bulk_backtest_summary(results: list[BacktestTradeResult], bulk_id: str, status: dict[str, Any]) -> str:
     """Render a telegram alert for a completed bulk backtest."""
     lines = [
-        f"🚀 <b>BULK BACKTEST COMPLETED</b>",
+        "🚀 <b>BULK BACKTEST COMPLETED</b>",
         f"<pre>Job ID : {bulk_id[:8]}",
         f"Symbols: {status.get('total', 0)}",
         f"Failed : {status.get('failed', 0)}</pre>",
         ""
     ]
-    
+
     if not results:
         lines.append("No trades taken across all symbols.")
         return "\n".join(lines)
-        
+
     s = compute_backtest_summary(results)
-    
+
     lines.append("📊 <b>Aggregated Performance</b>")
     lines.append("<pre>")
     lines.append(f"Trades   : {s.trades_taken}")
     lines.append(f"Win Rate : {s.win_rate:.1f}% ({s.winning_trades}W / {s.losing_trades}L)")
     lines.append(f"Net PnL  : ${float(s.net_pnl):.2f}")
-    
+
     pf_str = f"{s.profit_factor:.2f}" if s.profit_factor != float("inf") else "∞"
     lines.append(f"Prf Fctr : {pf_str}")
     lines.append(f"Avg Hold : {s.avg_bars_held:.0f} bars")
     lines.append("</pre>")
-    
+
     return "\n".join(lines)
 
 

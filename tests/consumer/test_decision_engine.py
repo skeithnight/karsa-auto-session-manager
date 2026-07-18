@@ -11,7 +11,6 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-
 from app.alpha.regime_classifier import MarketRegime
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
 

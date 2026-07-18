@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.redis_client import RedisClient, DecimalEncoder
+from app.core.redis_client import DecimalEncoder, RedisClient
 
 
 @pytest.fixture

@@ -82,7 +82,7 @@ class StrategyRouter:
             )
             return 0.0
 
-        if regime == MarketRegime.TREND_BULL or regime == MarketRegime.TREND_BEAR:
+        if regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
             score = self._score_trend_strategy(candles, direction, global_prices)
         elif regime == MarketRegime.RANGE:
             score = self._score_range_strategy(candles, direction)
@@ -137,9 +137,7 @@ class StrategyRouter:
         rolling_high = float(np.max(highs[-21:-1]))  # exclude current bar
         rolling_low = float(np.min(lows[-21:-1]))
 
-        if direction == "LONG" and last_close > rolling_high:
-            score += TREND_SCORE_BREAKOUT
-        elif direction == "SHORT" and last_close < rolling_low:
+        if direction == "LONG" and last_close > rolling_high or direction == "SHORT" and last_close < rolling_low:
             score += TREND_SCORE_BREAKOUT
 
         # Volume surge: current > 1.5x 20-bar SMA
@@ -158,9 +156,7 @@ class StrategyRouter:
                     direction == "LONG"
                     and binance_price > bybit_price
                     and okx_price > bybit_price
-                ):
-                    score += TREND_SCORE_GLOBAL_SYNC
-                elif (
+                ) or (
                     direction == "SHORT"
                     and binance_price < bybit_price
                     and okx_price < bybit_price
@@ -191,22 +187,16 @@ class StrategyRouter:
         lower_band = sma - 2.5 * std
 
         # BB edge: price pierced band
-        if direction == "SHORT" and last_high > upper_band:
-            score += RANGE_SCORE_BB_EDGE
-        elif direction == "LONG" and last_low < lower_band:
+        if direction == "SHORT" and last_high > upper_band or direction == "LONG" and last_low < lower_band:
             score += RANGE_SCORE_BB_EDGE
 
         # Wick rejection: closed back inside bands after piercing
-        if direction == "SHORT" and last_high > upper_band and last_close < upper_band:
-            score += RANGE_SCORE_WICK
-        elif direction == "LONG" and last_low < lower_band and last_close > lower_band:
+        if direction == "SHORT" and last_high > upper_band and last_close < upper_band or direction == "LONG" and last_low < lower_band and last_close > lower_band:
             score += RANGE_SCORE_WICK
 
         # RSI exhaustion (14-period, Wilder)
         rsi = StrategyRouter._calculate_rsi(closes, period=14)
-        if direction == "SHORT" and rsi > 75:
-            score += RANGE_SCORE_RSI
-        elif direction == "LONG" and rsi < 25:
+        if direction == "SHORT" and rsi > 75 or direction == "LONG" and rsi < 25:
             score += RANGE_SCORE_RSI
 
         return score
@@ -237,9 +227,7 @@ class StrategyRouter:
         #    Price dropping but bids absorbing (delta < 0) = LONG signal
         #    Price rising but asks absorbing (delta > 0) = SHORT signal
         if orderbook_delta is not None:
-            if direction == "LONG" and orderbook_delta < 0:
-                score += CHOP_SCORE_ORDERBOOK_ABSORPTION
-            elif direction == "SHORT" and orderbook_delta > 0:
+            if direction == "LONG" and orderbook_delta < 0 or direction == "SHORT" and orderbook_delta > 0:
                 score += CHOP_SCORE_ORDERBOOK_ABSORPTION
 
         # 2. Price wick snap-back: candle reversed back inside range (+20)
@@ -265,9 +253,7 @@ class StrategyRouter:
         #    Deeply negative funding but price won't drop = shorts trapped
         #    Deeply positive funding but price won't rise = longs trapped
         if funding_rate is not None:
-            if direction == "LONG" and funding_rate < -0.0005:
-                score += CHOP_SCORE_FUNDING_CONF
-            elif direction == "SHORT" and funding_rate > 0.0005:
+            if direction == "LONG" and funding_rate < -0.0005 or direction == "SHORT" and funding_rate > 0.0005:
                 score += CHOP_SCORE_FUNDING_CONF
 
         # 4. OI drop (capitulation): OI dropping during the move (+30)

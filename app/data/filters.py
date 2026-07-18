@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Dict
 
 from loguru import logger
 
@@ -17,8 +16,8 @@ class BadTickFilter:
     def __init__(self, max_price_change_pct: Decimal = Decimal("0.05")) -> None:
         logger.debug("BadTickFilter.__init__: entering")
         self.max_price_change_pct = max_price_change_pct
-        self.last_prices: Dict[str, Decimal] = {}
-        self.last_timestamps: Dict[str, datetime] = {}
+        self.last_prices: dict[str, Decimal] = {}
+        self.last_timestamps: dict[str, datetime] = {}
         logger.debug("BadTickFilter.__init__: returning")
 
     def is_bad_tick(self, data: ExchangeData) -> bool:

@@ -6,15 +6,14 @@ Covers wick detection, funding drag, pending fill/expiry, and state isolation.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.execution.shadow import ShadowAPM, ShadowExecutor
 from app.core.shadow_store import ShadowPositionStore
-
+from app.execution.shadow import ShadowAPM, ShadowExecutor
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -91,7 +90,7 @@ def _make_open_position(
 ) -> dict:
     """Build a typical OPEN position dict."""
     if last_funding_ts is None:
-        last_funding_ts = datetime.now(timezone.utc).isoformat()
+        last_funding_ts = datetime.now(UTC).isoformat()
     return {
         "symbol": symbol,
         "side": side,
@@ -119,7 +118,7 @@ def _make_pending_position(
 ) -> dict:
     """Build a typical PENDING_VIRTUAL_FILL position dict."""
     if pending_since is None:
-        pending_since = datetime.now(timezone.utc).isoformat()
+        pending_since = datetime.now(UTC).isoformat()
     return {
         "symbol": symbol,
         "side": side,
@@ -209,7 +208,7 @@ class TestShadowAPMFundingDrag:
         Position notional = 50500 * 1.0 = 50500.
         Funding fee = 50500 * 0.0001 = 5.05.
         """
-        nine_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=9)).isoformat()
+        nine_hours_ago = (datetime.now(UTC) - timedelta(hours=9)).isoformat()
         pos = _make_open_position(
             entry_price="50500",
             virtual_sl="40000",  # well below mid — no SL hit
@@ -234,7 +233,7 @@ class TestShadowAPMFundingDrag:
     @pytest.mark.asyncio
     async def test_no_funding_if_less_than_8h(self, shadow_apm, mock_executor, mock_pos_store, mock_redis):
         """last_funding_ts is 2 hours ago — no funding applied."""
-        two_hours_ago = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+        two_hours_ago = (datetime.now(UTC) - timedelta(hours=2)).isoformat()
         pos = _make_open_position(
             entry_price="50500",
             virtual_sl="40000",
@@ -303,7 +302,7 @@ class TestShadowAPMPendingExpiry:
         Position must be removed from the store without filling.
         """
         expired_since = (
-            datetime.now(timezone.utc) - timedelta(seconds=700)
+            datetime.now(UTC) - timedelta(seconds=700)
         ).isoformat()
         pos = _make_pending_position(pending_since=expired_since)
 
@@ -322,7 +321,7 @@ class TestShadowAPMPendingExpiry:
         Price not crossing entry — remains PENDING.
         """
         recent_since = (
-            datetime.now(timezone.utc) - timedelta(seconds=300)
+            datetime.now(UTC) - timedelta(seconds=300)
         ).isoformat()
         pos = _make_pending_position(pending_since=recent_since)
         # Mid far above entry for buy — won't fill

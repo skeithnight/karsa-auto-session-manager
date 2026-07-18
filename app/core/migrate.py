@@ -15,6 +15,7 @@ logger = logging.getLogger("karsa.migrate")
 def run_migrations() -> bool:
     """Run alembic upgrade head. Returns True on success."""
     from alembic.config import Config
+
     from alembic import command
 
     try:

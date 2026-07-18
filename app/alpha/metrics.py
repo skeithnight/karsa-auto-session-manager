@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import time
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
 
-def calculate_vwap(prices: List[Decimal], volumes: List[Decimal]) -> Optional[Decimal]:
+def calculate_vwap(prices: list[Decimal], volumes: list[Decimal]) -> Decimal | None:
     """Calculate Volume Weighted Average Price."""
     logger.debug("calculate_vwap: entering")
     if not prices or not volumes or len(prices) != len(volumes):
@@ -49,7 +49,7 @@ def calculate_lead_lag(
     reference_price: Decimal,
     follower_price: Decimal,
     window_seconds: int = 900,
-) -> Optional[Decimal]:
+) -> Decimal | None:
     """
     Calculate lead-lag between two exchanges.
 
@@ -74,8 +74,8 @@ class AlphaMetrics:
         self.lead_exchange = lead_exchange
         self.lag_exchange = lag_exchange
         self.exchange = exchange
-        self.price_history: Dict[str, List[Decimal]] = {}
-        self.volume_history: Dict[str, List[Decimal]] = {}
+        self.price_history: dict[str, list[Decimal]] = {}
+        self.volume_history: dict[str, list[Decimal]] = {}
         self._funding_cache: dict[str, tuple[float, Decimal]] = {}
         self._oi_cache: dict[str, tuple[float, Decimal]] = {}
         logger.debug("AlphaMetrics.__init__: returning")
@@ -97,7 +97,7 @@ class AlphaMetrics:
             self.volume_history[key] = self.volume_history[key][-100:]
         logger.debug("update: returning None")
 
-    def get_vwap(self, exchange: str) -> Optional[Decimal]:
+    def get_vwap(self, exchange: str) -> Decimal | None:
         """Get VWAP for an exchange."""
         logger.debug(f"get_vwap: entering exchange={exchange}")
         prices = self.price_history.get(exchange, [])
@@ -113,7 +113,7 @@ class AlphaMetrics:
         logger.debug("get_skew: returning Decimal")
         return result
 
-    def get_lead_lag(self) -> Optional[Decimal]:
+    def get_lead_lag(self) -> Decimal | None:
         """Get lead-lag between lead and lag exchanges."""
         logger.debug("get_lead_lag: entering")
         lead_prices = self.price_history.get(self.lead_exchange, [])
@@ -129,7 +129,7 @@ class AlphaMetrics:
 
     # --- Funding Rate (Phase 2B) ---
 
-    async def get_funding_rate(self, symbol: str) -> Optional[Decimal]:
+    async def get_funding_rate(self, symbol: str) -> Decimal | None:
         """Fetch funding rate from Bybit. Cached 5 min. Contrarian signal."""
         logger.debug(f"get_funding_rate: entering symbol={symbol}")
         now = time.time()
@@ -153,7 +153,7 @@ class AlphaMetrics:
             logger.error(f"get_funding_rate failed: {symbol}: {e}")
             return None
 
-    async def get_open_interest(self, symbol: str) -> Optional[Decimal]:
+    async def get_open_interest(self, symbol: str) -> Decimal | None:
         """Fetch open interest from Bybit. Cached 5 min."""
         logger.debug(f"get_open_interest: entering symbol={symbol}")
         now = time.time()

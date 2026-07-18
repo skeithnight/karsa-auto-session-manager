@@ -7,10 +7,9 @@ Internal float math for speed. Used by analyst.py and position_judge.py.
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import List, Optional, Tuple
 
 
-def calculate_ema(closes: List[Decimal], period: int = 200) -> Optional[Decimal]:
+def calculate_ema(closes: list[Decimal], period: int = 200) -> Decimal | None:
     """Exponential Moving Average."""
     if len(closes) < period:
         return None
@@ -23,7 +22,7 @@ def calculate_ema(closes: List[Decimal], period: int = 200) -> Optional[Decimal]
     return Decimal(str(round(ema, 8)))
 
 
-def calculate_rsi(closes: List[Decimal], period: int = 14) -> Optional[Decimal]:
+def calculate_rsi(closes: list[Decimal], period: int = 14) -> Decimal | None:
     """Relative Strength Index (Wilder's smoothing)."""
     if len(closes) < period + 1:
         return None
@@ -50,10 +49,10 @@ def calculate_rsi(closes: List[Decimal], period: int = 14) -> Optional[Decimal]:
 
 
 def calculate_bollinger_bands(
-    closes: List[Decimal],
+    closes: list[Decimal],
     period: int = 20,
     std_dev_mult: Decimal = Decimal("2"),
-) -> Optional[Tuple[Decimal, Decimal, Decimal]]:
+) -> tuple[Decimal, Decimal, Decimal] | None:
     """Bollinger Bands: (upper, middle, lower)."""
     if len(closes) < period:
         return None
@@ -75,18 +74,18 @@ def calculate_bollinger_bands(
 
 
 def calculate_macd(
-    closes: List[Decimal],
+    closes: list[Decimal],
     fast_period: int = 12,
     slow_period: int = 26,
     signal_period: int = 9,
-) -> Optional[Tuple[Decimal, Decimal, Decimal]]:
+) -> tuple[Decimal, Decimal, Decimal] | None:
     """MACD: (macd_line, signal_line, histogram)."""
     if len(closes) < slow_period + signal_period:
         return None
 
     floats = [float(c) for c in closes]
 
-    def _ema(values: List[float], period: int) -> List[float]:
+    def _ema(values: list[float], period: int) -> list[float]:
         k = 2 / (period + 1)
         result = [values[0]]
         for v in values[1:]:
@@ -110,11 +109,11 @@ def calculate_macd(
 
 
 def calculate_atr(
-    highs: List[Decimal],
-    lows: List[Decimal],
-    closes: List[Decimal],
+    highs: list[Decimal],
+    lows: list[Decimal],
+    closes: list[Decimal],
     period: int = 14,
-) -> Optional[Decimal]:
+) -> Decimal | None:
     """Average True Range (Wilder's smoothing)."""
     if len(closes) < period + 1:
         return None

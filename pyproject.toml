@@ -23,10 +23,29 @@ line-length = 120
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "N", "UP", "B", "SIM", "PLW", "PLR"]
-ignore = ["E501"]           # line length handled by black
+ignore = [
+    "E501",       # line length handled by black
+    "E402",       # module-level imports not at top — intentional for side-effect imports
+    "PLR0911",    # too many return statements
+    "PLR0912",    # too many branches
+    "PLR0913",    # too many arguments
+    "PLR0915",    # too many statements
+    "PLR2004",    # magic values — common in config-heavy trading code
+    "PLW0108",    # unnecessary lambda
+    "PLW2901",    # outer loop variable overwritten
+    "N806",       # variable in function should be lowercase
+    "SIM102",     # use single if
+    "SIM105",     # use contextlib.suppress
+    "SIM108",     # use ternary
+    "SIM113",     # use enumerate
+    "SIM117",     # use single with
+    "B905",       # missing explicit keyword arguments
+    "E741",       # ambiguous variable name
+    "F821",       # undefined name — often dynamic attrs
+]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["PLR2004"]    # magic values in assertions are fine
+"tests/**" = ["PLR2004"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]

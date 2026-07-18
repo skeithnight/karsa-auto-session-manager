@@ -4,6 +4,7 @@ Ported from karsa-claude-trading src/utils/formatters/trade_history_formatter.py
 No import changes needed — uses only telegram and stdlib.
 """
 from __future__ import annotations
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
@@ -33,7 +34,7 @@ class TradeHistoryFormatter:
         ts = exit_time.strftime("%m-%d") if exit_time else "?"
         if len(reason) > 12:
             reason = reason[:9] + "..."
-            
+
         # Format as row inside a full pre block
         return f"{icon} {symbol:<10} {pnl_str:<8} {ts:<5} {reason:<12}"
 
@@ -74,7 +75,7 @@ class TradeHistoryFormatter:
             table_lines.append("   " + "-" * 37)
             for t in trades:
                 table_lines.append(TradeHistoryFormatter.format_trade(t))
-            
+
             from app.bot.utils.format import pre
             lines.append(pre("\n".join(table_lines)))
         lines.append("")

@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from datetime import UTC, datetime
+from typing import Any
 
 from loguru import logger
 
@@ -24,9 +24,9 @@ class Watchdog:
     def __init__(
         self,
         redis_client: Any,
-        alpha_paused: Optional[asyncio.Event] = None,
+        alpha_paused: asyncio.Event | None = None,
         sor: Any = None,
-        kill_switch: Optional[asyncio.Event] = None,
+        kill_switch: asyncio.Event | None = None,
         check_interval: int = 10,
     ) -> None:
         logger.debug("Watchdog.__init__: entering")
@@ -35,7 +35,7 @@ class Watchdog:
         self.sor = sor
         self.kill_switch = kill_switch
         self.check_interval = check_interval
-        self.last_heartbeat: Optional[datetime] = None
+        self.last_heartbeat: datetime | None = None
         self.max_heartbeat_age: int = 30  # seconds
         self.max_event_loop_lag: float = 0.1  # 100ms
         self.running = False
@@ -49,7 +49,7 @@ class Watchdog:
         self._max_lag_streak: int = 3  # 3 consecutive >100ms = 30s sustained
 
         # Critical task liveness registry
-        self._critical_tasks: Dict[str, asyncio.Task] = {}
+        self._critical_tasks: dict[str, asyncio.Task] = {}
 
         logger.debug("Watchdog.__init__: returning")
 
@@ -111,7 +111,7 @@ class Watchdog:
             logger.debug("_check_heartbeat: returning None")
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         stale_exchanges = []
         for exchange, ts in heartbeats.items():
             try:
@@ -128,11 +128,10 @@ class Watchdog:
                 self.alpha_paused.set()
                 metrics.alpha_bridge_paused.set(1)
                 logger.warning("Alpha Bridge PAUSED — stale data")
-        else:
-            if self.alpha_paused and self.alpha_paused.is_set():
-                self.alpha_paused.clear()
-                metrics.alpha_bridge_paused.set(0)
-                logger.info("Alpha Bridge RESUMED — heartbeats fresh")
+        elif self.alpha_paused and self.alpha_paused.is_set():
+            self.alpha_paused.clear()
+            metrics.alpha_bridge_paused.set(0)
+            logger.info("Alpha Bridge RESUMED — heartbeats fresh")
         logger.debug("_check_heartbeat: returning None")
 
     async def _check_event_loop_lag(self) -> None:
@@ -172,10 +171,9 @@ class Watchdog:
             if not self.sor.skip_to_market:
                 logger.warning(f"High execution latency: {avg:.1f}s — SOR switching to market-only")
                 self.sor.skip_to_market = True
-        else:
-            if self.sor.skip_to_market:
-                logger.info(f"Latency recovered: {avg:.1f}s — SOR resuming normal routing")
-                self.sor.skip_to_market = False
+        elif self.sor.skip_to_market:
+            logger.info(f"Latency recovered: {avg:.1f}s — SOR resuming normal routing")
+            self.sor.skip_to_market = False
 
     def register_critical_task(self, name: str, task: asyncio.Task) -> None:
         """Register a critical task for liveness monitoring."""
@@ -193,7 +191,7 @@ class Watchdog:
             else:
                 metrics.critical_task_dead.labels(task=name).set(0)
 
-    def get_status(self) -> Dict[str, Any]:
+    def get_status(self) -> dict[str, Any]:
         """Get watchdog status."""
         logger.debug("get_status: entering")
         result = {

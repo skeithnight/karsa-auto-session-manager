@@ -6,15 +6,13 @@ No Redis or PostgreSQL dependency — pure in-memory computation.
 
 from __future__ import annotations
 
-import pytest
-from datetime import datetime, timezone
 from decimal import Decimal
 
-import numpy as np
+import pytest
 
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
-from app.backtest.engine import BacktestEngine, BacktestReport
+from app.backtest.engine import BacktestEngine
 from app.risk.dynamic_risk_gate import DynamicRiskGate
 
 

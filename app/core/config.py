@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import List
 
 from loguru import logger
 from pydantic import AliasChoices, Field
@@ -41,7 +40,7 @@ class Settings(BaseSettings):
     telegram_chat_id: str = ""
 
     # ── Trading ────────────────────────────────────────────────
-    symbols: List[str] = [
+    symbols: list[str] = [
         # Tier 1 — majors ($100M+ daily turnover on Bybit)
         "BTC/USDT",
         "ETH/USDT",

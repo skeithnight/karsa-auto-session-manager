@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from app.alpha.trade_memory import TradeMemory, MAX_ENTRIES_PER_SYMBOL, RETRIEVE_COUNT
+from app.alpha.trade_memory import MAX_ENTRIES_PER_SYMBOL, RETRIEVE_COUNT, TradeMemory
 
 
 class TestTradeMemory:

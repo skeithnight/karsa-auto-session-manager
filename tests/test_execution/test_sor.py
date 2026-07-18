@@ -7,8 +7,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from app.execution.sor import SmartOrderRouter
 from app.execution.bybit_client import BybitClient
+from app.execution.sor import SmartOrderRouter
 
 
 @pytest.fixture

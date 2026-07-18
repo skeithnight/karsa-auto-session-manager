@@ -6,11 +6,11 @@ import numpy as np
 
 from app.alpha.regime_classifier import MarketRegime
 from app.alpha.strategy_router import (
-    StrategyRouter,
-    CHOP_SCORE_ORDERBOOK_ABSORPTION,
     CHOP_SCORE_FUNDING_CONF,
     CHOP_SCORE_OI_DROP,
+    CHOP_SCORE_ORDERBOOK_ABSORPTION,
     STRATEGY_GATE_THRESHOLD,
+    StrategyRouter,
 )
 
 

@@ -7,9 +7,8 @@ Refreshes every 4 hours. Falls back to static config list if empty.
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Dict, List, Optional
 
 from loguru import logger
 
@@ -41,7 +40,7 @@ class UniverseScorer:
         self,
         redis_client: RedisClient,
         ohlcv_fetcher: OHLCVFetcher,
-        symbols: List[str],
+        symbols: list[str],
         top_n: int = DEFAULT_TOP_N,
         min_score: Decimal = DEFAULT_MIN_SCORE,
         max_per_sector: int = DEFAULT_MAX_PER_SECTOR,
@@ -53,7 +52,7 @@ class UniverseScorer:
         self.min_score = min_score
         self.max_per_sector = max_per_sector
 
-    async def score_symbol(self, symbol: str) -> Optional[Dict]:
+    async def score_symbol(self, symbol: str) -> dict | None:
         """Score a single symbol. Returns dict or None if data unavailable."""
         state = await self.redis.get_global_state(symbol)
         if not state:
@@ -124,7 +123,7 @@ class UniverseScorer:
             "sector": get_sector(symbol),
         }
 
-    async def score_all(self) -> List[Dict]:
+    async def score_all(self) -> list[dict]:
         """Score all configured symbols."""
         results = []
         for symbol in self.symbols:
@@ -133,12 +132,12 @@ class UniverseScorer:
                 results.append(score)
         return results
 
-    async def select(self) -> List[Dict]:
+    async def select(self) -> list[dict]:
         """Score, rank, filter by sector cap, return top N above threshold."""
         all_scores = await self.score_all()
         all_scores.sort(key=lambda x: x["total_score"], reverse=True)
 
-        sector_counts: Dict[str, int] = {}
+        sector_counts: dict[str, int] = {}
         selected = []
         for candidate in all_scores:
             if candidate["total_score"] < self.min_score:
@@ -154,7 +153,7 @@ class UniverseScorer:
 
         return selected
 
-    async def refresh(self, config_symbols: List[str]) -> List[str]:
+    async def refresh(self, config_symbols: list[str]) -> list[str]:
         """Run full selection, write to Redis, return active symbol list."""
         selected = await self.select()
         symbols = [s["symbol"] for s in selected]
@@ -167,7 +166,7 @@ class UniverseScorer:
         payload = {
             "symbols": symbols,
             "scores": {s["symbol"]: s["total_score"] for s in selected},
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
             await self.redis.set("system:universe:symbols", json.dumps(payload, default=str))

@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 import time
 from decimal import Decimal
-from typing import List, Optional
 
 from loguru import logger
 
@@ -61,7 +60,7 @@ class TradeMemory:
         except Exception as e:
             logger.error(f"Trade memory store failed for {symbol}: {e}")
 
-    async def get_recent(self, symbol: str, regime: Optional[str] = None, count: int = RETRIEVE_COUNT) -> List[dict]:
+    async def get_recent(self, symbol: str, regime: str | None = None, count: int = RETRIEVE_COUNT) -> list[dict]:
         """Get recent trades for symbol, optionally filtered by regime.
 
         Returns newest-first list of trade dicts.
@@ -91,7 +90,7 @@ class TradeMemory:
             logger.error(f"Trade memory read failed for {symbol}: {e}")
             return []
 
-    def format_prompt(self, symbol: str, trades: List[dict]) -> str:
+    def format_prompt(self, symbol: str, trades: list[dict]) -> str:
         """Format recent trades as prompt prefix for AI analyst."""
         if not trades:
             return ""
@@ -107,7 +106,7 @@ class TradeMemory:
 
         return "\n".join(lines)
 
-    async def get_prompt_context(self, symbol: str, regime: Optional[str] = None) -> str:
+    async def get_prompt_context(self, symbol: str, regime: str | None = None) -> str:
         """Convenience: fetch + format in one call."""
         trades = await self.get_recent(symbol, regime=regime)
         if trades:

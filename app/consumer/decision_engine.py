@@ -135,7 +135,7 @@ class DecisionEngine:
         # Step 3: Score each direction, take first pass
         for direction in directions:
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
-            
+
             score = self._router.evaluate_signal(
                 arr, regime, direction,
                 global_prices=global_prices,

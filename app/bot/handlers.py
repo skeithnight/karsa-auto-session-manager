@@ -498,7 +498,6 @@ async def performance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
-    import asyncio
     from app.analytics.performance import (
         compute_performance,
         fetch_all_closed_trades,
@@ -539,7 +538,7 @@ async def performance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\u2501" * 32, "\n",
         italic("Real money trades executed by ASM.")
     )
-    
+
     keyboard = [
         [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_performance")],
         [InlineKeyboardButton("\u25c0\ufe0f Back to Reports", callback_data="cmd_report_menu")],
@@ -555,7 +554,6 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
-    import asyncio
     from app.analytics.performance import compute_performance, fetch_all_closed_shadow_trades, format_performance_report
 
     db_engine = context.bot_data.get("db_engine")
@@ -571,10 +569,10 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     store = _Store(db=db_engine)
 
     try:
-        from app.core.metrics import get_funnel_metrics
         from app.bot.utils.formatters.shadow_funnel_formatter import format_shadow_funnel
+        from app.core.metrics import get_funnel_metrics
         funnel_metrics = get_funnel_metrics()
-        
+
         shadow_trades = await fetch_all_closed_shadow_trades(store)
         shadow_report = compute_performance(shadow_trades) if shadow_trades else compute_performance([])
     except Exception as exc:
@@ -1037,9 +1035,7 @@ async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, sy
     """Market close a specific position."""
     logger.debug(f"_close_position: entering symbol={symbol}")
     try:
-        from app.execution.sor import SmartOrderRouter
         bybit = _get_bybit(context)
-        sor = SmartOrderRouter(bybit)
 
         positions = await bybit.fetch_positions()
         pos = None
@@ -1080,7 +1076,7 @@ async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     redis_client = _get_redis(context)
     universe = []
     source_msg = "Source: config (UniverseEngine not yet ported)"
-    
+
     sector_msg = "Sector scoring: pending"
     try:
         raw_universe = await redis_client.get("system:universe:symbols")
@@ -1125,7 +1121,7 @@ async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             row = universe[i:i + 3]
             row_str = "".join(f"{sym:<11} " for sym in row)
             grid_lines.append(row_str)
-            
+
     grid_text = pre("\n".join(grid_lines))
 
     text = fmt(
@@ -1235,13 +1231,13 @@ async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Just list recent jobs (which may include individual jobs if any, and bulk stats if added)
     jobs = await orch.list_recent_jobs(limit=10)
     bulk_jobs = await orch.list_active_bulk_jobs()
-    
+
     active_bulk = None
     for b in bulk_jobs:
         if b.get("status") in ("running", "completed"):
             active_bulk = b
             break
-            
+
     text = format_backtest_list(jobs, active_bulk=active_bulk)
 
     keyboard = [
@@ -1301,7 +1297,7 @@ async def reconcile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     if query:
         await query.answer()
-    
+
     trade_reconciler = context.bot_data.get("trade_reconciler")
     if not trade_reconciler:
         msg = "⚠️ Reconciler not available."
@@ -1312,28 +1308,28 @@ async def reconcile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg = await (query.message if query else update.message).reply_text("🔄 Running manual reconciliation...")
-    
+
     try:
         # For manual reconciliation, extend lookback to 7 days (168 hours) to catch older discrepancies
         original_lookback = trade_reconciler.lookback_hours
         original_max_repairs = trade_reconciler.MAX_REPAIRS_PER_CYCLE
         original_max_pages = trade_reconciler.MAX_PAGES
-        
+
         trade_reconciler.lookback_hours = 168
         trade_reconciler.MAX_REPAIRS_PER_CYCLE = 200
         trade_reconciler.MAX_PAGES = 10
-        
+
         # Reset backfill flag to ensure we fetch historical missing trades if any
         trade_reconciler._backfill_done = False
         backfilled = await trade_reconciler.backfill_from_bybit()
-        
+
         report = await trade_reconciler.reconcile()
-        
+
         # Restore original limits
         trade_reconciler.lookback_hours = original_lookback
         trade_reconciler.MAX_REPAIRS_PER_CYCLE = original_max_repairs
         trade_reconciler.MAX_PAGES = original_max_pages
-        
+
         lines = [
             "✅ <b>Reconciliation Complete</b>",
             "",
@@ -1343,13 +1339,13 @@ async def reconcile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Discrepancies found: {len(report.discrepancies)}",
             f"Repairs made: {report.repairs_made}",
         ]
-        
+
         if report.errors:
             lines.append("")
             lines.append("⚠️ <b>Errors:</b>")
             for err in report.errors:
                 lines.append(f" - {err}")
-                
+
         await msg.edit_text("\n".join(lines), parse_mode="HTML")
     except Exception as e:
         logger.error(f"Manual reconcile failed: {e}")
@@ -1395,7 +1391,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _toggle_alerts(update, context)
 
     # Positions
-    elif data == "view_positions_detail" or data == "cmd_positions":
+    elif data in {"view_positions_detail", "cmd_positions"}:
         await view_positions_detail_cmd(update, context)
 
     # Move SL to BE
@@ -1539,7 +1535,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if j.job_id.startswith(job_id_short):
                     spec = BacktestJobSpec(symbol=j.symbol)
                     new_id = await orch.submit_job(spec)
-                    await _backtest_show_results(update, context, new_id)
+                    await _reply(update, f"✅ Re-submitted backtest `{new_id[:8]}`")
                     return
         await _reply(update, "⚠️ Could not re-run — job not found.", reply_markup=build_main_keyboard())
 

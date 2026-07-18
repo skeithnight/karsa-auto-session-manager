@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-
-
 from app.alpha.lead_lag_buffer import LeadLagBuffer
 
 

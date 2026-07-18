@@ -96,7 +96,7 @@ async def _on_signal_shadow(
             metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
             logger.info("shadow skip %s - PortfolioRiskManager rejected", symbol)
             return
-            
+
     from app.core import metrics
     metrics.risk_gate_pass.labels(symbol=symbol).inc()
 
@@ -183,7 +183,7 @@ def _build_shadow_components(
 ) -> tuple[Any, Any, Any, Any]:
     """Create ShadowPositionStore, ShadowTradeStore, ShadowExecutor, ShadowAPM."""
     from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
-    from app.execution.shadow import ShadowExecutor, ShadowAPM
+    from app.execution.shadow import ShadowAPM, ShadowExecutor
 
     pos_store = ShadowPositionStore(redis)
     trade_store = ShadowTradeStore(pool)
@@ -205,11 +205,11 @@ def _build_shadow_components(
 async def main() -> None:
     _configure_logging()
     settings = get_settings()
-    
+
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
         start_http_server(int(prom_port))
-        
+
     shutdown_event = asyncio.Event()
 
     def _signal_handler() -> None:
@@ -246,9 +246,9 @@ async def main() -> None:
     # Initialize AI Analyst
     crypto_analyst = None
     try:
+        from app.alpha.analyst import CryptoAnalyst
         from app.core.ai_client import AIClient
         from app.data.ohlcv_fetcher import OHLCVFetcher
-        from app.alpha.analyst import CryptoAnalyst
         ai_client = AIClient(
             router_url=settings.nine_router_base_url,
             auth_token=settings.nine_router_auth_token,
@@ -260,22 +260,22 @@ async def main() -> None:
         crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
     except Exception as e:
         logger.warning(f"Could not initialize CryptoAnalyst in shadow loop: {e}")
-        
+
     # Initialize PortfolioRiskManager
     risk_manager = None
     try:
-        from app.risk.portfolio_risk_manager import PortfolioRiskManager
         from app.execution.bybit_client import BybitClient
-        
+        from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         class _SectorMapping:
             def get_sector(self, s: str) -> str:
                 from app.data.sector_mapping import get_sector as _get
                 return _get(s)
-                
+
         sector_mapping = _SectorMapping()
         bybit_client = BybitClient()
         await bybit_client.connect()
-        
+
         risk_manager = PortfolioRiskManager(
             redis_client=redis,
             position_store=shadow_pos_store,

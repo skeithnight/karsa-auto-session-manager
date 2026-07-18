@@ -109,7 +109,7 @@ class RegimeEngine:
         regime_4h, _, _ = self.classify(ohlcv_4h, min_candles=50)
 
         # AND-gate: either CHOP → CHOP
-        if regime_1h == REGIME_CHOP or regime_4h == REGIME_CHOP:
+        if REGIME_CHOP in (regime_1h, regime_4h):
             logger.info(f"Multi-TF: CHOP (1H={regime_1h}, 4H={regime_4h})")
             return REGIME_CHOP, hurst, adx
 

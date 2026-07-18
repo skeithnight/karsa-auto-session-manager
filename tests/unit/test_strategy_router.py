@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from app.alpha.regime_classifier import MarketRegime
 from app.alpha.strategy_router import (
-    CHOP_SCORE_FUNDING_CONF,
     CHOP_SCORE_WICK_SNAPBACK,
     RANGE_SCORE_BB_EDGE,
     RANGE_SCORE_WICK,

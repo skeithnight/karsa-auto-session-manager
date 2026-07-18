@@ -9,8 +9,7 @@ liquidity sweeps naturally widen the book during micro-structure events.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Optional, Tuple
+from datetime import UTC, datetime
 
 from loguru import logger
 
@@ -56,14 +55,14 @@ class EntryFilter:
 
     def check(
         self,
-        regime: Optional[str] = None,
-        spread_pct: Optional[float] = None,
-        bid_depth: Optional[float] = None,
-        ask_depth: Optional[float] = None,
+        regime: str | None = None,
+        spread_pct: float | None = None,
+        bid_depth: float | None = None,
+        ask_depth: float | None = None,
         has_position: bool = False,
-        now_utc: Optional[datetime] = None,
-        atr: Optional[float] = None,
-    ) -> Tuple[bool, str]:
+        now_utc: datetime | None = None,
+        atr: float | None = None,
+    ) -> tuple[bool, str]:
         """Run all entry checks. Returns (passed, reason).
 
         Args:
@@ -111,7 +110,7 @@ class EntryFilter:
                 return False, f"depth ratio {ratio:.2f} out of range"
 
         # 4. Time-of-day (00:00–06:00 UTC blocked — dead Asian session)
-        t = now_utc or datetime.now(timezone.utc)
+        t = now_utc or datetime.now(UTC)
         if self.blocked_hour_start <= t.hour < self.blocked_hour_end:
             logger.debug(f"check: returning False (blocked hour {t.hour})")
             return False, f"blocked hour {t.hour}:00 UTC"

@@ -43,6 +43,7 @@ class TradeSignal:
         amount: Position size in base currency.
         entry_fee_rate: Maker or taker rate for entry.
         candles: Candle context used for evaluation (for position tracking).
+        expires_at: Absolute timestamp (time.time()) after which signal is stale.
     """
 
     symbol: str
@@ -58,6 +59,7 @@ class TradeSignal:
     atr: Decimal
     timestamp_ms: int
     candles: list[list] = field(repr=False)
+    expires_at: float | None = None
 
 
 class DecisionEngine:
@@ -110,11 +112,11 @@ class DecisionEngine:
             TradeSignal if score >= gate threshold, else None.
         """
         from app.core import metrics
+
         metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
 
         if len(candles) < _MIN_CANDLES:
-            logger.debug("evaluate: %s — only %d candles (need %d)",
-                         symbol, len(candles), _MIN_CANDLES)
+            logger.debug("evaluate: %s — only %d candles (need %d)", symbol, len(candles), _MIN_CANDLES)
             return None
 
         metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
@@ -137,14 +139,15 @@ class DecisionEngine:
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
             score = self._router.evaluate_signal(
-                arr, regime, direction,
+                arr,
+                regime,
+                direction,
                 global_prices=global_prices,
                 orderbook_delta=orderbook_delta,
                 funding_rate=funding_rate,
                 oi_change=oi_change,
             )
-            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f)",
-                         symbol, direction, score, self._gate)
+            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f)", symbol, direction, score, self._gate)
 
             if score >= self._gate:
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()

@@ -73,9 +73,7 @@ class Watchdog:
                 logger.debug(f"start: error={e}")
                 restart_count += 1
                 if restart_count >= max_restarts:
-                    logger.critical(
-                        f"Watchdog crashed {max_restarts}x in a row — giving up"
-                    )
+                    logger.critical(f"Watchdog crashed {max_restarts}x in a row — giving up")
                     self.running = False
                     break
                 logger.warning(f"Watchdog restart {restart_count}/{max_restarts}")
@@ -146,13 +144,10 @@ class Watchdog:
             self._high_lag_streak += 1
             logger.warning(f"Event loop lag: {lag*1000:.1f}ms (streak: {self._high_lag_streak})")
             if self._high_lag_streak >= self._max_lag_streak:
-                logger.critical(
-                    f"Event loop lag sustained {self._high_lag_streak}x — flattening positions"
-                )
+                logger.critical(f"Event loop lag sustained {self._high_lag_streak}x — flattening positions")
                 if self.sor:
                     try:
-                        await self.sor.cancel_all_positions()
-                        metrics.positions_flattened_total.labels(reason="event_loop_lag").inc()
+                        await self.sor.flatten_all_positions()
                     except Exception as e:
                         logger.error(f"Flatten failed: {e}")
                 if self.kill_switch:

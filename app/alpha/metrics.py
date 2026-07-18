@@ -127,6 +127,20 @@ class AlphaMetrics:
         logger.debug(f"get_lead_lag: returning result_type={type(result).__name__}")
         return result
 
+    def is_stale(self, symbol: str, max_age_s: float = 120.0) -> bool:
+        """Check if cached micro-structure data for symbol is stale."""
+        now = time.time()
+        funding_fresh = False
+        oi_fresh = False
+        if symbol in self._funding_cache:
+            funding_fresh = (now - self._funding_cache[symbol][0]) < max_age_s
+        if symbol in self._oi_cache:
+            oi_fresh = (now - self._oi_cache[symbol][0]) < max_age_s
+        # Stale if neither cache is fresh (first poll = not stale, let it populate)
+        if symbol not in self._funding_cache and symbol not in self._oi_cache:
+            return False
+        return not (funding_fresh or oi_fresh)
+
     # --- Funding Rate (Phase 2B) ---
 
     async def get_funding_rate(self, symbol: str) -> Decimal | None:

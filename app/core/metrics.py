@@ -320,10 +320,22 @@ stop_loss_placement = Counter(
     ["symbol", "result"],
 )
 
+sl_tp_atomic_placement = Counter(
+    "karsa_sl_tp_atomic_placement_total",
+    "Atomic SL/TP placement via set_trading_stop",
+    ["symbol"],
+)
+
 position_lifecycle_duration = Histogram(
     "karsa_position_lifecycle_duration_seconds",
     "Time from position open to close",
     buckets=[60, 300, 900, 1800, 3600, 7200, 14400, 28800],
+)
+
+pnl_unrealized_drift = Gauge(
+    "karsa_pnl_unrealized_drift_pct",
+    "Unrealized PnL drift between exchange and local calculation",
+    ["symbol"],
 )
 
 # ── Data Integrity ───────────────────────────────────────────
@@ -504,6 +516,7 @@ karsa_shadow_limit_orders_unfilled_total = Counter(
     ["symbol"],
 )
 
+
 def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
     """Helper to sum prometheus metric values across all labels via Prometheus API."""
     import json
@@ -533,6 +546,7 @@ def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
 
     return total
 
+
 def get_funnel_metrics() -> dict:
     """Fetch all funnel metrics for the shadow pipeline."""
     return {
@@ -541,10 +555,11 @@ def get_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_calls")) - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_calls"))
+        - int(get_metric_sum("karsa_ai_analyst_rejections")),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
         "trade_sl_hits": int(get_metric_sum("karsa_shadow_sl_hits")),
-        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed"))
+        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed")),
     }

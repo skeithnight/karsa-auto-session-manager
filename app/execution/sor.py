@@ -29,7 +29,13 @@ class SmartOrderRouter:
     Regime-aware: enforces Post-Only + tighter spread gate for CHOP/RANGE.
     """
 
-    def __init__(self, bybit_client: BybitClient, max_reprice_attempts: int = 2, reprice_delay_seconds: float = 2.0, alert_service: object | None = None) -> None:
+    def __init__(
+        self,
+        bybit_client: BybitClient,
+        max_reprice_attempts: int = 2,
+        reprice_delay_seconds: float = 2.0,
+        alert_service: object | None = None,
+    ) -> None:
         logger.debug("SmartOrderRouter.__init__: entering")
         self.client = bybit_client
         self.max_reprice_attempts = max_reprice_attempts
@@ -116,7 +122,9 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
                     logger.info(f"Reprice filled: {order['id']}")
-                    sl_id = await self._place_sl_after_fill(symbol, side, current_price, amount, max_loss_usd, price_tick)
+                    sl_id = await self._place_sl_after_fill(
+                        symbol, side, current_price, amount, max_loss_usd, price_tick
+                    )
                     order["sl_order_id"] = sl_id
                     logger.debug("execute: returning dict (Reprice filled)")
                     return order
@@ -154,6 +162,9 @@ class SmartOrderRouter:
 
         No SL placement (position is closing). For loss exits / hard fails,
         callers should use create_market_order directly to guarantee fill.
+
+        Handles partial fills: tracks cumExecQty across repricing attempts
+        and adjusts remaining amount to avoid orphaned partial positions.
         """
         logger.debug(f"execute_exit: entering symbol={symbol} side={side}")
 
@@ -161,21 +172,39 @@ class SmartOrderRouter:
             logger.warning(f"SOR exit: invalid price {price} for {symbol}, falling back to market")
             return await self.client.create_market_order(symbol, side, amount)
 
+        remaining = amount
+        total_filled = Decimal("0")
+
         # Step 1: Post-Only Limit
-        logger.info(f"SOR exit Step 1: Post-Only {side} {amount} @ {price}")
+        logger.info(f"SOR exit Step 1: Post-Only {side} {remaining} @ {price}")
         try:
-            order = await self.client.create_limit_order(symbol, side, amount, price)
+            order = await self.client.create_limit_order(symbol, side, remaining, price)
             if order.get("status") == "open":
                 logger.info(f"Exit Post-Only filled: {order['id']}")
                 return order
         except Exception as e:
             logger.warning(f"Exit Post-Only failed: {e}")
 
-        # Step 2: Reprice attempts
+        # Step 2: Reprice attempts (track partial fills across attempts)
         current_price = price
         effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
         for attempt in range(self.max_reprice_attempts):
             await asyncio.sleep(self.reprice_delay_seconds)
+
+            # Check partial fill before cancelling
+            if order and order.get("id"):
+                try:
+                    status = await self.client.get_order_status(order["id"], symbol)
+                    filled_qty = Decimal(str(status.get("cumExecQty", "0")))
+                    if filled_qty > 0:
+                        total_filled += filled_qty
+                        remaining -= filled_qty
+                        logger.info(
+                            f"SOR exit: partial fill detected — {filled_qty} filled, "
+                            f"{remaining} remaining (total_filled={total_filled})"
+                        )
+                except Exception:
+                    pass  # proceed with cancel anyway
 
             if side == "buy":
                 current_price += effective_tick
@@ -185,36 +214,44 @@ class SmartOrderRouter:
                     logger.warning("Exit reprice would go negative, falling back to market")
                     break
 
-            logger.info(f"SOR exit Step 2: Reprice attempt {attempt + 1} @ {current_price}")
+            logger.info(f"SOR exit Step 2: Reprice attempt {attempt + 1} @ {current_price} (remaining={remaining})")
             try:
                 if order and order.get("id"):
                     await self.client.cancel_order(order["id"], symbol)
 
-                order = await self.client.create_limit_order(symbol, side, amount, current_price)
+                if remaining <= 0:
+                    break  # fully filled across attempts
+                order = await self.client.create_limit_order(symbol, side, remaining, current_price)
                 if order.get("status") == "open":
                     logger.info(f"Exit reprice filled: {order['id']}")
                     return order
             except Exception as e:
                 logger.warning(f"Exit reprice failed: {e}")
 
-        # Step 3: Market fallback
-        logger.info("SOR exit Step 3: Market fallback")
-        try:
-            if order and order.get("id"):
-                await self.client.cancel_order(order["id"], symbol)
-            market_order = await self.client.create_market_order(symbol, side, amount)
-            logger.info(f"Exit market fallback filled: {market_order['id']}")
-            return market_order
-        except Exception as e:
-            logger.error(f"Exit market fallback failed: {e}")
-            return None
+        # Step 3: Market fallback for any remaining
+        if remaining > 0:
+            logger.info(f"SOR exit Step 3: Market fallback (remaining={remaining})")
+            try:
+                if order and order.get("id"):
+                    await self.client.cancel_order(order["id"], symbol)
+                market_order = await self.client.create_market_order(symbol, side, remaining)
+                logger.info(f"Exit market fallback filled: {market_order['id']}")
+                return market_order
+            except Exception as e:
+                logger.error(f"Exit market fallback failed: {e}")
+                return None
+        else:
+            logger.info(f"SOR exit: fully filled across repricing (total_filled={total_filled})")
+            return order
 
     async def _place_sl_after_fill(
         self, symbol: str, side: str, fill_price: Decimal, amount: Decimal, max_loss_usd: Decimal, price_tick: Decimal
     ) -> str | None:
         """Place exchange-side SL immediately after fill. CLAUDE.md Rule 5.
-        SL price: loss = max_loss_usd / amount, so SL is at fill_price - loss (LONG) or + loss (SHORT)."""
-        sl_order_id = None
+
+        Uses Bybit V5 set_trading_stop to attach SL atomically to the position.
+        Falls back to conditional order if atomic placement fails after 1 retry.
+        """
         sl_price = Decimal("0")
         try:
             sl_distance = max_loss_usd / amount if amount > 0 else Decimal("0")
@@ -226,14 +263,31 @@ class SmartOrderRouter:
             # Round sl_price to price_tick to avoid Bybit precision errors
             sl_price = (raw_sl_price / price_tick).quantize(Decimal("1")) * price_tick
 
-            sl_order = await self.client.place_stop_loss(symbol, side, sl_price, amount)
-            if sl_order:
-                sl_order_id = sl_order.get("id")
+            # Primary: atomic SL via set_trading_stop (exchange attaches to position)
+            try:
+                await self.client.set_trading_stop(symbol, side, stop_loss=sl_price)
                 metrics.stop_loss_placement.labels(symbol=symbol, result="success").inc()
-                logger.info(f"Exchange-side SL placed: {sl_order_id} @ {sl_price}")
-            else:
-                metrics.stop_loss_placement.labels(symbol=symbol, result="failed").inc()
-                logger.critical(f"SL PLACEMENT RETURNED NONE for {symbol} {side} — position unprotected!")
+                logger.info(f"Atomic SL placed via set_trading_stop: {symbol} @ {sl_price}")
+            except Exception as primary_err:
+                # Retry once after 2s
+                logger.warning(f"set_trading_stop failed for {symbol}, retrying: {primary_err}")
+                await asyncio.sleep(2)
+                try:
+                    await self.client.set_trading_stop(symbol, side, stop_loss=sl_price)
+                    metrics.stop_loss_placement.labels(symbol=symbol, result="success").inc()
+                    logger.info(f"Atomic SL placed on retry: {symbol} @ {sl_price}")
+                except Exception as retry_err:
+                    # Fallback: legacy conditional order
+                    metrics.stop_loss_placement.labels(symbol=symbol, result="fallback").inc()
+                    logger.critical(
+                        f"set_trading_stop RETRY FAILED for {symbol}: {retry_err} — falling back to conditional order"
+                    )
+                    sl_order = await self.client.place_stop_loss(symbol, side, sl_price, amount)
+                    if sl_order:
+                        logger.info(f"Fallback conditional SL placed: {sl_order.get('id')} @ {sl_price}")
+                    else:
+                        logger.critical(f"FALLBACK SL ALSO RETURNED NONE for {symbol} {side} — position unprotected!")
+
         except Exception as e:
             metrics.stop_loss_placement.labels(symbol=symbol, result="failed").inc()
             logger.critical(f"SL PLACEMENT FAILED for {symbol} {side}: {e} — position UNPROTECTED!")
@@ -242,10 +296,11 @@ class SmartOrderRouter:
         if self.alert_service:
             try:
                 from app.bot.utils.formatters import format_entry_alert
+
                 await self.alert_service.send(format_entry_alert(symbol, side, fill_price, amount, sl_price))
             except Exception as ae:
                 logger.error(f"Entry alert failed: {ae}")
-        return sl_order_id
+        return None  # atomic SL has no order ID — lives on the position
 
     async def cancel_all(self, symbol: str) -> None:
         """Cancel all open orders for a symbol."""
@@ -273,6 +328,42 @@ class SmartOrderRouter:
             logger.error(f"Cancel all positions failed: {e}")
             logger.debug(f"cancel_all_positions: error={e}")
         logger.debug("cancel_all_positions: returning None")
+
+    async def flatten_all_positions(self) -> None:
+        """Emergency flatten: cancel all orders then market-close every open position.
+
+        Called by kill switch, watchdog, and Telegram /kill /sellall commands.
+        Errors on individual positions do NOT stop the loop — every position gets
+        attempted. Per RISK_AND_RUNBOOK §1: ignore all errors during kill.
+        """
+        logger.critical("FLATTEN ALL: starting emergency position close")
+        # Step 1: cancel all pending orders
+        await self.cancel_all_positions()
+
+        # Step 2: market-close every open position
+        try:
+            positions = await self.client.fetch_positions()
+        except Exception as e:
+            logger.critical(f"FLATTEN ALL: fetch_positions failed — cannot close: {e}")
+            return
+
+        closed = 0
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            side = pos.get("side", "")
+            qty = Decimal(str(pos.get("amount", "0")))
+            if qty <= 0 or not symbol:
+                continue
+            api_side = "sell" if side == "LONG" else "buy"
+            try:
+                await self.client.create_market_order(symbol, api_side, qty, {"reduceOnly": True})
+                closed += 1
+                logger.critical(f"FLATTEN ALL: market-closed {symbol} {side} qty={qty}")
+            except Exception as e:
+                logger.critical(f"FLATTEN ALL: FAILED to close {symbol} {side}: {e}")
+
+        metrics.positions_flattened_total.labels(reason="kill_switch").inc(closed)
+        logger.critical(f"FLATTEN ALL: complete — {closed}/{len(positions)} positions closed")
 
     # ------------------------------------------------------------------
     # Regime-aware execution (Phase 12)
@@ -302,42 +393,36 @@ class SmartOrderRouter:
         # Spread gate
         spread_ok = await self._check_spread_gate(symbol, regime)
         if not spread_ok:
-            metrics.orders_rejected.labels(
-                symbol=symbol, reason="spread_gate"
-            ).inc()
+            metrics.orders_rejected.labels(symbol=symbol, reason="spread_gate").inc()
             return None
 
         # CHOP/RANGE: Post-Only only — no market fallback
         if use_post_only:
             order = await self._try_post_only(symbol, side, amount, price)
             if order is not None:
-                sl_id = await self._place_sl_after_fill(
-                    symbol, side, price, amount, max_loss_usd, price_tick
-                )
+                sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
                 order["sl_order_id"] = sl_id
                 return order
             logger.info(
                 "SOR: Post-Only rejected for %s (CHOP/RANGE) — no market fallback",
                 symbol,
             )
-            metrics.orders_rejected.labels(
-                symbol=symbol, reason="chop_range_post_only"
-            ).inc()
+            metrics.orders_rejected.labels(symbol=symbol, reason="chop_range_post_only").inc()
             return None
 
         # TREND: full pipeline with regime-adjusted reprices
-        max_reprices = (
-            self.max_reprice_attempts if regime not in ("CHOP", "RANGE")
-            else CHOP_RANGE_MAX_REPRICE
-        )
+        max_reprices = self.max_reprice_attempts if regime not in ("CHOP", "RANGE") else CHOP_RANGE_MAX_REPRICE
         return await self._execute_full_pipeline(
-            symbol, side, amount, price,
-            price_tick, max_loss_usd, max_reprices,
+            symbol,
+            side,
+            amount,
+            price,
+            price_tick,
+            max_loss_usd,
+            max_reprices,
         )
 
-    async def _check_spread_gate(
-        self, symbol: str, regime: str
-    ) -> bool:
+    async def _check_spread_gate(self, symbol: str, regime: str) -> bool:
         """Reject if bid-ask spread exceeds regime threshold."""
         try:
             tickers = await self.client.fetch_tickers(symbol=symbol)
@@ -349,33 +434,27 @@ class SmartOrderRouter:
             if bid <= 0 or ask <= 0:
                 return True
             spread = (ask - bid) / bid
-            threshold = (
-                CHOP_RANGE_SPREAD_PCT if regime in ("CHOP", "RANGE")
-                else TREND_SPREAD_PCT
-            )
+            threshold = CHOP_RANGE_SPREAD_PCT if regime in ("CHOP", "RANGE") else TREND_SPREAD_PCT
             if spread > threshold:
                 logger.warning(
                     "SOR: spread %.4f exceeds threshold %.4f for %s (%s)",
-                    float(spread), float(threshold), symbol, regime,
+                    float(spread),
+                    float(threshold),
+                    symbol,
+                    regime,
                 )
                 return False
             return True
         except Exception:
-            logger.debug("SOR: spread check failed for %s, allowing", symbol)
-            return True
+            logger.warning("SOR: spread check failed for %s, rejecting (fail-closed)", symbol)
+            return False
 
-    async def _try_post_only(
-        self, symbol: str, side: str, amount: Decimal, price: Decimal
-    ) -> dict[str, Any] | None:
+    async def _try_post_only(self, symbol: str, side: str, amount: Decimal, price: Decimal) -> dict[str, Any] | None:
         """Attempt a single Post-Only limit order."""
         try:
-            order = await self.client.create_limit_order(
-                symbol, side, amount, price
-            )
+            order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") == "open":
-                metrics.orders_placed.labels(
-                    symbol=symbol, side=side
-                ).inc()
+                metrics.orders_placed.labels(symbol=symbol, side=side).inc()
                 return order
         except Exception as exc:
             logger.warning("SOR: Post-Only failed: %s", exc)
@@ -395,9 +474,7 @@ class SmartOrderRouter:
         # Step 1: Post-Only
         order = await self._try_post_only(symbol, side, amount, price)
         if order is not None:
-            sl_id = await self._place_sl_after_fill(
-                symbol, side, price, amount, max_loss_usd, price_tick
-            )
+            sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
             order["sl_order_id"] = sl_id
             return order
 
@@ -415,13 +492,15 @@ class SmartOrderRouter:
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
             try:
-                order = await self.client.create_limit_order(
-                    symbol, side, amount, current_price
-                )
+                order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
                     sl_id = await self._place_sl_after_fill(
-                        symbol, side, current_price, amount,
-                        max_loss_usd, price_tick,
+                        symbol,
+                        side,
+                        current_price,
+                        amount,
+                        max_loss_usd,
+                        price_tick,
                     )
                     order["sl_order_id"] = sl_id
                     return order
@@ -432,20 +511,12 @@ class SmartOrderRouter:
         if order and order.get("id"):
             await self.client.cancel_order(order["id"], symbol)
         try:
-            market_order = await self.client.create_market_order(
-                symbol, side, amount
-            )
-            metrics.orders_placed.labels(
-                symbol=symbol, side=side
-            ).inc()
-            sl_id = await self._place_sl_after_fill(
-                symbol, side, price, amount, max_loss_usd, price_tick
-            )
+            market_order = await self.client.create_market_order(symbol, side, amount)
+            metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+            sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
             market_order["sl_order_id"] = sl_id
             return market_order
         except Exception as exc:
-            metrics.orders_failed.labels(
-                symbol=symbol, error_type=type(exc).__name__
-            ).inc()
+            metrics.orders_failed.labels(symbol=symbol, error_type=type(exc).__name__).inc()
             logger.error("SOR: market fallback failed: %s", exc)
             return None

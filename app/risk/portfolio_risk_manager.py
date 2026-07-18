@@ -88,9 +88,7 @@ class PortfolioRiskManager:
 
         except Exception:
             logger.exception("PortfolioRiskManager: exception in check() — BLOCKING")
-            return PRMResult(
-                approved=False, reason="PRM internal error (fail-safe BLOCK)"
-            )
+            return PRMResult(approved=False, reason="PRM internal error (fail-safe BLOCK)")
 
     # ------------------------------------------------------------------
     # Check 1: Correlation trap
@@ -204,6 +202,7 @@ class PortfolioRiskManager:
                 return CheckResult(passed=True)
 
             import json
+
             state = json.loads(raw)
             if state.get("status") == "TRIGGERED" and state.get("reason", "").startswith("daily"):
                 logger.warning("PRM: daily loss circuit breaker TRIGGERED")
@@ -228,6 +227,7 @@ class PortfolioRiskManager:
                 return CheckResult(passed=True)
 
             import json
+
             state = json.loads(raw)
             if state.get("status") == "TRIGGERED" and "consecutive" in state.get("reason", "").lower():
                 logger.warning("PRM: consecutive loss circuit breaker TRIGGERED")
@@ -243,7 +243,14 @@ class PortfolioRiskManager:
     # ------------------------------------------------------------------
 
     async def reset_daily_state_loop(self) -> None:
-        """Background task: reset daily CB state at UTC midnight."""
+        """Background task: reset daily CB state at UTC midnight.
+
+        Also guards against stuck CB: if circuit_breaker has been TRIGGERED
+        for >24h (e.g. midnight reset missed due to restart), force clear.
+        """
+        # Clear stuck CB on startup
+        await self._clear_stuck_cb()
+
         while True:
             try:
                 now = datetime.now(UTC)
@@ -256,16 +263,43 @@ class PortfolioRiskManager:
 
                 if self._redis is not None:
                     import json as _json
+
                     await self._redis.set(
                         "system:circuit_breaker",
                         _json.dumps({"status": "RESET", "reason": "midnight reset"}),
                     )
-                    logger.info(
-                        "PortfolioRiskManager: daily CB state reset at UTC midnight"
-                    )
+                    # Clear legacy key if present
+                    await self._redis.delete("circuit_breaker:HALTED")
+                    logger.info("PortfolioRiskManager: daily CB state reset at UTC midnight")
 
             except asyncio.CancelledError:
                 raise
             except Exception:
                 logger.exception("PortfolioRiskManager: daily reset loop error")
                 await asyncio.sleep(60)
+
+    async def _clear_stuck_cb(self) -> None:
+        """Clear circuit breaker if stuck >24h (missed midnight reset)."""
+        if self._redis is None:
+            return
+        try:
+            import json as _json
+
+            raw = await self._redis.get("system:circuit_breaker")
+            if raw is None:
+                return
+            state = _json.loads(raw)
+            if state.get("status") != "TRIGGERED":
+                return
+            triggered_at = state.get("triggered_at")
+            if triggered_at is not None:
+                ts = datetime.fromisoformat(triggered_at)
+                age_hours = (datetime.now(UTC) - ts).total_seconds() / 3600
+                if age_hours > 24:
+                    await self._redis.set(
+                        "system:circuit_breaker",
+                        _json.dumps({"status": "RESET", "reason": f"stuck CB cleared after {age_hours:.0f}h"}),
+                    )
+                    logger.warning("PRM: stuck CB cleared after %.0fh", age_hours)
+        except Exception:
+            logger.exception("PRM: failed to check stuck CB")

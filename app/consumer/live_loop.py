@@ -132,7 +132,7 @@ def _start_ingestor(
     """Create ingestor + sync loop. Returns (ingestor, task)."""
     ingestor = MarketDataIngestor(
         redis_client=redis,
-        symbols=settings.watchlist.split(",") if settings.watchlist else ["BTC/USDT"],
+        symbols=settings.watchlist.split(",") if settings.watchlist else settings.symbols,
         poll_interval_s=30,
         api_key=settings.bybit_api_key or "",
         api_secret=settings.bybit_api_secret or "",

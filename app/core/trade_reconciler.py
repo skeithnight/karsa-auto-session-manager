@@ -133,9 +133,7 @@ class TradeReconciler:
             if entry_time:
                 # Round to minute for fuzzy matching
                 minute_key = entry_time.strftime("%Y%m%d%H%M")
-                local_keys.add(
-                    f"{t['symbol']}:{_normalize_side(t['side'])}:{minute_key}"
-                )
+                local_keys.add(f"{t['symbol']}:{_normalize_side(t['side'])}:{minute_key}")
 
         inserted = 0
         for r in all_records:
@@ -184,10 +182,7 @@ class TradeReconciler:
                 logger.warning(f"Trade backfill: failed for {ccxt_sym} {side}: {e}")
 
         self._backfill_done = True
-        logger.info(
-            f"Trade backfill complete: {inserted} trades inserted from "
-            f"{len(all_records)} Bybit records"
-        )
+        logger.info(f"Trade backfill complete: {inserted} trades inserted from " f"{len(all_records)} Bybit records")
         return inserted
 
     async def reconcile(self) -> ReconcileReport:
@@ -195,9 +190,7 @@ class TradeReconciler:
         now = datetime.now(UTC)
         since = now - timedelta(hours=self.lookback_hours)
         grace = now - timedelta(minutes=self.GRACE_PERIOD_MINUTES)
-        report = ReconcileReport(
-            timestamp=now, bybit_fills_checked=0, local_trades_checked=0
-        )
+        report = ReconcileReport(timestamp=now, bybit_fills_checked=0, local_trades_checked=0)
 
         try:
             # 1. Fetch Bybit executions (paginated)
@@ -223,7 +216,10 @@ class TradeReconciler:
             repairs = await self._auto_repair(report.discrepancies)
             report.repairs_made = repairs
 
-            # 7. Alert on critical discrepancies
+            # 7. Check unrealized PnL drift (exchange vs local)
+            await self._check_unrealized_drift()
+
+            # 8. Alert on critical discrepancies
             await self._alert_discrepancies(report.discrepancies)
 
         except Exception as e:
@@ -237,9 +233,7 @@ class TradeReconciler:
                 f"{report.repairs_made} repairs out of {report.bybit_fills_checked} fills checked"
             )
         else:
-            logger.info(
-                f"Trade reconciliation: all clean ({report.bybit_fills_checked} fills checked)"
-            )
+            logger.info(f"Trade reconciliation: all clean ({report.bybit_fills_checked} fills checked)")
 
         return report
 
@@ -250,9 +244,7 @@ class TradeReconciler:
         since_ms = str(int(since.timestamp() * 1000))
 
         for _ in range(self.MAX_PAGES):
-            result = await self.client.get_executions(
-                limit=self.PAGE_SIZE, cursor=cursor
-            )
+            result = await self.client.get_executions(limit=self.PAGE_SIZE, cursor=cursor)
             fills = result.get("executions", [])
             if not fills:
                 break
@@ -273,9 +265,7 @@ class TradeReconciler:
                 break
 
         if cursor:
-            logger.warning(
-                "Trade reconciler: more pages available, lookback window may be too short"
-            )
+            logger.warning("Trade reconciler: more pages available, lookback window may be too short")
         return all_fills
 
     async def _fetch_bybit_closed_pnl(self, since: datetime) -> list[dict[str, Any]]:
@@ -285,9 +275,7 @@ class TradeReconciler:
         since_ms = str(int(since.timestamp() * 1000))
 
         for _ in range(self.MAX_PAGES):
-            result = await self.client.get_closed_pnl(
-                limit=self.PAGE_SIZE, cursor=cursor
-            )
+            result = await self.client.get_closed_pnl(limit=self.PAGE_SIZE, cursor=cursor)
             records = result.get("closed_pnl", [])
             if not records:
                 break
@@ -372,10 +360,7 @@ class TradeReconciler:
             for t in local_candidates:
                 entry_time = t.get("entry_time")
                 if entry_time and isinstance(entry_time, datetime):
-                    if (
-                        abs((entry_time - exec_time).total_seconds())
-                        < window.total_seconds()
-                    ):
+                    if abs((entry_time - exec_time).total_seconds()) < window.total_seconds():
                         matched = True
                         # Check price mismatch
                         local_price = _safe_decimal(t.get("entry_price", "0"))
@@ -497,7 +482,7 @@ class TradeReconciler:
                 if local_exit_time:
                     bybit_exit_time = datetime.fromtimestamp(updated_time_ms / 1000, tz=UTC)
                     time_diff = abs((local_exit_time - bybit_exit_time).total_seconds())
-                    if time_diff < 1800: # 30 mins
+                    if time_diff < 1800:  # 30 mins
                         matched_local_ids.add(t.get("id"))
                         matched = True
                         # Check PnL mismatch
@@ -540,13 +525,69 @@ class TradeReconciler:
 
         return discrepancies
 
+    async def _check_unrealized_drift(self) -> None:
+        """Compare exchange-reported unrealized PnL vs local calculation.
+
+        Alerts if divergence exceeds 1%. Auto-repair is not attempted —
+        unrealized PnL is transient and drift is expected to be small.
+        """
+        try:
+            positions = await self.client.fetch_positions()
+        except Exception as e:
+            logger.warning(f"PnL drift check: fetch_positions failed: {e}")
+            return
+
+        for pos in positions:
+            symbol = pos.get("symbol", "")
+            side = pos.get("side", "")
+            exchange_upnl = Decimal(str(pos.get("unrealized_pnl", "0")))
+            entry_price = Decimal(str(pos.get("entry_price", "0")))
+            amount = Decimal(str(pos.get("amount", "0")))
+
+            if exchange_upnl == 0 or amount <= 0 or entry_price <= 0:
+                continue
+
+            # Fetch current price from Redis (same source as APM)
+            try:
+                redis = self.client._redis if hasattr(self.client, "_redis") else None
+                if not redis:
+                    continue
+                state = await redis.get_global_state(symbol)
+                if not state:
+                    continue
+                best_bid = state.get("best_bid")
+                best_ask = state.get("best_ask")
+                if not best_bid or not best_ask:
+                    continue
+                mid_price = (Decimal(str(best_bid)) + Decimal(str(best_ask))) / 2
+            except Exception:
+                continue
+
+            # Calculate local unrealized PnL
+            if side == "LONG":
+                local_upnl = (mid_price - entry_price) * amount
+            else:
+                local_upnl = (entry_price - mid_price) * amount
+
+            # Compare with tolerance
+            if abs(exchange_upnl) > 0:
+                drift_pct = abs(local_upnl - exchange_upnl) / abs(exchange_upnl)
+                if drift_pct > Decimal("0.01"):
+                    logger.warning(
+                        f"PnL DRIFT: {symbol} {side} exchange={exchange_upnl} "
+                        f"local={local_upnl} drift={drift_pct:.2%}"
+                    )
+                    metrics.pnl_unrealized_drift.labels(symbol=symbol).set(float(drift_pct))
+                    if drift_pct > Decimal("0.05"):
+                        await self.alert.send(
+                            f"⚠️ PnL DRIFT ALERT: {symbol} {side} "
+                            f"exchange={exchange_upnl:.2f} local={local_upnl:.2f} "
+                            f"drift={drift_pct:.2%}"
+                        )
+
     async def _auto_repair(self, discrepancies: list[Discrepancy]) -> int:
         """Auto-repair missing entries and missing exits. Returns count of repairs made."""
-        repairable = [
-            d
-            for d in discrepancies
-            if d.kind in ("missing_entry", "missing_exit") and not d.repaired
-        ]
+        repairable = [d for d in discrepancies if d.kind in ("missing_entry", "missing_exit") and not d.repaired]
         if not repairable:
             kinds = {}
             for d in discrepancies:
@@ -569,12 +610,16 @@ class TradeReconciler:
                 if d.kind == "missing_entry":
                     price = _safe_decimal(d.bybit_data.get("price", "0"))
                     if amount <= 0 or price <= 0:
-                        logger.warning(f"Trade reconciler: skip missing_entry {d.symbol} — amount={amount} price={price}")
+                        logger.warning(
+                            f"Trade reconciler: skip missing_entry {d.symbol} — amount={amount} price={price}"
+                        )
                         continue
                     # Dedup: skip if an open trade already exists for this symbol+side
                     existing = await self.store.get_open_trade_by_symbol(d.symbol)
                     if existing and _normalize_side(existing.get("side", "")) == _normalize_side(d.side):
-                        logger.info(f"Trade reconciler: skip missing_entry {d.symbol} {d.side} — open trade already exists id={existing['id']}")
+                        logger.info(
+                            f"Trade reconciler: skip missing_entry {d.symbol} {d.side} — open trade already exists id={existing['id']}"
+                        )
                         d.repaired = True
                         continue
                     await self.store.record_entry(
@@ -587,15 +632,16 @@ class TradeReconciler:
                     d.repaired = True
                     repairs += 1
                     logger.info(
-                        f"Trade reconciler: repaired missing entry {d.symbol} {d.side} "
-                        f"@ {price} qty={amount}"
+                        f"Trade reconciler: repaired missing entry {d.symbol} {d.side} " f"@ {price} qty={amount}"
                     )
                     await self._audit_repair(d, {"entry_price": str(price), "qty": str(amount)})
                 elif d.kind == "missing_exit":
                     exit_price = _safe_decimal(d.bybit_data.get("avg_exit_price", "0"))
                     pnl = _safe_decimal(d.bybit_data.get("closed_pnl", "0"))
                     if amount <= 0 or exit_price <= 0:
-                        logger.warning(f"Trade reconciler: skip missing_exit {d.symbol} — amount={amount} exit_price={exit_price}")
+                        logger.warning(
+                            f"Trade reconciler: skip missing_exit {d.symbol} — amount={amount} exit_price={exit_price}"
+                        )
                         continue
                     if d.local_trade_id:
                         # Close existing open trade — no duplicate
@@ -616,9 +662,7 @@ class TradeReconciler:
                             continue
                     else:
                         # No local trade found — backfill complete trade
-                        entry_price = _safe_decimal(
-                            d.bybit_data.get("avg_entry_price", "0")
-                        )
+                        entry_price = _safe_decimal(d.bybit_data.get("avg_entry_price", "0"))
                         if entry_price <= 0:
                             continue
                         await self.store.record_full_trade(
@@ -635,15 +679,15 @@ class TradeReconciler:
                         )
                     d.repaired = True
                     repairs += 1
-                    logger.info(
-                        f"Trade reconciler: repaired missing exit {d.symbol} {d.side} "
-                        f"pnl={pnl}"
+                    logger.info(f"Trade reconciler: repaired missing exit {d.symbol} {d.side} " f"pnl={pnl}")
+                    await self._audit_repair(
+                        d,
+                        {
+                            "exit_price": str(exit_price),
+                            "pnl": str(pnl),
+                            "trade_id": d.local_trade_id,
+                        },
                     )
-                    await self._audit_repair(d, {
-                        "exit_price": str(exit_price),
-                        "pnl": str(pnl),
-                        "trade_id": d.local_trade_id,
-                    })
 
                     # Send normal exit alert if it was recent
                     try:
@@ -657,23 +701,30 @@ class TradeReconciler:
                                 format_sl_alert,
                                 format_tp_alert,
                             )
+
                             entry_price = _safe_decimal(d.bybit_data.get("avg_entry_price", "0"))
                             pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
                             if pnl > 0:
-                                msg = format_tp_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                                msg = format_tp_alert(
+                                    d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                                )
                             elif pnl < 0:
-                                msg = format_sl_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                                msg = format_sl_alert(
+                                    d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                                )
                             else:
-                                msg = format_breakeven_alert(d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct))
+                                msg = format_breakeven_alert(
+                                    d.symbol, d.side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                                )
                             await self.alert.send(msg)
                         else:
-                            logger.info(f"Trade reconciler: skipping Telegram alert for old hanging position {d.symbol} {d.side}")
+                            logger.info(
+                                f"Trade reconciler: skipping Telegram alert for old hanging position {d.symbol} {d.side}"
+                            )
                     except Exception as e:
                         logger.error(f"Trade reconciler: failed to send exit alert: {e}")
             except Exception as e:
-                logger.error(
-                    f"Trade reconciler: repair failed for {d.symbol} {d.side}: {e}"
-                )
+                logger.error(f"Trade reconciler: repair failed for {d.symbol} {d.side}: {e}")
                 metrics.trade_reconcile_errors.labels(error_type="repair_failure").inc()
 
         return repairs
@@ -701,16 +752,19 @@ class TradeReconciler:
     async def _audit_repair(self, d: Discrepancy, details: dict[str, Any]) -> None:
         """Write reconciliation repair to ai_decisions audit trail."""
         import json
+
         try:
             await self.store.record_ai_decision(
                 symbol=d.symbol,
                 decision_type="reconciliation_repair",
-                output_json=json.dumps({
-                    "kind": d.kind,
-                    "side": d.side,
-                    "trade_id": d.local_trade_id,
-                    **details,
-                }),
+                output_json=json.dumps(
+                    {
+                        "kind": d.kind,
+                        "side": d.side,
+                        "trade_id": d.local_trade_id,
+                        **details,
+                    }
+                ),
             )
         except Exception as e:
             logger.warning(f"Trade reconciler: audit log failed for {d.symbol}: {e}")

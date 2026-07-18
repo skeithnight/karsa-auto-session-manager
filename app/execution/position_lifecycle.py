@@ -130,19 +130,10 @@ class TrailingStopManager:
         if now - last < self.cooldown_seconds:
             return
 
-        sl_id = pos.get("sl_order_id", "")
-        amount = Decimal(pos["amount"])
-
-        if not sl_id:
-            new_order = await self.client.place_stop_loss(symbol, pos["side"], new_sl, amount)
-        else:
-            new_order = await self.client.amend_stop_loss(
-                sl_id, symbol, pos["side"], new_sl, amount,
-            )
-        if new_order:
-            await self.store.update_sl(symbol, pos["side"], new_order.get("id", ""))
-            self._last_amend[key] = now
-            logger.info(f"SL amended: {symbol} {pos['side']} -> {new_sl}")
+        # Atomic SL via set_trading_stop — no conditional order to track
+        await self.client.set_trading_stop(symbol, pos["side"], stop_loss=new_sl)
+        self._last_amend[key] = now
+        logger.info(f"SL amended: {symbol} {pos['side']} -> {new_sl}")
 
 
 class CheckpointManager:
@@ -292,7 +283,9 @@ class CheckpointManager:
             regime = pos.get("regime", "UNKNOWN")
             trade_ctx = ""
             if self.trade_memory:
-                trade_ctx = await self.trade_memory.get_prompt_context(symbol, regime=regime if regime != "UNKNOWN" else None)
+                trade_ctx = await self.trade_memory.get_prompt_context(
+                    symbol, regime=regime if regime != "UNKNOWN" else None
+                )
             verdict = await self.position_judge.judge(
                 symbol=symbol,
                 side=side,
@@ -309,16 +302,19 @@ class CheckpointManager:
                 if self.trade_store:
                     try:
                         import json
+
                         await self.trade_store.record_ai_decision(
                             symbol=symbol,
                             decision_type="position_judge",
                             model=verdict.tier_used,
-                            output_json=json.dumps({
-                                "action": verdict.action,
-                                "confidence": verdict.confidence,
-                                "reasoning": verdict.reasoning,
-                                "pnl_pct": float(pnl_pct),
-                            }),
+                            output_json=json.dumps(
+                                {
+                                    "action": verdict.action,
+                                    "confidence": verdict.confidence,
+                                    "reasoning": verdict.reasoning,
+                                    "pnl_pct": float(pnl_pct),
+                                }
+                            ),
                         )
                     except Exception:
                         pass  # non-critical audit trail
@@ -376,14 +372,18 @@ class CheckpointManager:
 
             # Check performance
             if pnl_pct < min_pnl:
-                logger.warning(f"Checkpoint {new_checkpoint}: {symbol} {side} underperforming (pnl={pnl_pct:.4f} < min={min_pnl:.4f})")
+                logger.warning(
+                    f"Checkpoint {new_checkpoint}: {symbol} {side} underperforming (pnl={pnl_pct:.4f} < min={min_pnl:.4f})"
+                )
 
                 # Invoke PositionJudge explicitly for checkpoint review if available
                 if self.position_judge:
                     regime = pos.get("regime", "UNKNOWN")
                     trade_ctx = ""
                     if self.trade_memory:
-                        trade_ctx = await self.trade_memory.get_prompt_context(symbol, regime=regime if regime != "UNKNOWN" else None)
+                        trade_ctx = await self.trade_memory.get_prompt_context(
+                            symbol, regime=regime if regime != "UNKNOWN" else None
+                        )
                     verdict = await self.position_judge.judge(
                         symbol=symbol,
                         side=side,
@@ -397,32 +397,44 @@ class CheckpointManager:
                         is_checkpoint_review=True,
                     )
                     if verdict:
-                        logger.info(f"PositionJudge (Checkpoint): {symbol} {side} → {verdict.action} ({verdict.tier_used})")
+                        logger.info(
+                            f"PositionJudge (Checkpoint): {symbol} {side} → {verdict.action} ({verdict.tier_used})"
+                        )
                         if self.trade_store:
                             try:
                                 import json
+
                                 await self.trade_store.record_ai_decision(
                                     symbol=symbol,
                                     decision_type="position_judge",
                                     model=verdict.tier_used,
-                                    output_json=json.dumps({
-                                        "action": verdict.action,
-                                        "confidence": verdict.confidence,
-                                        "reasoning": verdict.reasoning,
-                                        "pnl_pct": float(pnl_pct),
-                                        "checkpoint": new_checkpoint,
-                                        "is_checkpoint_review": True,
-                                    }),
+                                    output_json=json.dumps(
+                                        {
+                                            "action": verdict.action,
+                                            "confidence": verdict.confidence,
+                                            "reasoning": verdict.reasoning,
+                                            "pnl_pct": float(pnl_pct),
+                                            "checkpoint": new_checkpoint,
+                                            "is_checkpoint_review": True,
+                                        }
+                                    ),
                                 )
                             except Exception:
                                 pass  # non-critical audit trail
                         if verdict.action == "EXIT":
-                            await self._exit(pos, state_manager, exit_reason=f"checkpoint_{new_checkpoint}_fail", current_price=current_price)
+                            await self._exit(
+                                pos,
+                                state_manager,
+                                exit_reason=f"checkpoint_{new_checkpoint}_fail",
+                                current_price=current_price,
+                            )
                             return
                         elif verdict.action == "TIGHTEN_STOP":
                             await self._tighten_stop(pos, current_price, atr)
 
-    async def _exit(self, pos: dict, state_manager, exit_reason: str = "checkpoint", current_price: Decimal | None = None) -> None:
+    async def _exit(
+        self, pos: dict, state_manager, exit_reason: str = "checkpoint", current_price: Decimal | None = None
+    ) -> None:
         """Execute exit for a position.
 
         Profitable/non-urgent exits route through SOR post-only to save taker fees.
@@ -458,6 +470,16 @@ class CheckpointManager:
                         avg_price = orders[0].get("avgPrice")
                         if avg_price and float(avg_price) > 0:
                             exit_price = Decimal(str(avg_price))
+                        # Verify full fill — if partial, close remainder at market
+                        cum_exec = Decimal(str(orders[0].get("cumExecQty", "0")))
+                        if 0 < cum_exec < amount:
+                            remaining = amount - cum_exec
+                            logger.warning(
+                                f"Partial fill on exit: {symbol} {side} filled={cum_exec} "
+                                f"of {amount}, closing remainder {remaining} at market"
+                            )
+                            close_side = "sell" if side == "buy" else "buy"
+                            await self.client.create_market_order(symbol, close_side, remaining)
                 except Exception as e:
                     logger.warning(f"Could not fetch exit price for {order_id}: {e}")
 
@@ -485,10 +507,14 @@ class CheckpointManager:
             # Record trade exit in Postgres — refuse if exit_price is zero (corrupted data)
             if self.trade_store:
                 if exit_price <= 0:
-                    logger.error(f"REFUSING to close trade with exit_price=0 for {symbol} {side}. Order may have failed. Order ID: {order_id}")
+                    logger.error(
+                        f"REFUSING to close trade with exit_price=0 for {symbol} {side}. Order may have failed. Order ID: {order_id}"
+                    )
                     if self.alert_service:
                         try:
-                            await self.alert_service.send(f"⚠️ CRITICAL: {symbol} exit_price=0 — manual review needed. Order ID: {order_id}")
+                            await self.alert_service.send(
+                                f"⚠️ CRITICAL: {symbol} exit_price=0 — manual review needed. Order ID: {order_id}"
+                            )
                         except Exception:
                             pass
                     return
@@ -507,7 +533,9 @@ class CheckpointManager:
                         entered_at = datetime.fromisoformat(entered_str)
                         hold_min = int((datetime.now(UTC) - entered_at).total_seconds() / 60)
                     regime = pos.get("regime", "UNKNOWN")
-                    entry_conf = Decimal(str(pos.get("entry_confidence", "0"))) if pos.get("entry_confidence") else Decimal("0")
+                    entry_conf = (
+                        Decimal(str(pos.get("entry_confidence", "0"))) if pos.get("entry_confidence") else Decimal("0")
+                    )
                     await self.trade_memory.store(
                         symbol=symbol,
                         pnl_pct=pnl_pct_d,
@@ -522,13 +550,26 @@ class CheckpointManager:
             if self.alert_service:
                 try:
                     from app.bot.utils.formatters import format_breakeven_alert, format_sl_alert, format_tp_alert
+
                     pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
                     if pnl > 0:
-                        await self.alert_service.send(format_tp_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
+                        await self.alert_service.send(
+                            format_tp_alert(
+                                symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                            )
+                        )
                     elif pnl < 0:
-                        await self.alert_service.send(format_sl_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
+                        await self.alert_service.send(
+                            format_sl_alert(
+                                symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                            )
+                        )
                     else:
-                        await self.alert_service.send(format_breakeven_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))
+                        await self.alert_service.send(
+                            format_breakeven_alert(
+                                symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)
+                            )
+                        )
                 except Exception as ae:
                     logger.error(f"Exit alert failed: {ae}")
         except Exception as e:
@@ -538,7 +579,6 @@ class CheckpointManager:
         """Amend SL closer to current price on TIGHTEN_STOP verdict."""
         symbol = pos["symbol"]
         side = pos["side"]
-        amount = Decimal(pos["amount"])
         if atr <= 0:
             return
         if side == "buy":
@@ -546,7 +586,7 @@ class CheckpointManager:
         else:
             new_sl = current_price + (atr * Decimal("1"))
         try:
-            await self.client.amend_stop_loss(symbol, side, new_sl, amount)
+            await self.client.set_trading_stop(symbol, side, stop_loss=new_sl)
             logger.info(f"Tightened SL: {symbol} {side} → {new_sl}")
         except Exception as e:
             logger.error(f"Tighten SL failed: {symbol} {side}: {e}")

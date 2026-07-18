@@ -80,21 +80,20 @@ async def _on_signal_shadow(
             recent_trades="",
         )
         if not analyst_result or analyst_result.direction != signal.direction:
-            logger.info("shadow skip %s - AI analyst rejected", symbol)
+            from app.core import metrics
+            reason = "unavailable" if not analyst_result else "direction_mismatch"
+            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+            logger.info("shadow skip %s - AI analyst rejected (%s)", symbol, reason)
             return
 
     # PortfolioRiskManager gate
     if risk_manager:
-        approved = await risk_manager.evaluate_entry(
-            symbol=symbol,
-            direction=signal.direction,
-            amount=signal.amount,
-            entry_price=signal.entry_price,
-        )
-        if not approved:
+        from app.risk.portfolio_risk_manager import PRMResult
+        result: PRMResult = await risk_manager.check(signal)
+        if not result.approved:
             from app.core import metrics
             metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
-            logger.info("shadow skip %s - PortfolioRiskManager rejected", symbol)
+            logger.info("shadow skip %s - PortfolioRiskManager rejected: %s", symbol, result.reason)
             return
 
     from app.core import metrics
@@ -157,7 +156,7 @@ def _start_ingestor(
     """Create ingestor + sync loop. Returns (ingestor, task)."""
     ingestor = MarketDataIngestor(
         redis_client=redis,
-        symbols=settings.watchlist.split(",") if settings.watchlist else ["BTC/USDT"],
+        symbols=settings.watchlist.split(",") if settings.watchlist else settings.symbols,
         poll_interval_s=30,
         api_key=settings.bybit_api_key or "",
         api_secret=settings.bybit_api_secret or "",

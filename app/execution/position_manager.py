@@ -27,7 +27,8 @@ APM_RECONCILE_INTERVAL_S: int = 300
 APM_BREAKEVEN_FEE_PCT = Decimal("0.001")
 APM_TREND_TRAIL_ATR_MULT = Decimal("3.0")
 APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")
-APM_BREAKEVEN_LOCK_R = Decimal("1.0")
+APM_BREAKEVEN_LOCK_R = Decimal("1.0")  # fallback when ATR unavailable
+APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
 
 # Regime shift hysteresis: require N consecutive shifted checks
 REGIME_SHIFT_CONFIRM_COUNT: int = 3
@@ -126,13 +127,19 @@ class ActivePositionManager:
         if not pos.get("scaled_out") and r_mult >= scale_threshold:
             await self._scale_out_position(pos, scale_pct, entry_price, side)
 
-        if not moved_to_be and r_mult >= APM_BREAKEVEN_LOCK_R:
+        # ATR-based BE trigger: price must move beyond noise threshold
+        atr = Decimal(str(pos.get("atr", "0")))
+        if atr > 0:
+            price_move = abs(live_price - entry_price)
+            be_triggered = price_move >= atr * APM_BREAKEVEN_ATR_MULT
+        else:
+            # Fallback to fixed 1R when ATR unavailable
+            be_triggered = r_mult >= APM_BREAKEVEN_LOCK_R
+        if not moved_to_be and be_triggered:
             await self._move_stop_to_breakeven(pos, entry_price, side)
 
         if "TREND" in entry_regime:
-            await self._manage_trend_trailing_stop(
-                pos, live_price, r_mult, side, sl_price
-            )
+            await self._manage_trend_trailing_stop(pos, live_price, r_mult, side, sl_price)
 
         if entry_time is not None:
             await self._manage_time_exit(pos, entry_time, max_hold_mins)
@@ -144,9 +151,7 @@ class ActivePositionManager:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _calculate_r_multiple(
-        side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal
-    ) -> Decimal:
+    def _calculate_r_multiple(side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal) -> Decimal:
         """Calculate R-multiple. Zero-division guard."""
         try:
             if initial_risk <= 0:
@@ -165,9 +170,8 @@ class ActivePositionManager:
     async def _ensure_take_profit(
         self, pos: dict[str, Any], entry_price: Decimal, initial_risk: Decimal, side: str
     ) -> None:
-        """Place exchange-side TP once for RANGE/CHOP regimes."""
+        """Place exchange-side TP once for RANGE/CHOP regimes via atomic set_trading_stop."""
         symbol = pos.get("symbol", "")
-        amount = Decimal(str(pos.get("amount", "0")))
         api_side = "buy" if side == "LONG" else "sell"
         try:
             if side == "LONG":
@@ -175,10 +179,9 @@ class ActivePositionManager:
             else:
                 tp_price = entry_price - initial_risk
 
-            result = await self._client.place_take_profit(symbol, api_side, tp_price, amount)  # type: ignore[attr-defined]
-            if result:
-                pos["tp_placed"] = True
-                self._log.info(f"APM: exchange-side TP placed for {symbol} @ {tp_price}")
+            await self._client.set_trading_stop(symbol, api_side, take_profit=tp_price)  # type: ignore[attr-defined]
+            pos["tp_placed"] = True
+            self._log.info(f"APM: atomic TP placed for {symbol} @ {tp_price}")
         except Exception:
             self._log.exception(f"APM: TP placement failed for {symbol}")
 
@@ -186,9 +189,7 @@ class ActivePositionManager:
     # Scale-out (partial close)
     # ------------------------------------------------------------------
 
-    async def _scale_out_position(
-        self, pos: dict[str, Any], pct: Decimal, entry_price: Decimal, side: str
-    ) -> None:
+    async def _scale_out_position(self, pos: dict[str, Any], pct: Decimal, entry_price: Decimal, side: str) -> None:
         """Partial close to lock profit. RANGE/CHOP: 50% at +1R. TREND: 30% at +2R."""
         symbol = pos.get("symbol", "")
         amount = Decimal(str(pos.get("amount", "0")))
@@ -199,9 +200,7 @@ class ActivePositionManager:
                 return
             await self._client.reduce_position(symbol, api_side, close_qty)  # type: ignore[attr-defined]
             pos["scaled_out"] = True
-            self._log.info(
-                f"APM: scale-out {pct*100}% ({close_qty}) for {symbol}"
-            )
+            self._log.info(f"APM: scale-out {pct*100}% ({close_qty}) for {symbol}")
         except Exception:
             self._log.exception(f"APM: scale-out failed for {symbol}")
 
@@ -209,9 +208,7 @@ class ActivePositionManager:
     # Breakeven
     # ------------------------------------------------------------------
 
-    async def _move_stop_to_breakeven(
-        self, pos: dict[str, Any], entry_price: Decimal, side: str
-    ) -> None:
+    async def _move_stop_to_breakeven(self, pos: dict[str, Any], entry_price: Decimal, side: str) -> None:
         """Move SL to entry ± fee buffer. Exchange-side amend with retry."""
         symbol = pos.get("symbol", "")
         sl_order_id = pos.get("sl_order_id", "")
@@ -283,9 +280,7 @@ class ActivePositionManager:
     # Time exit
     # ------------------------------------------------------------------
 
-    async def _manage_time_exit(
-        self, pos: dict[str, Any], entry_time: object, max_minutes: int
-    ) -> None:
+    async def _manage_time_exit(self, pos: dict[str, Any], entry_time: object, max_minutes: int) -> None:
         """Force close if position held beyond max_hold_time_mins."""
         if not isinstance(entry_time, datetime):
             return
@@ -295,39 +290,27 @@ class ActivePositionManager:
 
         if held_mins > max_minutes:
             symbol = pos.get("symbol", "")
-            self._log.warning(
-                f"APM: time exit {symbol} after {held_mins:.0f}min (max {max_minutes})"
-            )
+            self._log.warning(f"APM: time exit {symbol} after {held_mins:.0f}min (max {max_minutes})")
             await self._force_close_position(pos, f"time_exit_{held_mins:.0f}min")
 
     # ------------------------------------------------------------------
     # Regime shift kill switch (with hysteresis)
     # ------------------------------------------------------------------
 
-    async def _check_regime_shift(
-        self, pos: dict[str, Any], symbol: str, entry_regime: str
-    ) -> None:
+    async def _check_regime_shift(self, pos: dict[str, Any], symbol: str, entry_regime: str) -> None:
         """Kill switch: force close if regime shifted N consecutive checks."""
         try:
             current_regime = await self._regime.get_current_regime(symbol)  # type: ignore[attr-defined]
-            current_value = (
-                current_regime.value
-                if hasattr(current_regime, "value")
-                else str(current_regime)
-            )
+            current_value = current_regime.value if hasattr(current_regime, "value") else str(current_regime)
 
             if current_value != entry_regime:
-                self._regime_shift_counts[symbol] = (
-                    self._regime_shift_counts.get(symbol, 0) + 1
-                )
+                self._regime_shift_counts[symbol] = self._regime_shift_counts.get(symbol, 0) + 1
                 if self._regime_shift_counts[symbol] >= REGIME_SHIFT_CONFIRM_COUNT:
                     self._log.warning(
                         f"APM: regime shift kill switch {symbol} — "
                         f"{entry_regime} → {current_value} ({self._regime_shift_counts[symbol]} checks)"
                     )
-                    await self._force_close_position(
-                        pos, f"regime_shift_{entry_regime}_to_{current_value}"
-                    )
+                    await self._force_close_position(pos, f"regime_shift_{entry_regime}_to_{current_value}")
                     self._regime_shift_counts.pop(symbol, None)
             else:
                 self._regime_shift_counts.pop(symbol, None)
@@ -385,34 +368,31 @@ class ActivePositionManager:
             for pos in internal:
                 symbol = pos.get("symbol", "")
                 if symbol not in external_symbols:
-                    self._log.warning(
-                        f"APM: ghost position detected — {symbol} not on Bybit, removing"
-                    )
+                    self._log.warning(f"APM: ghost position detected — {symbol} not on Bybit, removing")
                     api_side = pos.get("side", "buy")
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
                     continue
 
-                # Verify SL order still exists on exchange
-                sl_order_id = pos.get("sl_order_id", "")
-                if sl_order_id:
-                    open_orders = await self._client.fetch_open_orders()  # type: ignore[attr-defined]
-                    sl_alive = any(
-                        o.get("id") == sl_order_id for o in open_orders
-                    )
-                    if not sl_alive:
-                        self._log.warning(
-                            f"APM: SL order {sl_order_id} missing for {symbol}, re-placing"
-                        )
-                        entry_price = Decimal(str(pos.get("entry_price", "0")))
-                        amount = Decimal(str(pos.get("amount", "0")))
-                        api_side = pos.get("side", "buy")
-                        if entry_price > 0 and amount > 0:
-                            new_sl = await self._client.place_stop_loss(  # type: ignore[attr-defined]
-                                symbol, api_side, entry_price, amount
+                # Verify SL is attached to the position
+                entry_price = Decimal(str(pos.get("entry_price", "0")))
+                api_side = pos.get("side", "buy")
+                if entry_price > 0:
+                    try:
+                        # Re-attach SL atomically via set_trading_stop
+                        sl_distance = Decimal(str(pos.get("initial_risk_per_unit", "0")))
+                        if sl_distance > 0:
+                            sl_price = entry_price - sl_distance if api_side == "buy" else entry_price + sl_distance
+                        else:
+                            # Fallback: 2% of entry
+                            sl_price = (
+                                entry_price * Decimal("0.98") if api_side == "buy" else entry_price * Decimal("1.02")
                             )
-                            if new_sl:
-                                new_id = new_sl.get("orderId", "")
-                                await self._store.update_sl(symbol, api_side, new_id)  # type: ignore[attr-defined]
+                        await self._client.set_trading_stop(  # type: ignore[attr-defined]
+                            symbol, api_side, stop_loss=sl_price
+                        )
+                        self._log.info(f"APM: SL reconciled for {symbol} at {sl_price}")
+                    except Exception:
+                        self._log.warning(f"APM: SL reconciliation failed for {symbol}")
 
         except Exception:
             self._log.exception("APM: reconciliation failed")

@@ -1,4 +1,5 @@
 """Tests for Phase 12 — Alpha Bridge, SOR regime-aware, PRM circuit breakers, SystemWatchdog."""
+
 from __future__ import annotations
 
 import json
@@ -32,18 +33,14 @@ class TestAlphaBridge:
     @pytest.mark.asyncio
     async def test_insufficient_candles(self) -> None:
         bridge, engine, _ = self._make_bridge()
-        result = await bridge.generate_signal(
-            "BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 10
-        )
+        result = await bridge.generate_signal("BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 10)
         assert result is None
         engine.evaluate.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_no_signal_generated(self) -> None:
         bridge, engine, _ = self._make_bridge()
-        result = await bridge.generate_signal(
-            "BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60
-        )
+        result = await bridge.generate_signal("BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60)
         assert result is None
 
     @pytest.mark.asyncio
@@ -55,9 +52,7 @@ class TestAlphaBridge:
         mock_signal.direction = "LONG"
         engine.evaluate.return_value = mock_signal
 
-        result = await bridge.generate_signal(
-            "BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60
-        )
+        result = await bridge.generate_signal("BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60)
         assert result is mock_signal
 
     @pytest.mark.asyncio
@@ -65,9 +60,7 @@ class TestAlphaBridge:
         bridge, engine, _ = self._make_bridge()
         mock_signal = MagicMock()
         engine.evaluate.return_value = mock_signal
-        await bridge.generate_signal(
-            "BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60
-        )
+        await bridge.generate_signal("BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60)
         assert bridge.get_last_signal("BTC/USDT") is mock_signal
         assert bridge.get_last_signal("ETH/USDT") is None
 
@@ -75,9 +68,7 @@ class TestAlphaBridge:
     async def test_evaluate_exception_handled(self) -> None:
         bridge, engine, _ = self._make_bridge()
         engine.evaluate.side_effect = RuntimeError("engine crash")
-        result = await bridge.generate_signal(
-            "BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60
-        )
+        result = await bridge.generate_signal("BTC/USDT", [[1, 100, 101, 99, 100, 1000]] * 60)
         assert result is None
 
     def test_global_state_extraction(self) -> None:
@@ -112,11 +103,13 @@ class TestSORRegimeAware:
             CHOP_RANGE_SPREAD_PCT,
             TREND_SPREAD_PCT,
         )
+
         assert CHOP_RANGE_MAX_REPRICE == 1
         assert CHOP_RANGE_SPREAD_PCT < TREND_SPREAD_PCT
 
     def test_sor_has_regime_methods(self) -> None:
         from app.execution.sor import SmartOrderRouter
+
         assert hasattr(SmartOrderRouter, "execute_regime_aware")
         assert hasattr(SmartOrderRouter, "_check_spread_gate")
         assert hasattr(SmartOrderRouter, "_try_post_only")
@@ -130,15 +123,20 @@ class TestSORRegimeAware:
 class TestPRMCircuitBreakers:
     def test_prm_has_cb_methods(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         assert hasattr(PortfolioRiskManager, "_check_daily_loss_circuit_breaker")
         assert hasattr(PortfolioRiskManager, "_check_consecutive_loss_circuit_breaker")
 
     @pytest.mark.asyncio
     async def test_daily_cb_no_redis_passes(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         prm = PortfolioRiskManager(
-            redis_client=None, position_store=None,
-            trade_store=None, sector_mapping=None, bybit_client=None,
+            redis_client=None,
+            position_store=None,
+            trade_store=None,
+            sector_mapping=None,
+            bybit_client=None,
         )
         result = await prm._check_daily_loss_circuit_breaker()
         assert result.passed
@@ -146,9 +144,13 @@ class TestPRMCircuitBreakers:
     @pytest.mark.asyncio
     async def test_consecutive_cb_no_redis_passes(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         prm = PortfolioRiskManager(
-            redis_client=None, position_store=None,
-            trade_store=None, sector_mapping=None, bybit_client=None,
+            redis_client=None,
+            position_store=None,
+            trade_store=None,
+            sector_mapping=None,
+            bybit_client=None,
         )
         result = await prm._check_consecutive_loss_circuit_breaker()
         assert result.passed
@@ -156,14 +158,22 @@ class TestPRMCircuitBreakers:
     @pytest.mark.asyncio
     async def test_daily_cb_triggered(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         redis = MagicMock()
-        redis.get = AsyncMock(return_value=json.dumps({
-            "status": "TRIGGERED",
-            "reason": "daily loss -2.5% exceeded limit",
-        }))
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "status": "TRIGGERED",
+                    "reason": "daily loss -2.5% exceeded limit",
+                }
+            )
+        )
         prm = PortfolioRiskManager(
-            redis_client=redis, position_store=None,
-            trade_store=None, sector_mapping=None, bybit_client=None,
+            redis_client=redis,
+            position_store=None,
+            trade_store=None,
+            sector_mapping=None,
+            bybit_client=None,
         )
         result = await prm._check_daily_loss_circuit_breaker()
         assert not result.passed
@@ -171,14 +181,22 @@ class TestPRMCircuitBreakers:
     @pytest.mark.asyncio
     async def test_daily_cb_not_triggered_other_reason(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         redis = MagicMock()
-        redis.get = AsyncMock(return_value=json.dumps({
-            "status": "TRIGGERED",
-            "reason": "consecutive loss 5 exceeded",
-        }))
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "status": "TRIGGERED",
+                    "reason": "consecutive loss 5 exceeded",
+                }
+            )
+        )
         prm = PortfolioRiskManager(
-            redis_client=redis, position_store=None,
-            trade_store=None, sector_mapping=None, bybit_client=None,
+            redis_client=redis,
+            position_store=None,
+            trade_store=None,
+            sector_mapping=None,
+            bybit_client=None,
         )
         result = await prm._check_daily_loss_circuit_breaker()
         assert result.passed
@@ -186,14 +204,22 @@ class TestPRMCircuitBreakers:
     @pytest.mark.asyncio
     async def test_consecutive_cb_triggered(self) -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
         redis = MagicMock()
-        redis.get = AsyncMock(return_value=json.dumps({
-            "status": "TRIGGERED",
-            "reason": "consecutive loss 5 exceeded",
-        }))
+        redis.get = AsyncMock(
+            return_value=json.dumps(
+                {
+                    "status": "TRIGGERED",
+                    "reason": "consecutive loss 5 exceeded",
+                }
+            )
+        )
         prm = PortfolioRiskManager(
-            redis_client=redis, position_store=None,
-            trade_store=None, sector_mapping=None, bybit_client=None,
+            redis_client=redis,
+            position_store=None,
+            trade_store=None,
+            sector_mapping=None,
+            bybit_client=None,
         )
         result = await prm._check_consecutive_loss_circuit_breaker()
         assert not result.passed
@@ -210,28 +236,36 @@ class TestSystemWatchdog:
         redis.set = AsyncMock()
         redis.get = AsyncMock(return_value=None)
         bybit = MagicMock()
-        bybit.fetch_positions = AsyncMock(return_value=[{"symbol": "BTC/USDT"}])
+        bybit.fetch_positions = AsyncMock(
+            return_value=[
+                {"symbol": "BTC/USDT", "side": "Long", "contracts": 0.5},
+            ]
+        )
         pos_store = MagicMock()
-        pos_store.list_all = AsyncMock(return_value=[{"symbol": "BTC/USDT"}])
-        return SystemWatchdog(
-            redis_client=redis, bybit_client=bybit,
-            position_store=pos_store,
-        ), redis, bybit, pos_store
+        pos_store.list_all = AsyncMock(
+            return_value=[
+                {"symbol": "BTC/USDT", "side": "Long", "amount": 0.5},
+            ]
+        )
+        return (
+            SystemWatchdog(
+                redis_client=redis,
+                bybit_client=bybit,
+                position_store=pos_store,
+            ),
+            redis,
+            bybit,
+            pos_store,
+        )
 
     @pytest.mark.asyncio
     async def test_position_match_no_desync(self) -> None:
         wd, redis, _, _ = self._make_watchdog()
         await wd._check_all()
         # Only status key written, not halt key
-        status_written = any(
-            call[0][0] == REDIS_WATCHDOG_STATUS_KEY
-            for call in redis.set.call_args_list
-        )
+        status_written = any(call[0][0] == REDIS_WATCHDOG_STATUS_KEY for call in redis.set.call_args_list)
         assert status_written
-        halt_written = any(
-            call[0][0] == REDIS_HALT_KEY
-            for call in redis.set.call_args_list
-        )
+        halt_written = any(call[0][0] == REDIS_HALT_KEY for call in redis.set.call_args_list)
         assert not halt_written
 
     @pytest.mark.asyncio
@@ -239,10 +273,7 @@ class TestSystemWatchdog:
         wd, redis, _, pos_store = self._make_watchdog()
         pos_store.list_all = AsyncMock(return_value=[])
         await wd._check_all()
-        halt_written = any(
-            call[0][0] == REDIS_HALT_KEY
-            for call in redis.set.call_args_list
-        )
+        halt_written = any(call[0][0] == REDIS_HALT_KEY for call in redis.set.call_args_list)
         assert halt_written
         assert wd._halted
 
@@ -251,10 +282,7 @@ class TestSystemWatchdog:
         wd, redis, _, _ = self._make_watchdog()
         wd._last_balance_ts = time.time() - BALANCE_STALE_S - 1
         await wd._check_all()
-        halt_written = any(
-            call[0][0] == REDIS_HALT_KEY
-            for call in redis.set.call_args_list
-        )
+        halt_written = any(call[0][0] == REDIS_HALT_KEY for call in redis.set.call_args_list)
         assert halt_written
 
     @pytest.mark.asyncio
@@ -262,10 +290,7 @@ class TestSystemWatchdog:
         wd, redis, _, _ = self._make_watchdog()
         wd._last_orderbook_ts = time.time() - ORDERBOOK_STALE_S - 1
         await wd._check_all()
-        halt_written = any(
-            call[0][0] == REDIS_HALT_KEY
-            for call in redis.set.call_args_list
-        )
+        halt_written = any(call[0][0] == REDIS_HALT_KEY for call in redis.set.call_args_list)
         assert halt_written
 
     @pytest.mark.asyncio
@@ -274,10 +299,7 @@ class TestSystemWatchdog:
         wd.record_balance_update()
         wd.record_orderbook_update()
         await wd._check_all()
-        halt_written = any(
-            call[0][0] == REDIS_HALT_KEY
-            for call in redis.set.call_args_list
-        )
+        halt_written = any(call[0][0] == REDIS_HALT_KEY for call in redis.set.call_args_list)
         assert not halt_written
 
     @pytest.mark.asyncio
@@ -285,10 +307,7 @@ class TestSystemWatchdog:
         wd, redis, _, _ = self._make_watchdog()
         redis.get = AsyncMock(return_value="some_halt_reason")
         await wd._check_all()
-        status_written = any(
-            call[0][0] == REDIS_WATCHDOG_STATUS_KEY
-            for call in redis.set.call_args_list
-        )
+        status_written = any(call[0][0] == REDIS_WATCHDOG_STATUS_KEY for call in redis.set.call_args_list)
         assert not status_written
         assert wd._halted
 

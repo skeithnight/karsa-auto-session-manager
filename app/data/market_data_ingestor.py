@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -53,6 +54,14 @@ class MarketDataIngestor:
         self.oi_change: dict[str, float] = {}
         self._prev_oi: dict[str, float] = {}
 
+        # Failure tracking per symbol: escalate from debug to warning
+        self._failure_counts: dict[str, int] = {}
+        self._escalation_threshold = 3
+
+        # Freshness tracking: timestamp of last successful fetch per symbol
+        self._last_fetch_ts: dict[str, float] = {}
+        self.max_staleness_s: float = 2.0
+
         # ccxt Bybit session for REST polling
         self._session: ccxt.bybit | None = None
         self._api_key = api_key
@@ -62,18 +71,21 @@ class MarketDataIngestor:
     async def start(self) -> None:
         """Main polling loop. Runs until stop() is called."""
         self._running = True
-        self._session = ccxt.bybit({
-            "apiKey": self._api_key,
-            "secret": self._api_secret,
-            "options": {"defaultType": "swap"},
-        })
+        self._session = ccxt.bybit(
+            {
+                "apiKey": self._api_key,
+                "secret": self._api_secret,
+                "options": {"defaultType": "swap"},
+            }
+        )
         if self._testnet:
             self._session.set_sandbox_mode(True)
         await self._session.load_markets()
 
         logger.info(
             "MarketDataIngestor: starting poll loop symbols=%s interval=%ds",
-            self._symbols, self._interval,
+            self._symbols,
+            self._interval,
         )
 
         while self._running:
@@ -108,21 +120,44 @@ class MarketDataIngestor:
             return
 
         ccxt_sym = self._to_ccxt_symbol(symbol)
+        cycle_failures = 0
 
         try:
             await self._fetch_orderbook(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: orderbook fetch failed %s", symbol)
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "orderbook", e)
 
         try:
             await self._fetch_funding_rate(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: funding fetch failed %s", symbol)
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "funding", e)
 
         try:
             await self._fetch_oi(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: OI fetch failed %s", symbol)
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "OI", e)
+
+        if cycle_failures == 0:
+            self._failure_counts[symbol] = 0
+            self._last_fetch_ts[symbol] = time.time()
+
+    def _log_fetch_failure(self, symbol: str, field: str, error: Exception) -> None:
+        """Log fetch failure with escalation after threshold consecutive misses."""
+        self._failure_counts[symbol] = self._failure_counts.get(symbol, 0) + 1
+        count = self._failure_counts[symbol]
+        if count > self._escalation_threshold:
+            logger.warning(
+                "MarketDataIngestor: persistent %s fetch failure for %s (%d consecutive) — %s",
+                field,
+                symbol,
+                count,
+                error,
+            )
+        else:
+            logger.debug("MarketDataIngestor: %s fetch failed %s — %s", field, symbol, error)
 
     async def _fetch_orderbook(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch L2 orderbook and compute bid/ask volume imbalance.
@@ -163,11 +198,7 @@ class MarketDataIngestor:
         """
         try:
             oi_data = await self._session.fetch_open_interest(ccxt_sym)  # type: ignore[union-attr]
-            current_oi = float(
-                oi_data.get("openInterestAmount")
-                or oi_data.get("openInterest")
-                or 0
-            )
+            current_oi = float(oi_data.get("openInterestAmount") or oi_data.get("openInterest") or 0)
         except (AttributeError, TypeError):
             current_oi = 0.0
 
@@ -203,3 +234,10 @@ class MarketDataIngestor:
             "funding_rate": self.funding_rate.get(symbol),
             "oi_change": self.oi_change.get(symbol),
         }
+
+    def is_stale(self, symbol: str) -> bool:
+        """Check if data for symbol exceeds max staleness threshold."""
+        ts = self._last_fetch_ts.get(symbol)
+        if ts is None:
+            return True
+        return (time.time() - ts) > self.max_staleness_s

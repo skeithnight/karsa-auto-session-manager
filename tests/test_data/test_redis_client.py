@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import AsyncMock, patch, MagicMock
 from decimal import Decimal
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.core.redis_client import RedisClient, DecimalEncoder
+from app.core.redis_client import DecimalEncoder, RedisClient
 
 
 @pytest.fixture
@@ -48,11 +48,16 @@ class TestRedisClient:
 
     @pytest.mark.asyncio
     async def test_connect(self, client: RedisClient) -> None:
-        with patch("app.core.redis_client.aioredis.from_url") as mock_from_url:
-            mock_redis = AsyncMock()
-            mock_from_url.return_value = mock_redis
+        with (
+            patch("app.core.redis_client.aioredis.BlockingConnectionPool") as mock_pool_cls,
+            patch("app.core.redis_client.aioredis.Redis") as mock_redis_cls,
+        ):
+            mock_pool = MagicMock()
+            mock_pool_cls.from_url.return_value = mock_pool
             await client.connect()
-            assert client.redis is mock_redis
+            mock_pool_cls.from_url.assert_called_once()
+            mock_redis_cls.assert_called_once_with(connection_pool=mock_pool)
+            assert client.redis is mock_redis_cls.return_value
 
     @pytest.mark.asyncio
     async def test_disconnect(self, client: RedisClient) -> None:

@@ -2,6 +2,7 @@
 **Project Name:** `karsa-auto-session-manager`
 **Document Status:** Draft — Proposed
 **Purpose:** Single canonical location for every numeric threshold, timeout, limit, and calibration value in the system. If a constant exists in code, it must be listed here. If it's listed here, it must exist in code.
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup
 
 ---
 
@@ -151,7 +152,7 @@
 | 9router port | `20129` | port | `docker-compose.yml` | AI proxy endpoint |
 | PostgreSQL default | `karsa:karsa@db:5432/karsa` | — | `config.py:25` | Default connection string |
 | Redis default | `redis://redis:6379/0` | — | `config.py:28` | Default Redis URL |
-| WARP proxy type | SOCKS5 | — | `docker-compose.yml` | `socks5h://host.docker.internal:1080` |
+| VPN tunnel type | WireGuard | — | `docker-compose.yml` | gluetun sidecar, network_mode |
 
 ---
 

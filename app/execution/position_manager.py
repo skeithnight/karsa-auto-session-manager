@@ -14,7 +14,7 @@ Core responsibilities:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any
 
@@ -60,7 +60,7 @@ class ActivePositionManager:
         last_reconcile = 0.0
         while True:
             try:
-                now = datetime.now(timezone.utc).timestamp()
+                now = datetime.now(UTC).timestamp()
 
                 positions = await self._store.list_all()  # type: ignore[attr-defined]
 
@@ -290,7 +290,7 @@ class ActivePositionManager:
         if not isinstance(entry_time, datetime):
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         held_mins = (now - entry_time).total_seconds() / 60.0
 
         if held_mins > max_minutes:

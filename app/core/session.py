@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -69,7 +69,7 @@ class AutonomousSessionManager:
         logger.debug(f"is_active: returning {result}")
         return result
 
-    async def get_config(self) -> Optional[dict]:
+    async def get_config(self) -> dict | None:
         """Get current session config."""
         logger.debug("get_config: entering")
         raw = await self.redis.get("karsa:auto:config")

@@ -99,53 +99,54 @@ import signal
 import sys
 import time
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
+from app.alpha.analyst import CryptoAnalyst
+from app.alpha.entry_filter import EntryFilter
+from app.alpha.lead_lag_buffer import LeadLagBuffer
+from app.alpha.metrics import AlphaMetrics
+from app.alpha.multi_tf import MultiTFFilter
+from app.alpha.position_judge import PositionJudge
+from app.alpha.regime import RegimeEngine
+
+# Phase 6: Adaptive Multi-Strategy
+from app.alpha.regime_classifier import RegimeClassifier
+from app.alpha.signals import SignalGenerator
+from app.alpha.strategy_router import StrategyRouter
+from app.alpha.ta_tools import calculate_atr
+from app.alpha.trade_memory import TradeMemory
+from app.bot.alert_service import AlertService
+from app.bot.runner import run_bot
+from app.core import metrics
+from app.core.ai_client import AIClient
 from app.core.config import get_settings
+from app.core.database import DatabaseEngine
+from app.core.position_store import PositionStore
 from app.core.redis_client import RedisClient
+from app.core.session import AutonomousSessionManager
+from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
 from app.core.state import StateManager
+from app.core.trade_reconciler import TradeReconciler
+from app.core.trade_store import TradeStore
 from app.data.ccxt_manager import CCXTManager
 from app.data.filters import BadTickFilter
 from app.data.normalizer import Normalizer
-from app.alpha.metrics import AlphaMetrics
-from app.alpha.signals import SignalGenerator
-from app.alpha.regime import RegimeEngine
-from app.alpha.lead_lag_buffer import LeadLagBuffer
-from app.alpha.entry_filter import EntryFilter
-from app.alpha.analyst import CryptoAnalyst
-from app.alpha.position_judge import PositionJudge
-from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
-from app.execution.bybit_client import BybitClient
-from app.execution.sor import SmartOrderRouter
-from app.execution.shadow import ShadowExecutor, ShadowExchangeClient, ShadowAPM
-from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
-from app.execution.position_lifecycle import TrailingStopManager, CheckpointManager
-from app.core.position_store import PositionStore
-from app.core.trade_store import TradeStore
-from app.core.trade_reconciler import TradeReconciler
-from app.risk.gates import RiskGate
-from app.risk.circuit_breaker import CircuitBreaker
-from app.risk.sector_cap import SectorCap
-from app.alpha.multi_tf import MultiTFFilter
-from app.alpha.ta_tools import calculate_atr
-from app.alpha.trade_memory import TradeMemory
 from app.data.universe_scorer import UniverseScorer
-from app.watchdog.monitor import Watchdog
-# Phase 6: Adaptive Multi-Strategy
-from app.alpha.regime_classifier import RegimeClassifier
-from app.alpha.strategy_router import StrategyRouter
-from app.risk.dynamic_risk_gate import DynamicRiskGate
-from app.risk.portfolio_risk_manager import PortfolioRiskManager
+from app.execution.bybit_client import BybitClient
+from app.execution.position_lifecycle import CheckpointManager, TrailingStopManager
 from app.execution.position_manager import ActivePositionManager
+from app.execution.shadow import ShadowAPM, ShadowExecutor
+from app.execution.sor import SmartOrderRouter
+from app.risk.circuit_breaker import CircuitBreaker
+from app.risk.dynamic_risk_gate import DynamicRiskGate
+from app.risk.gates import RiskGate
+from app.risk.portfolio_risk_manager import PortfolioRiskManager
+from app.risk.sector_cap import SectorCap
 from app.watchdog.dead_mans_switch import DeadMansSwitch
-from app.bot.runner import run_bot
-from app.bot.alert_service import AlertService
-from app.core.session import AutonomousSessionManager
-from app.core.database import DatabaseEngine
-from app.core import metrics
+from app.watchdog.monitor import Watchdog
 
 # Kill Switch event — global, set on SIGINT/SIGTERM
 kill_switch = asyncio.Event()
@@ -310,12 +311,12 @@ async def alpha_bridge_task(
     symbols: list[str],
     signal_queue: asyncio.Queue,
     multi_tf: MultiTFFilter,
-    crypto_analyst: Optional[CryptoAnalyst],
-    ohlcv_fetcher: Optional[Any] = None,
-    position_store: Optional[PositionStore] = None,
-    trade_memory: Optional[Any] = None,
-    trade_store: Optional[TradeStore] = None,
-    strategy_router: Optional[Any] = None,
+    crypto_analyst: CryptoAnalyst | None,
+    ohlcv_fetcher: Any | None = None,
+    position_store: PositionStore | None = None,
+    trade_memory: Any | None = None,
+    trade_store: TradeStore | None = None,
+    strategy_router: Any | None = None,
 ) -> None:
     """Key 2: Generate trading signals from market state."""
     logger.debug("alpha_bridge_task: entering")
@@ -632,7 +633,7 @@ async def risk_gate_task(
     while not kill_switch.is_set():
         try:
             signal = await asyncio.wait_for(signal_queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
 
         if circuit_breaker.is_halted() or circuit_breaker.is_paused():
@@ -787,7 +788,7 @@ async def executor_task(
     while not kill_switch.is_set():
         try:
             signal = await asyncio.wait_for(risk_queue.get(), timeout=1.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             continue
 
         # ASM gate — skip execution when no active session
@@ -1071,7 +1072,7 @@ async def kill_switch_sequence(
     logger.debug("kill_switch_sequence: returning None")
 
 
-async def _get_price(redis_client: RedisClient, symbol: str) -> Optional[Decimal]:
+async def _get_price(redis_client: RedisClient, symbol: str) -> Decimal | None:
     """Helper: get mid price from Redis global state for lifecycle managers."""
     state = await redis_client.get_global_state(symbol)
     if not state:
@@ -1116,7 +1117,7 @@ async def metrics_publisher_task(
                 max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
             except Exception:
                 max_pos = 5
-            
+
             metrics.max_positions.set(max_pos)
 
             # 2. Update wallet balance
@@ -1132,10 +1133,10 @@ async def metrics_publisher_task(
 
         except Exception as e:
             logger.error(f"Metrics publisher error: {e}")
-            
+
         try:
             await asyncio.wait_for(kill_switch.wait(), timeout=interval_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -1169,7 +1170,8 @@ async def main() -> None:
     # Prometheus metrics HTTP endpoint — start early so metrics available even if Bybit fails
     from prometheus_client import start_http_server
 
-    start_http_server(8001)
+    if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
+        start_http_server(int(prom_port))
     logger.info("Prometheus metrics server on :8001")
 
     bybit_client = BybitClient()
@@ -1237,8 +1239,6 @@ async def main() -> None:
             trade_store=shadow_trade_store,
             alert_service=alert_service,
         )
-
-        shadow_exchange_client = ShadowExchangeClient(redis_client)
 
         shadow_apm = ShadowAPM(
             real_apm=active_position_manager,
@@ -1468,6 +1468,7 @@ async def main() -> None:
                 session_manager,
                 db_engine,
                 alert_service,
+                trade_reconciler=trade_reconciler,
             )
         ),
         asyncio.create_task(

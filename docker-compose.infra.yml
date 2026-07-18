@@ -1,0 +1,164 @@
+# Karsa ASM — Infrastructure Stack
+# postgres, redis, gluetun (VPN), 9router, prometheus, grafana
+#
+# This stack should rarely change. Bring it up once and leave it running.
+# docker-compose.apps.yml never declares these services, so rebuilding the
+# app containers can never trigger a rebuild/recreate here — 9router,
+# postgres, and redis keep their state.
+#
+# Start:            docker compose -f docker-compose.infra.yml up -d
+# Stop (keep data):  docker compose -f docker-compose.infra.yml stop
+# Rebuild (only if you actually changed something in THIS file):
+#                    docker compose -f docker-compose.infra.yml up -d --build
+#
+# NEVER run `down -v` on this file — it deletes postgres_data, redis_data,
+# 9router_data, gluetun_data. Plain `stop` / `start` (or just leave it
+# running) preserves everything.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: karsa-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-karsa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-karsa}
+      POSTGRES_DB: ${POSTGRES_DB:-karsa}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./scripts/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-karsa} -d ${POSTGRES_DB:-karsa}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks:
+      - karsa-backend
+
+  redis:
+    image: redis:7-alpine
+    container_name: karsa-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    networks:
+      - karsa-backend
+
+  # -- VPN (WireGuard via gluetun) --------------------------------
+
+  gluetun:
+    image: qmcgaw/gluetun
+    container_name: karsa-gluetun
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    environment:
+      - VPN_SERVICE_PROVIDER=custom
+      - VPN_TYPE=wireguard
+      - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
+      - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
+      - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP}
+      - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-51820}
+      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - FIREWALL_OUTBOUND_SUBNETS=172.28.0.0/16,172.17.0.0/16
+      - FIREWALL_INPUT_SUBNETS=172.28.0.0/16,172.17.0.0/16
+    volumes:
+      - gluetun_data:/gluetun
+    healthcheck:
+      test: [ "CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9999/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    ports:
+      - "20129:20128"
+    networks:
+      - karsa-backend
+
+  # -- 9router (AI proxy) -----------------------------------------
+  # Pre-built image, no `build:` here — compose has no reason to touch
+  # this container unless gluetun (its network namespace) recreates.
+  # Because this file is now the ONLY place gluetun is declared, that
+  # only happens if you deliberately rebuild THIS file.
+
+  9router:
+    image: 9router:latest
+    container_name: karsa-9router
+    restart: unless-stopped
+    env_file: .env
+    network_mode: "service:gluetun"
+    depends_on:
+      gluetun:
+        condition: service_healthy
+    volumes:
+      - 9router_data:/data
+
+  # -- Monitoring --------------------------------------------------
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: karsa-prometheus
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --web.enable-remote-write-receiver
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - karsa-backend
+      - karsa-frontend
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: karsa-grafana
+    restart: unless-stopped
+    environment:
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/signal-confidence.json
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana_data:/var/lib/grafana
+    networks:
+      - karsa-backend
+      - karsa-frontend
+
+# -- Networks -------------------------------------------------------
+# Explicit `name:` so docker-compose.apps.yml can attach to the exact
+# same network as an external resource, regardless of project prefix.
+
+networks:
+  karsa-backend:
+    name: karsa-backend
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16
+  karsa-frontend:
+    name: karsa-frontend
+    driver: bridge
+
+# -- Volumes --------------------------------------------------------
+
+volumes:
+  postgres_data:
+  redis_data:
+  grafana_data:
+  9router_data:
+  gluetun_data:

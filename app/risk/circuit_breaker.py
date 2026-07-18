@@ -9,9 +9,10 @@ Responsibilities:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from collections.abc import Callable
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Callable, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -26,9 +27,9 @@ class CircuitBreaker:
         daily_drawdown_limit: Decimal = Decimal("-0.02"),
         max_consecutive_losses: int = 3,
         loss_pause_minutes: int = 60,
-        max_daily_loss_usd: Optional[Decimal] = None,
-        alert_service: Optional[Any] = None,
-        redis_client: Optional[Any] = None,
+        max_daily_loss_usd: Decimal | None = None,
+        alert_service: Any | None = None,
+        redis_client: Any | None = None,
     ) -> None:
         """Callers: main.py.
         max_daily_loss_usd: absolute USD loss cap (optional).
@@ -44,9 +45,9 @@ class CircuitBreaker:
         self.daily_pnl = Decimal("0")
         self.consecutive_losses = 0
         self.halted = False
-        self.halt_reason: Optional[str] = None
-        self.paused_until: Optional[datetime] = None
-        self.on_halt: Optional[Callable] = None  # Callback for halt sequence
+        self.halt_reason: str | None = None
+        self.paused_until: datetime | None = None
+        self.on_halt: Callable | None = None  # Callback for halt sequence
 
     async def restore(self) -> None:
         """Restore state from Redis on startup. No-op if no redis or no saved state."""
@@ -63,7 +64,7 @@ class CircuitBreaker:
         except Exception as e:
             logger.error(f"Circuit breaker restore failed: {e}")
 
-    async def _persist(self, status: str, reason: Optional[str] = None) -> None:
+    async def _persist(self, status: str, reason: str | None = None) -> None:
         """Write state to Redis. Best-effort — logs error, never raises."""
         if not self.redis:
             return
@@ -112,7 +113,7 @@ class CircuitBreaker:
 
         if self.consecutive_losses >= self.max_consecutive_losses:
             from datetime import timedelta
-            self.paused_until = datetime.now(timezone.utc) + timedelta(
+            self.paused_until = datetime.now(UTC) + timedelta(
                 minutes=self.loss_pause_minutes
             )
             metrics.circuit_breaker_trips.labels(
@@ -135,7 +136,7 @@ class CircuitBreaker:
         if self.paused_until is None:
             return False
 
-        if datetime.now(timezone.utc) >= self.paused_until:
+        if datetime.now(UTC) >= self.paused_until:
             self.paused_until = None
             return False
 
@@ -154,7 +155,7 @@ class CircuitBreaker:
         self.paused_until = None
         logger.info("Circuit breaker reset")
 
-    def get_state(self) -> Dict[str, Any]:
+    def get_state(self) -> dict[str, Any]:
         """Get current circuit breaker state."""
         return {
             "halted": self.halted,
@@ -180,7 +181,7 @@ class CircuitBreaker:
         if task.exception():
             logger.error(f"Circuit breaker alert failed: {task.exception()}")
 
-    def _persist_sync(self, status: str, reason: Optional[str] = None) -> None:
+    def _persist_sync(self, status: str, reason: str | None = None) -> None:
         """Schedule Redis persist without blocking sync context."""
         if not self.redis:
             return

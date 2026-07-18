@@ -8,9 +8,10 @@ Import path updated: app.bot.utils (was src.utils).
 Silent except clauses replaced with explicit logger.warning() per DEFINITION_OF_DONE §4.
 """
 
-import re
 import logging
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+import re
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 
 logger = logging.getLogger(__name__)
 

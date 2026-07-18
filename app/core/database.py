@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
@@ -13,7 +11,7 @@ class DatabaseEngine:
 
     def __init__(self) -> None:
         logger.debug("DatabaseEngine.__init__: entering")
-        self.engine: Optional[AsyncEngine] = None
+        self.engine: AsyncEngine | None = None
         logger.debug("DatabaseEngine.__init__: returning")
 
     async def connect(self, url: str) -> None:

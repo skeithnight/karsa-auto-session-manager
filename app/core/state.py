@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -23,10 +23,10 @@ class Position:
         self.size = size
         self.entry_price = entry_price
         self.unrealized_pnl = Decimal("0")
-        self.updated_at = datetime.now(timezone.utc)
+        self.updated_at = datetime.now(UTC)
         logger.debug("Position.__init__: returning")
 
-    def to_dict(self) -> Dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         logger.debug("to_dict: entering")
         result = {
             "symbol": self.symbol,
@@ -47,8 +47,8 @@ class StateManager:
         logger.debug("StateManager.__init__: entering")
         self.redis = redis_client
         self.bybit = bybit_client
-        self.positions: Dict[str, Position] = {}
-        self.open_orders: Dict[str, Dict[str, Any]] = {}
+        self.positions: dict[str, Position] = {}
+        self.open_orders: dict[str, dict[str, Any]] = {}
         self.reconciled = False
         logger.debug("StateManager.__init__: returning")
 
@@ -123,14 +123,14 @@ class StateManager:
                 pos.entry_price = (pos.entry_price * pos.size + price * size) / total_size
             pos.size = total_size
             pos.side = side
-            pos.updated_at = datetime.now(timezone.utc)
+            pos.updated_at = datetime.now(UTC)
         else:
             self.positions[symbol] = Position(symbol, side, size, price)
 
         logger.info(f"Position updated: {symbol} {side} {size} @ {price}")
         logger.debug("update_position: returning None")
 
-    def close_position(self, symbol: str, price: Decimal) -> Optional[Decimal]:
+    def close_position(self, symbol: str, price: Decimal) -> Decimal | None:
         """Close position, return realized PnL."""
         logger.debug(f"close_position: entering symbol={symbol}")
         if symbol not in self.positions:
@@ -149,13 +149,13 @@ class StateManager:
         logger.debug(f"close_position: returning pnl={pnl}")
         return pnl
 
-    def get_position(self, symbol: str) -> Optional[Position]:
+    def get_position(self, symbol: str) -> Position | None:
         logger.debug(f"get_position: entering symbol={symbol}")
         result = self.positions.get(symbol)
         logger.debug(f"get_position: returning result_type={type(result).__name__}")
         return result
 
-    def get_all_positions(self) -> List[Position]:
+    def get_all_positions(self) -> list[Position]:
         logger.debug("get_all_positions: entering")
         result = list(self.positions.values())
         logger.debug(f"get_all_positions: returning list_len={len(result)}")
@@ -167,11 +167,11 @@ class StateManager:
         side: str,
         size: Decimal,
         entry_price: Decimal,
-        exit_price: Optional[Decimal] = None,
-        pnl: Optional[Decimal] = None,
+        exit_price: Decimal | None = None,
+        pnl: Decimal | None = None,
         latency_ms: int = 0,
         status: str = "FILLED",
-        order_id: Optional[str] = None,
+        order_id: str | None = None,
     ) -> str:
         """Store trade record — returns trade_id."""
         logger.debug(f"store_trade: entering symbol={symbol} side={side}")
@@ -186,7 +186,7 @@ class StateManager:
             "pnl_usdt": str(pnl) if pnl else None,
             "execution_latency_ms": latency_ms,
             "status": status,
-            "executed_at": datetime.now(timezone.utc).isoformat(),
+            "executed_at": datetime.now(UTC).isoformat(),
             "order_id": order_id,
         }
         await self.redis.set_global_state(f"trade:{trade_id}", trade)

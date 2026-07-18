@@ -1,12 +1,13 @@
 """Tests for TA Tools — deterministic indicators."""
 
 from decimal import Decimal
+
 from app.alpha.ta_tools import (
-    calculate_rsi,
-    calculate_bollinger_bands,
-    calculate_macd,
     calculate_atr,
+    calculate_bollinger_bands,
     calculate_ema,
+    calculate_macd,
+    calculate_rsi,
 )
 
 

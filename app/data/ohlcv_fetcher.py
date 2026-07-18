@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -30,7 +30,7 @@ class OHLCVFetcher:
         symbol: str,
         timeframe: str = "1h",
         limit: int = 200,
-        ttl_seconds: Optional[int] = None,
+        ttl_seconds: int | None = None,
     ) -> list[list]:
         """Fetch OHLCV candles. Returns list of [timestamp, open, high, low, close, volume].
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import Any, Dict, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -21,7 +21,7 @@ class RiskGate:
         min_liquidity_usd: Decimal = Decimal("10000"),  # $10K notional
         max_spread_pct: Decimal = Decimal("0.005"),  # 0.5% max spread
         min_order_notional_usd: Decimal = Decimal("50"),  # reject dust trades
-        circuit_breaker: Optional[CircuitBreaker] = None,
+        circuit_breaker: CircuitBreaker | None = None,
     ) -> None:
         self.min_liquidity_usd = min_liquidity_usd
         self.max_spread_pct = max_spread_pct
@@ -74,8 +74,8 @@ class RiskGate:
         volume_24h: Decimal,
         bid_price: Decimal,
         ask_price: Decimal,
-        order_notional_usd: Optional[Decimal] = None,
-    ) -> Dict[str, Any]:
+        order_notional_usd: Decimal | None = None,
+    ) -> dict[str, Any]:
         """Run all gates sequentially. Returns decision dict."""
         mid_price = (bid_price + ask_price) / 2
         notional_usd = volume_24h * mid_price

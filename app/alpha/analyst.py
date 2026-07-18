@@ -13,18 +13,18 @@ import json
 import time
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
-from app.core import metrics
 from app.alpha.ta_tools import (
-    calculate_rsi,
-    calculate_bollinger_bands,
-    calculate_macd,
     calculate_atr,
+    calculate_bollinger_bands,
     calculate_ema,
+    calculate_macd,
+    calculate_rsi,
 )
+from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -95,14 +95,18 @@ class CryptoAnalyst:
         oi_change: float,
         price: Decimal,
         recent_trades: str = "",
-    ) -> Optional[AnalystResult]:
+    ) -> AnalystResult | None:
         """Run AI analysis on an ambiguous signal. Returns None if unavailable."""
         cache_key = f"analyst:{symbol}:{int(time.time()) // self.cache_ttl}"
         if self.redis:
-            cached = await self.redis.get_ai_cache(cache_key)
-            if cached:
-                logger.debug(f"Analyst cache hit: {symbol}")
-                return AnalystResult(**cached)
+            try:
+                raw = await self.redis.get(f"ai:cache:{cache_key}")
+                if raw:
+                    cached = json.loads(raw)
+                    logger.debug(f"Analyst cache hit: {symbol}")
+                    return AnalystResult(**cached)
+            except Exception:
+                logger.debug(f"Analyst cache read failed for {symbol}")
 
         candles = await self.fetcher.fetch(symbol, "1h", 200)
         if len(candles) < 50:
@@ -148,7 +152,7 @@ class CryptoAnalyst:
         if recent_trades:
             prompt = recent_trades + "\n\n" + prompt
 
-        response = await self.ai_client.complete(prompt, max_tokens=256)
+        response = await self.ai_client.complete(prompt, max_tokens=1024)
         if not response:
             metrics.ai_analyst_calls.labels(result="unavailable").inc()
             logger.warning(f"Analyst: AI unavailable for {symbol}")
@@ -163,16 +167,23 @@ class CryptoAnalyst:
         metrics.ai_analyst_calls.labels(result="success").inc()
 
         if self.redis:
-            await self.redis.set_ai_cache(cache_key, {
-                "direction": result.direction,
-                "ai_confidence": result.ai_confidence,
-                "reasoning": result.reasoning,
-                "model_used": result.model_used,
-            }, ttl=self.cache_ttl)
+            try:
+                await self.redis.set(
+                    f"ai:cache:{cache_key}",
+                    json.dumps({
+                        "direction": result.direction,
+                        "ai_confidence": result.ai_confidence,
+                        "reasoning": result.reasoning,
+                        "model_used": result.model_used,
+                    }),
+                    ex=self.cache_ttl,
+                )
+            except Exception:
+                logger.debug(f"Analyst cache write failed for {symbol}")
         logger.info(f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence}")
         return result
 
-    def _parse_response(self, response: str) -> Optional[AnalystResult]:
+    def _parse_response(self, response: str) -> AnalystResult | None:
         """Parse AI JSON response into AnalystResult. Handles both JSON and free-form text."""
         try:
             text = response.strip()
@@ -204,13 +215,12 @@ class CryptoAnalyst:
                 conf_match = re.search(r'confidence[:\s]*(\d+)', text_upper)
                 if conf_match:
                     confidence = int(conf_match.group(1))
-                else:
-                    if any(w in text_upper for w in ['STRONG', 'HIGH', 'VERY']):
-                        confidence = 70
-                    elif any(w in text_upper for w in ['WEAK', 'LOW', 'UNCERTAIN']):
-                        confidence = 35
-                    elif direction == "FLAT":
-                        confidence = 40
+                elif any(w in text_upper for w in ['STRONG', 'HIGH', 'VERY']):
+                    confidence = 70
+                elif any(w in text_upper for w in ['WEAK', 'LOW', 'UNCERTAIN']):
+                    confidence = 35
+                elif direction == "FLAT":
+                    confidence = 40
 
                 logger.info(f"Analyst: parsed from reasoning text — dir={direction} conf={confidence}")
 

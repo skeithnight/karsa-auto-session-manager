@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.watchdog.monitor import Watchdog
 from app.core.redis_client import RedisClient
+from app.watchdog.monitor import Watchdog
 
 
 @pytest.fixture
@@ -70,7 +70,7 @@ class TestWatchdog:
     @pytest.mark.asyncio
     async def test_check_heartbeat_fresh(self, watchdog, mock_redis):
         """Fresh heartbeat — no warning, no pause."""
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         mock_redis.get_exchange_heartbeats = AsyncMock(
             return_value={"binance": now, "okx": now, "bybit": now}
         )
@@ -80,8 +80,8 @@ class TestWatchdog:
     async def test_check_heartbeat_stale(self, watchdog_full, mock_redis):
         """Stale heartbeat — alpha_paused set."""
         from datetime import timedelta
-        stale = (datetime.now(timezone.utc) - timedelta(seconds=60)).isoformat()
-        fresh = datetime.now(timezone.utc).isoformat()
+        stale = (datetime.now(UTC) - timedelta(seconds=60)).isoformat()
+        fresh = datetime.now(UTC).isoformat()
         mock_redis.get_exchange_heartbeats = AsyncMock(
             return_value={"binance": stale, "okx": fresh}
         )

@@ -1,0 +1,97 @@
+# Karsa ASM — App Stack
+# karsa-data-engine, karsa-live, karsa-shadow, karsa-backtest, karsa-commander
+#
+# Requires docker-compose.infra.yml to already be running (postgres, redis,
+# gluetun, 9router). This file does NOT declare those services, so nothing
+# in here can ever rebuild or recreate them — that was the bug in the
+# single-file setup: rebuilding an app service could cascade into gluetun
+# recreating, which forced 9router (and everything else on gluetun's
+# network namespace) to recreate too.
+#
+# `network_mode: "container:karsa-gluetun"` (a fixed container name,
+# not "service:gluetun") is what breaks that cascade — Compose treats it
+# as a reference to an already-running container, not a same-project
+# dependency, so it never forces gluetun (or its siblings) to recreate.
+#
+# First time / after infra is up:
+#   docker compose -f docker-compose.infra.yml up -d      # once, leave running
+#   docker compose -f docker-compose.apps.yml up -d       # start all apps
+#
+# Rebuild + restart ONE service, nothing else touched:
+#   docker compose -f docker-compose.apps.yml build karsa-live
+#   docker compose -f docker-compose.apps.yml up -d --no-deps karsa-live
+#
+# Rebuild + restart ALL app services (infra still untouched):
+#   docker compose -f docker-compose.apps.yml up -d --build
+#
+# If you want infra to auto-wait-for-healthy on a cold start, run both
+# files together as one merged project instead (depends_on works again):
+#   docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml up -d
+
+x-karsa-app: &karsa-app
+  build: .
+  env_file: .env
+  ulimits:
+    nofile:
+      soft: 65536
+      hard: 65536
+  volumes:
+    - ./app:/app/app
+    - ./scripts:/app/scripts
+
+services:
+  karsa-data-engine:
+    <<: *karsa-app
+    container_name: karsa-data-engine
+    restart: unless-stopped
+    environment:
+      - KARSA_ROLE=data-engine
+      - PROMETHEUS_PORT=8003
+    network_mode: "container:karsa-gluetun"
+
+  karsa-live:
+    <<: *karsa-app
+    container_name: karsa-live
+    restart: unless-stopped
+    environment:
+      - KARSA_ROLE=live
+      - SHADOW_MODE_ENABLED=false
+      - PROMETHEUS_PORT=8001
+    network_mode: "container:karsa-gluetun"
+
+  karsa-shadow:
+    <<: *karsa-app
+    container_name: karsa-shadow
+    restart: unless-stopped
+    environment:
+      - KARSA_ROLE=shadow
+      - SHADOW_MODE_ENABLED=true
+      - PROMETHEUS_PORT=8002
+    network_mode: "container:karsa-gluetun"
+
+  karsa-backtest:
+    <<: *karsa-app
+    container_name: karsa-backtest
+    restart: unless-stopped
+    environment:
+      - KARSA_ROLE=backtest
+      - PROMETHEUS_PORT=8005
+    networks:
+      - karsa-backend
+
+  karsa-commander:
+    <<: *karsa-app
+    container_name: karsa-commander
+    restart: unless-stopped
+    environment:
+      - KARSA_ROLE=commander
+      - PROMETHEUS_PORT=8004
+    network_mode: "container:karsa-gluetun"
+
+# -- Networks -------------------------------------------------------
+# Declared external: this file attaches to the network created by
+# docker-compose.infra.yml instead of owning/recreating it.
+
+networks:
+  karsa-backend:
+    external: true

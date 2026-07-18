@@ -29,8 +29,8 @@ def mock_fetcher():
 @pytest.fixture
 def mock_redis():
     client = MagicMock()
-    client.get_ai_cache = AsyncMock(return_value=None)
-    client.set_ai_cache = AsyncMock()
+    client.get = AsyncMock(return_value=None)
+    client.set = AsyncMock()
     return client
 
 
@@ -68,7 +68,7 @@ class TestCryptoAnalyst:
 
         await analyst.analyze("ETH/USDT", "SHORT", 0.60, "TREND_BEAR", 0.001, 0.0, 0.0, Decimal("3000"))
         # Second call hits Redis cache
-        mock_redis.get_ai_cache.return_value = {"direction": "SHORT", "ai_confidence": 60, "reasoning": "reversal", "model_used": "test"}
+        mock_redis.get.return_value = json.dumps({"direction": "SHORT", "ai_confidence": 60, "reasoning": "reversal", "model_used": "test"})
         await analyst.analyze("ETH/USDT", "SHORT", 0.60, "TREND_BEAR", 0.001, 0.0, 0.0, Decimal("3000"))
         # AI called once (first call), cache hit on second
         analyst.ai_client.complete.assert_called_once()
@@ -89,13 +89,15 @@ class TestCryptoAnalyst:
         assert result is None
 
     @pytest.mark.asyncio
-    async def test_parse_failure_returns_none(self, analyst, mock_ai):
+    async def test_parse_failure_returns_flat(self, analyst, mock_ai):
+        """Unparseable AI text falls back to FLAT direction via free-form regex."""
         mock_ai.complete.return_value = "not json at all"
         candles = [[i * 3600000, 100.0, 105.0, 95.0, 100.0, 1000.0] for i in range(200)]
         analyst.fetcher.fetch = AsyncMock(return_value=candles)
 
         result = await analyst.analyze("BTC/USDT", "LONG", 0.70, "TREND_BULL", 0.001, 0.0, 0.0, Decimal("50000"))
-        assert result is None
+        assert result is not None
+        assert result.direction == "FLAT"
 
     def test_parse_json_with_markdown_fences(self, analyst):
         result = analyst._parse_response('```json\n{"direction": "FLAT", "confidence": 50, "reasoning": "test"}\n```')

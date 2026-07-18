@@ -12,7 +12,6 @@ from decimal import Decimal
 from typing import Literal
 
 from loguru import logger
-
 from prometheus_client import Counter
 
 from app.alpha.ta_tools import calculate_ema

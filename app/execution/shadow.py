@@ -21,8 +21,8 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import uuid
-from datetime import datetime, timezone, timedelta
-from decimal import Decimal, ROUND_DOWN
+from datetime import UTC, datetime, timedelta
+from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
 from loguru import logger
@@ -163,7 +163,7 @@ class ShadowExecutor:
         }
 
         if is_post_only:
-            result["pending_since"] = datetime.now(timezone.utc).isoformat()
+            result["pending_since"] = datetime.now(UTC).isoformat()
 
         return result
 
@@ -353,7 +353,7 @@ class ShadowAPM:
         if pending_since:
             try:
                 since = datetime.fromisoformat(pending_since)
-                age = (datetime.now(timezone.utc) - since).total_seconds()
+                age = (datetime.now(UTC) - since).total_seconds()
                 if age > SHADOW_PENDING_TTL_SECS:
                     logger.info(
                         f"SHADOW PENDING EXPIRED: {symbol} {side} after {age:.0f}s"
@@ -373,9 +373,7 @@ class ShadowAPM:
 
         # Long fills when price dips to entry; short fills when price rises
         filled = False
-        if side == "buy" and mid <= entry_price:
-            filled = True
-        elif side == "sell" and mid >= entry_price:
+        if side == "buy" and mid <= entry_price or side == "sell" and mid >= entry_price:
             filled = True
 
         if filled:
@@ -384,9 +382,9 @@ class ShadowAPM:
             )
             pos["status"] = "OPEN"
             pos["worst_price_seen"] = str(entry_price)
-            pos["last_funding_ts"] = datetime.now(timezone.utc).isoformat()
+            pos["last_funding_ts"] = datetime.now(UTC).isoformat()
             key = self._pos_store._key(symbol, side)
-            await self._redis.redis.set(key, _json.dumps(pos))
+            await self._redis.set(key, _json.dumps(pos))
 
     # --- Refinement 2: Wick miss prevention + SL detection ---
 
@@ -407,15 +405,13 @@ class ShadowAPM:
 
         # Refinement 2: update worst_price_seen
         worst = Decimal(pos.get("worst_price_seen", str(mid)))
-        if side == "buy" and mid < worst:
-            worst = mid
-        elif side == "sell" and mid > worst:
+        if side == "buy" and mid < worst or side == "sell" and mid > worst:
             worst = mid
         pos["worst_price_seen"] = str(worst)
 
         # Persist worst_price_seen back to Redis
         key = self._pos_store._key(symbol, side)
-        await self._redis.redis.set(key, _json.dumps(pos))
+        await self._redis.set(key, _json.dumps(pos))
 
         # Update peak for trailing stop logic
         await self._pos_store.update_peak(symbol, side, mid)
@@ -426,9 +422,7 @@ class ShadowAPM:
         # SL hit detection using worst_price_seen (catches wicks)
         if virtual_sl > 0:
             sl_hit = False
-            if side == "buy" and worst <= virtual_sl:
-                sl_hit = True
-            elif side == "sell" and worst >= virtual_sl:
+            if side == "buy" and worst <= virtual_sl or side == "sell" and worst >= virtual_sl:
                 sl_hit = True
 
             if sl_hit:
@@ -455,7 +449,7 @@ class ShadowAPM:
         except Exception:
             return
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         elapsed = now - last_funding
 
         if elapsed < timedelta(hours=SHADOW_FUNDING_INTERVAL_HOURS):
@@ -482,7 +476,7 @@ class ShadowAPM:
         pos["last_funding_ts"] = now.isoformat()
 
         key = self._pos_store._key(symbol, side)
-        await self._redis.redis.set(key, _json.dumps(pos))
+        await self._redis.set(key, _json.dumps(pos))
 
         if funding_fee > 0:
             logger.info(

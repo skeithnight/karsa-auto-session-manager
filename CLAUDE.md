@@ -26,6 +26,7 @@ Safety-critical numeric conflict → **stop and ask**, never pick silently. Know
 - Every entry passes `PortfolioRiskManager` before `BybitExecutor` — no bypass, ever, for any reason.
 - Regime Shift Kill Switch is not a config toggle.
 - Every `ActivePositionManager` async loop: `try/except` + `await asyncio.sleep()` on the error path. No bare infinite loops.
+- Shadow mode (`SHADOW_MODE_ENABLED=true`) skips startup reconciliation and position_reconciler. Never run shadow against live Bybit positions without understanding this state.
 
 Rationale + full detail: `AGENTS.md` §2 and §8.
 
@@ -38,6 +39,8 @@ Rationale + full detail: `AGENTS.md` §2 and §8.
 3. Touching execution/risk/watchdog → re-read `docs/RISK_AND_RUNBOOK.md`.
 4. Check `CONTEXT.md` §7 for an open conflict in this area before resolving anything yourself.
 5. Touching `RegimeClassifier` / `StrategyRouter` / `ActivePositionManager` / `PortfolioRiskManager` → also read the matching Phase 6 spec doc (§1 above).
+6. Touching shadow system (`ShadowExecutor`, `ShadowAPM`, shadow stores) → read `docs/review/refinement_shadom_plan.md` for the 4 critical refinements (fee asymmetry, wick miss, funding drag, pending limits).
+7. Touching `app/consumer/`, `app/commander/`, `app/backtest/`, `app/analytics/`, `app/data_engine/` → read the relevant section in `AGENTS.md` §3 directory map + agent section before writing.
 
 ---
 
@@ -47,6 +50,21 @@ Rationale + full detail: `AGENTS.md` §2 and §8.
 pytest && ruff check . && black --check . && mypy --strict app/
 ```
 
+### Compose (split infra / apps)
+
+Infra = `docker-compose.infra.yml` (postgres, redis, gluetun, 9router, prometheus, grafana).
+Apps = `docker-compose.apps.yml` (data-engine, live, shadow, backtest, commander).
+
+| Command | What it does |
+|---------|-------------|
+| `make up` | Cold start — both stacks together |
+| `make rebuild` | Rebuild apps only, infra untouched |
+| `make down` | Stop everything |
+| `make logs` | Tail app logs |
+| `make logs-infra` | Tail infra logs |
+
+**Never** run `docker compose up -d --build` without specifying apps file — it recreates infra containers (kills 9router state). Always use `make rebuild` or target apps file explicitly.
+
 \>90% unit coverage for `app/alpha/`, `app/risk/`, `app/data/normalizer.py`, `app/data/filters.py`, incl. edge cases (empty candles, single-candle, all-flat, divide-by-zero, bad tick). Full bar: `AGENTS.md` §5 / `docs/TESTING_STRATEGY.md`.
 
 ---
@@ -54,6 +72,7 @@ pytest && ruff check . && black --check . && mypy --strict app/
 ## 5. Do NOT
 
 No LLM in the hot path. No weakening kill switch / circuit breakers / reconciliation. No inventing a metric, column, or field not in `docs/DATA_MODEL.md` or `docs/METRICS_DICTIONARY.md`. No bypassing `PortfolioRiskManager`. No soft-coding the Regime Shift Kill Switch. No marking "done" without walking `docs/DEFINITION_OF_DONE.md`.
+No mixing shadow and live Redis keys. Shadow positions use `shadow:position:*` namespace exclusively.
 
 ---
 

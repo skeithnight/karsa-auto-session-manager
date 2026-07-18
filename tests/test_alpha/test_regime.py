@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-
 import pytest
 
-from app.alpha.regime import RegimeEngine, REGIME_CHOP, REGIME_MEAN_REVERSION, REGIME_TREND_BEAR, REGIME_TREND_BULL
+from app.alpha.regime import REGIME_CHOP, REGIME_MEAN_REVERSION, REGIME_TREND_BEAR, REGIME_TREND_BULL, RegimeEngine
 
 
 def _make_candles(n: int, base_price: float = 50000.0, trend: float = 0.0, volatility: float = 100.0) -> list[list]:

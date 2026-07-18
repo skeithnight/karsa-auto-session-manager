@@ -19,15 +19,15 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from decimal import Decimal
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from app.core.config import get_settings
-from app.bot.utils.format import HTML, bold, italic, pre, fmt
+from app.bot.utils.format import HTML, bold, fmt, italic, pre
 from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
+from app.core.config import get_settings
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -194,7 +194,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def _with_timeout(coro, timeout_sec):
         try:
             return await asyncio.wait_for(coro, timeout=timeout_sec)
-        except (asyncio.TimeoutError, Exception) as exc:
+        except (TimeoutError, Exception) as exc:
             logger.warning("fetch_timeout_or_error", extra={"error": str(exc)})
             return None
 
@@ -211,6 +211,18 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_ok = results[1] if isinstance(results[1], bool) else False
     wallet_data = results[2] if isinstance(results[2], dict) else {"wallet": {}, "ok": False}
     vpn_ok = results[3]  # None = not configured, True = ok, False = unreachable
+
+    # ── Deep health panel from TelemetryEmitter heartbeats ──────────────
+    services_health = ""
+    try:
+        from app.core.telemetry import format_health_summary, get_all_services_health
+        all_health = await asyncio.wait_for(
+            get_all_services_health(r), timeout=2
+        )
+        if all_health:
+            services_health = format_health_summary(all_health)
+    except Exception as exc:
+        logger.debug("dashboard_health_panel_skip: %s", exc)
 
     redis_ok = redis_data.get("redis_ok", False)
     halt_active = redis_data.get("halt_active", False)
@@ -262,13 +274,19 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         pre(wallet_block),
     )
 
+    if services_health:
+        text += "\n" + "\u2501" * 32 + "\n"
+        text += bold("Service Heartbeats") + "\n"
+        text += pre(services_health)
+
     if is_active:
         keyboard = [
             [InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
              InlineKeyboardButton("\U0001f4cb Activity", callback_data="cmd_activity")],
             [InlineKeyboardButton("\U0001f4e1 Universe", callback_data="universe_detail"),
              InlineKeyboardButton("\U0001f4dc History", callback_data="cmd_trade_history")],
-            [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_dashboard")],
+            [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_dashboard"),
+             InlineKeyboardButton("\U0001f4ca Reports", callback_data="cmd_report_menu")],
             [InlineKeyboardButton("\u23f8 Pause Session", callback_data="asm_pause"),
              InlineKeyboardButton("\U0001f6d1 Stop & Close All", callback_data="asm_stop")],
         ]
@@ -281,6 +299,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="cmd_settings")],
             [InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
              InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_dashboard")],
+            [InlineKeyboardButton("\U0001f4ca Reports", callback_data="cmd_report_menu")],
         ]
 
     await send_or_edit_message(update, str(text), reply_markup=InlineKeyboardMarkup(keyboard))
@@ -364,9 +383,10 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
     try:
-        from app.bot.utils.telegram_helpers import format_pre_table
+        from datetime import datetime
+
         from app.bot.utils.formatters import format_bar
-        from datetime import datetime, timezone
+        from app.bot.utils.telegram_helpers import format_pre_table
 
         bybit = _get_bybit(context)
         r = _get_redis(context)
@@ -386,7 +406,7 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     entered_at = data.get("entered_at", "")
                     if entered_at:
                         dt = datetime.fromisoformat(entered_at.replace("Z", "+00:00"))
-                        diff = datetime.now(tz=timezone.utc) - dt
+                        diff = datetime.now(tz=UTC) - dt
                         h = int(diff.total_seconds() / 3600)
                         dur_cache[sym] = f"{h}h" if h >= 1 else f"{int(diff.total_seconds() / 60)}m"
             except Exception:
@@ -473,17 +493,123 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ---------------------------------------------------------------------------
 
 async def performance_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Performance metrics — stub until PerformanceTracker is ported."""
+    """Performance metrics — institutional-grade analytics from live trades."""
     logger.debug("performance_cmd: entering")
     if not _is_authorized(update):
         return
-    text = fmt(
-        bold("📈 PERFORMANCE & AUDIT"), "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n",
-        "⚠️ PerformanceTracker and CryptoAuditMetrics not yet ported.\n",
-        italic("Planned: 30-day PnL, win rate, profit factor, max drawdown, AI audit grade."),
+
+    from app.analytics.performance import (
+        compute_performance,
+        fetch_all_closed_trades,
+        format_performance_report,
     )
-    await _reply(update, text, reply_markup=build_main_keyboard())
+
+    db_engine = context.bot_data.get("db_engine")
+    if db_engine is None:
+        text = fmt(bold("\U0001f4c8 LIVE PERFORMANCE"), "\n", "\u26a0\ufe0f DB not connected \u2014 performance unavailable.")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    # Build a lightweight TradeStore wrapper for the fetcher
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Store:
+        db: object
+
+    store = _Store(db=db_engine)
+
+    try:
+        live_trades = await fetch_all_closed_trades(store)
+    except Exception as exc:
+        logger.error("performance_fetch_failed: %s", exc)
+        text = fmt(bold("\U0001f4c8 LIVE PERFORMANCE"), "\n", f"\u26a0\ufe0f Fetch failed: {exc}")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    # Compute live performance
+    live_report = compute_performance(live_trades) if live_trades else compute_performance([])
+
+    # Format output
+    text = fmt(
+        bold("\U0001f4c8 LIVE PERFORMANCE"), "\n",
+        "\u2501" * 32, "\n\n",
+        pre(format_performance_report(live_report)), "\n\n",
+        "\u2501" * 32, "\n",
+        italic("Real money trades executed by ASM.")
+    )
+
+    keyboard = [
+        [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_performance")],
+        [InlineKeyboardButton("\u25c0\ufe0f Back to Reports", callback_data="cmd_report_menu")],
+        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")]
+    ]
+    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
     logger.debug("performance_cmd: returning None")
+
+
+async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Shadow performance funnel metrics."""
+    logger.debug("report_shadow_cmd: entering")
+    if not _is_authorized(update):
+        return
+
+    from app.analytics.performance import compute_performance, fetch_all_closed_shadow_trades, format_performance_report
+
+    db_engine = context.bot_data.get("db_engine")
+    if db_engine is None:
+        text = fmt(bold("\U0001f465 SHADOW FUNNEL"), "\n", "\u26a0\ufe0f DB not connected \u2014 report unavailable.")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    from dataclasses import dataclass
+    @dataclass
+    class _Store:
+        db: object
+    store = _Store(db=db_engine)
+
+    try:
+        from app.bot.utils.formatters.shadow_funnel_formatter import format_shadow_funnel
+        from app.core.metrics import get_funnel_metrics
+        funnel_metrics = get_funnel_metrics()
+
+        shadow_trades = await fetch_all_closed_shadow_trades(store)
+        shadow_report = compute_performance(shadow_trades) if shadow_trades else compute_performance([])
+    except Exception as exc:
+        logger.error("report_shadow_fetch_failed: %s", exc)
+        text = fmt(bold("\U0001f465 SHADOW FUNNEL"), "\n", f"\u26a0\ufe0f Fetch failed: {exc}")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    text = format_shadow_funnel(funnel_metrics, format_performance_report(shadow_report))
+    keyboard = [
+        [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_shadow")],
+        [InlineKeyboardButton("\u25c0\ufe0f Back to Reports", callback_data="cmd_report_menu")],
+        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")]
+    ]
+    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    logger.debug("report_shadow_cmd: returning None")
+
+
+async def report_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Reports Menu \u2014 choose which report to view."""
+    logger.debug("report_menu_cmd: entering")
+    if not _is_authorized(update):
+        return
+
+    text = fmt(
+        bold("\U0001f4ca REPORTS MENU"), "\n",
+        "\u2501" * 32, "\n\n",
+        "Select a report type to view:"
+    )
+    keyboard = [
+        [InlineKeyboardButton("\U0001f465 Shadow Funnel", callback_data="cmd_report_shadow")],
+        [InlineKeyboardButton("\U0001f4c8 Live Performance", callback_data="cmd_performance")],
+        [InlineKeyboardButton("\U0001f52c Backtest Report", callback_data="cmd_backtest")],
+        [InlineKeyboardButton("\u25c0\ufe0f Back to Dashboard", callback_data="cmd_dashboard")]
+    ]
+    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    logger.debug("report_menu_cmd: returning None")
 
 
 # ---------------------------------------------------------------------------
@@ -664,6 +790,8 @@ async def control_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("\U0001f6a8 EXECUTE KILL (Close All)", callback_data="crypto_kill")],
         [InlineKeyboardButton("\U0001f9f9 Sell All (15m break)", callback_data="crypto_sellall")],
         [InlineKeyboardButton("\u25b6\ufe0f Resume Operations", callback_data="crypto_resume")],
+        [InlineKeyboardButton("\U0001f4c8 Performance", callback_data="cmd_performance"),
+         InlineKeyboardButton("\U0001f52c Backtest", callback_data="cmd_backtest")],
         [InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="cmd_settings"),
          InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
     ]
@@ -735,7 +863,7 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
     if not _is_authorized(update):
         return
 
-    from app.bot.utils.formatters import format_position_card, format_bar
+    from app.bot.utils.formatters import format_bar, format_position_card
 
     bybit = _get_bybit(context)
     positions = []
@@ -907,9 +1035,7 @@ async def _close_position(update: Update, context: ContextTypes.DEFAULT_TYPE, sy
     """Market close a specific position."""
     logger.debug(f"_close_position: entering symbol={symbol}")
     try:
-        from app.execution.sor import SmartOrderRouter
         bybit = _get_bybit(context)
-        sor = SmartOrderRouter(bybit)
 
         positions = await bybit.fetch_positions()
         pos = None
@@ -947,20 +1073,63 @@ async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
-    universe = settings.symbols
+    redis_client = _get_redis(context)
+    universe = []
+    source_msg = "Source: config (UniverseEngine not yet ported)"
+
+    sector_msg = "Sector scoring: pending"
+    try:
+        raw_universe = await redis_client.get("system:universe:symbols")
+        if raw_universe:
+            universe_data = json.loads(raw_universe)
+            universe = universe_data.get("symbols", [])
+            scores = universe_data.get("scores", {})
+            if universe:
+                source_msg = "Source: dynamic (UniverseEngine active)"
+            if scores:
+                sector_msg = "Sector scoring: active (Dynamic)"
+    except Exception as exc:
+        logger.warning(f"universe_cmd: Failed to read dynamic universe from Redis: {exc}")
+
+    if not universe:
+        universe = settings.symbols
+        source_msg = "Source: config (Dynamic universe unavailable)"
+
     n = len(universe)
 
-    # 5-per-row grid layout
-    grid_rows = [universe[i:i + 5] for i in range(0, n, 5)]
-    grid_lines = ["  ".join(f"{sym:<12}" for sym in row) for row in grid_rows]
-    grid_text = "\n".join(grid_lines)
+    grid_lines = []
+    if scores:
+        # Sort by score descending
+        universe_sorted = sorted(universe, key=lambda x: float(scores.get(x, 0)), reverse=True)
+        grid_lines.append(f"{'Symbol':<12} {'Score':<5} | {'Symbol':<12} {'Score':<5}")
+        grid_lines.append("-" * 39)
+        for i in range(0, n, 2):
+            row_str = ""
+            for j in range(2):
+                if i + j < n:
+                    sym = universe_sorted[i + j]
+                    sc = f"{float(scores.get(sym, 0.0)):.1f}"
+                    row_str += f"{sym:<12} {sc:<5}"
+                    if j == 0 and i + j + 1 < n:
+                        row_str += " | "
+            grid_lines.append(row_str)
+    else:
+        # 3-per-row fits better on mobile without wrapping
+        grid_lines.append(f"{'Symbol':<11} {'Symbol':<11} {'Symbol':<11}")
+        grid_lines.append("-" * 35)
+        for i in range(0, n, 3):
+            row = universe[i:i + 3]
+            row_str = "".join(f"{sym:<11} " for sym in row)
+            grid_lines.append(row_str)
+
+    grid_text = pre("\n".join(grid_lines))
 
     text = fmt(
         bold(f"\U0001f4e1 CRYPTO UNIVERSE  \u00b7  {n} pairs"), "\n",
         "\u2501" * 32, "\n\n",
-        pre(grid_text), "\n\n",
-        italic("Source: config  (UniverseEngine not yet ported)"), "\n",
-        italic("Sector scoring: pending"),
+        grid_text, "\n\n",
+        italic(source_msg), "\n",
+        italic(sector_msg),
     )
 
     keyboard = [
@@ -1009,7 +1178,7 @@ async def trade_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
         trades, total, wins, losses, net_pnl = await _fetch_trade_history_page(1, context)
         text, keyboard = TradeHistoryFormatter.build_message(trades, 1, total, wins, losses, net_pnl)
-        await send_or_edit_message(update, text, reply_markup=keyboard, parse_mode=None)
+        await send_or_edit_message(update, text, reply_markup=keyboard, parse_mode="HTML")
     except Exception as exc:
         logger.error("trade_history_failed", extra={"error": str(exc)})
         await _reply(update, "❌ Trade history load failed.", reply_markup=InlineKeyboardMarkup(
@@ -1018,8 +1187,74 @@ async def trade_history_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ---------------------------------------------------------------------------
-# 9. Clear Halt
+# 9. Backtest Orchestration
 # ---------------------------------------------------------------------------
+
+
+def _get_backtest_orchestrator(context: ContextTypes.DEFAULT_TYPE):
+    """Retrieve or build a BacktestOrchestrator from bot_data deps."""
+    orch = context.bot_data.get("backtest_orchestrator")
+    if orch is not None:
+        return orch
+    # Lazy build from existing redis + db_engine
+    redis = context.bot_data.get("redis_client")
+    db_engine = context.bot_data.get("db_engine")
+    if redis is None or db_engine is None:
+        return None
+    from app.backtest.orchestrator import BacktestOrchestrator
+
+    orch = BacktestOrchestrator(redis, db_engine)
+    context.bot_data["backtest_orchestrator"] = orch
+    return orch
+
+
+
+
+
+async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Backtest command — shows recent jobs and bulk progress."""
+    logger.debug("backtest_cmd: entering")
+    if not _is_authorized(update):
+        return
+
+    orch = _get_backtest_orchestrator(context)
+    if orch is None:
+        await _reply(
+            update,
+            "⚠️ Backtest orchestrator unavailable (DB or Redis missing).",
+            reply_markup=build_main_keyboard(),
+        )
+        return
+
+    from app.backtest.formatter import format_backtest_list
+
+    # Just list recent jobs (which may include individual jobs if any, and bulk stats if added)
+    jobs = await orch.list_recent_jobs(limit=10)
+    bulk_jobs = await orch.list_active_bulk_jobs()
+
+    active_bulk = None
+    for b in bulk_jobs:
+        if b.get("status") in ("running", "completed"):
+            active_bulk = b
+            break
+
+    text = format_backtest_list(jobs, active_bulk=active_bulk)
+
+    keyboard = [
+        [
+            InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_backtest"),
+        ],
+        [
+            InlineKeyboardButton("\u25c0\ufe0f Back to Reports", callback_data="cmd_report_menu"),
+            InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard"),
+        ],
+    ]
+    await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
+
+# ---------------------------------------------------------------------------
+# 10. Clear Halt
+# ---------------------------------------------------------------------------
+
 
 async def clear_halt_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear emergency halt state. Admin-only."""
@@ -1057,6 +1292,65 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.error("start_cmd_fallback_also_failed", extra={"error": str(inner_exc)})
     logger.debug("start_cmd: returning None")
 
+async def reconcile_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger manual trade reconciliation and auto-repair."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    trade_reconciler = context.bot_data.get("trade_reconciler")
+    if not trade_reconciler:
+        msg = "⚠️ Reconciler not available."
+        if query:
+            await query.message.reply_text(msg)
+        else:
+            await update.message.reply_text(msg)
+        return
+
+    msg = await (query.message if query else update.message).reply_text("🔄 Running manual reconciliation...")
+
+    try:
+        # For manual reconciliation, extend lookback to 7 days (168 hours) to catch older discrepancies
+        original_lookback = trade_reconciler.lookback_hours
+        original_max_repairs = trade_reconciler.MAX_REPAIRS_PER_CYCLE
+        original_max_pages = trade_reconciler.MAX_PAGES
+
+        trade_reconciler.lookback_hours = 168
+        trade_reconciler.MAX_REPAIRS_PER_CYCLE = 200
+        trade_reconciler.MAX_PAGES = 10
+
+        # Reset backfill flag to ensure we fetch historical missing trades if any
+        trade_reconciler._backfill_done = False
+        backfilled = await trade_reconciler.backfill_from_bybit()
+
+        report = await trade_reconciler.reconcile()
+
+        # Restore original limits
+        trade_reconciler.lookback_hours = original_lookback
+        trade_reconciler.MAX_REPAIRS_PER_CYCLE = original_max_repairs
+        trade_reconciler.MAX_PAGES = original_max_pages
+
+        lines = [
+            "✅ <b>Reconciliation Complete</b>",
+            "",
+            f"Historical trades backfilled: {backfilled}",
+            f"Fills checked (7d): {report.bybit_fills_checked}",
+            f"Trades checked (7d): {report.local_trades_checked}",
+            f"Discrepancies found: {len(report.discrepancies)}",
+            f"Repairs made: {report.repairs_made}",
+        ]
+
+        if report.errors:
+            lines.append("")
+            lines.append("⚠️ <b>Errors:</b>")
+            for err in report.errors:
+                lines.append(f" - {err}")
+
+        await msg.edit_text("\n".join(lines), parse_mode="HTML")
+    except Exception as e:
+        logger.error(f"Manual reconcile failed: {e}")
+        await msg.edit_text(f"❌ Reconciliation failed: {e}")
+
 
 # ---------------------------------------------------------------------------
 # Global Callback Router
@@ -1083,6 +1377,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await control_cmd(update, context)
     elif data == "cmd_settings":
         await settings_cmd(update, context)
+    elif data == "cmd_report_menu":
+        await report_menu_cmd(update, context)
+    elif data == "cmd_report_shadow":
+        await report_shadow_cmd(update, context)
 
     # Settings toggles
     elif data == "settings:max_positions":
@@ -1093,9 +1391,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _toggle_alerts(update, context)
 
     # Positions
-    elif data == "view_positions_detail":
-        await view_positions_detail_cmd(update, context)
-    elif data == "cmd_positions":
+    elif data in {"view_positions_detail", "cmd_positions"}:
         await view_positions_detail_cmd(update, context)
 
     # Move SL to BE
@@ -1108,6 +1404,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         symbol = data.replace("close_pos_", "")
         await _close_position(update, context, symbol)
 
+    # Backtest
+    elif data == "cmd_backtest":
+        await backtest_cmd(update, context)
+
     # Trade History
     elif data == "cmd_trade_history":
         await trade_history_cmd(update, context)
@@ -1117,10 +1417,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
             trades, total, wins, losses, net_pnl = await _fetch_trade_history_page(page, context)
             text, keyboard = TradeHistoryFormatter.build_message(trades, page, total, wins, losses, net_pnl)
-            await query.edit_message_text(text, reply_markup=keyboard, parse_mode=None)
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         except Exception as exc:
             logger.error("history_pagination_failed", extra={"error": str(exc)})
             await query.answer("Failed to load page", show_alert=True)
+    elif data == "cmd_reconcile":
+        await reconcile_cmd(update, context)
 
     # Universe
     elif data == "universe_detail":
@@ -1215,6 +1517,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=msg_id)
         except Exception as exc:
             logger.warning("dismiss_toast_failed", extra={"data": data, "error": str(exc)})
+
+    # Toggle alerts (from control panel)
+    elif data == "toggle_alerts":
+        await _toggle_alerts(update, context)
+
+    # Re-run backtest (from results view)
+    elif data.startswith("bt_rerun_"):
+        from app.backtest.orchestrator import BacktestJobSpec
+
+        job_id_short = data.replace("bt_rerun_", "")
+        orch = _get_backtest_orchestrator(context)
+        if orch is not None:
+            # Resubmit with same params by scanning recent jobs
+            jobs = await orch.list_recent_jobs(limit=5)
+            for j in jobs:
+                if j.job_id.startswith(job_id_short):
+                    spec = BacktestJobSpec(symbol=j.symbol)
+                    new_id = await orch.submit_job(spec)
+                    await _reply(update, f"✅ Re-submitted backtest `{new_id[:8]}`")
+                    return
+        await _reply(update, "⚠️ Could not re-run — job not found.", reply_markup=build_main_keyboard())
 
     # Noop (page indicator buttons)
     elif data == "noop":

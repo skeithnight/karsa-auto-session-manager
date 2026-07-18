@@ -4,11 +4,12 @@ Ported from karsa-claude-trading src/utils/formatters/trade_history_formatter.py
 No import changes needed — uses only telegram and stdlib.
 """
 from __future__ import annotations
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 
 class TradeHistoryFormatter:
-    PAGE_SIZE = 5
+    PAGE_SIZE = 10
 
     @staticmethod
     def format_trade(trade) -> str:
@@ -28,12 +29,14 @@ class TradeHistoryFormatter:
             symbol = getattr(trade, "ticker", "?")
             exit_time = getattr(trade, "exit_date", None)
             reason = str(getattr(trade, "exit_reason", None) or "N/A")
-        icon = "\U0001f7e2" if pnl_pct >= 0 else "\U0001f534"
+        icon = "🟢" if pnl_pct >= 0 else "🔴"
         pnl_str = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
-        ts = exit_time.strftime("%m-%d %H:%M") if exit_time else "?"
-        if len(reason) > 100:
-            reason = reason[:97] + "..."
-        return f"{icon} {symbol:<10} {pnl_str:<8} {ts}\n   \u2514\u2500 {reason}"
+        ts = exit_time.strftime("%m-%d") if exit_time else "?"
+        if len(reason) > 12:
+            reason = reason[:9] + "..."
+
+        # Format as row inside a full pre block
+        return f"{icon} {symbol:<10} {pnl_str:<8} {ts:<5} {reason:<12}"
 
     @staticmethod
     def build_keyboard(current_page: int, total_pages: int) -> InlineKeyboardMarkup:
@@ -47,6 +50,9 @@ class TradeHistoryFormatter:
                 InlineKeyboardButton(prev_label, callback_data=prev_cb),
                 InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="noop"),
                 InlineKeyboardButton(next_label, callback_data=next_cb),
+            ],
+            [
+                InlineKeyboardButton("🔄 Reconcile Trades", callback_data="cmd_reconcile"),
             ],
             [InlineKeyboardButton("\U0001f3e0 Back to Dashboard", callback_data="cmd_dashboard")],
         ]
@@ -64,8 +70,14 @@ class TradeHistoryFormatter:
         if not trades:
             lines.append("No closed trades yet.")
         else:
+            table_lines = []
+            table_lines.append(f"   {'Symbol':<10} {'PnL':<8} {'Time':<5} {'Reason':<12}")
+            table_lines.append("   " + "-" * 37)
             for t in trades:
-                lines.append(TradeHistoryFormatter.format_trade(t))
+                table_lines.append(TradeHistoryFormatter.format_trade(t))
+
+            from app.bot.utils.format import pre
+            lines.append(pre("\n".join(table_lines)))
         lines.append("")
         lines.append("\u2501" * 32)
 

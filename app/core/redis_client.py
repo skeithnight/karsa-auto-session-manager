@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Optional
 
 import redis.asyncio as aioredis
 from loguru import logger
@@ -32,11 +31,16 @@ class RedisClient:
     def __init__(self) -> None:
         logger.debug("RedisClient.__init__: entering")
         self.settings = get_settings()
-        self.redis: Optional[aioredis.Redis] = None
+        self.redis: aioredis.Redis | None = None
         logger.debug("RedisClient.__init__: returning")
 
-    async def connect(self) -> None:
-        """Establish Redis connection."""
+    async def connect(self, socket_timeout: float = 5.0) -> None:
+        """Establish Redis connection.
+
+        Args:
+            socket_timeout: Per-socket read/write timeout in seconds.
+                Default 5s for interactive use. Pass 45+ for BLPOP workers.
+        """
         logger.debug("connect: entering")
         pool = aioredis.BlockingConnectionPool.from_url(
             self.settings.redis_url,
@@ -44,7 +48,7 @@ class RedisClient:
             decode_responses=True,
             max_connections=50,
             timeout=10,               # wait up to 10s for a free connection
-            socket_timeout=5.0,
+            socket_timeout=socket_timeout,
             socket_connect_timeout=5.0,
             retry_on_timeout=True,
         )
@@ -134,7 +138,7 @@ class RedisClient:
         await self.redis.setex(key, 60, value)
         logger.debug("set_global_state: returning None")
 
-    async def get_global_state(self, symbol: str) -> Optional[dict]:
+    async def get_global_state(self, symbol: str) -> dict | None:
         """Get cached global state for a symbol."""
         logger.debug(f"get_global_state: entering symbol={symbol}")
         if not self.redis:
@@ -157,11 +161,11 @@ class RedisClient:
             raise RuntimeError("Redis not connected")
 
         key = "system:heartbeat"
-        value = datetime.now(timezone.utc).isoformat()
+        value = datetime.now(UTC).isoformat()
         await self.redis.setex(key, 30, value)
         logger.debug("set_heartbeat: returning None")
 
-    async def get_heartbeat(self) -> Optional[str]:
+    async def get_heartbeat(self) -> str | None:
         """Get system heartbeat timestamp."""
         logger.debug("get_heartbeat: entering")
         if not self.redis:
@@ -183,12 +187,12 @@ class RedisClient:
         value = json.dumps({
             "status": status,
             "reason": reason,
-            "triggered_at": datetime.now(timezone.utc).isoformat() if status == "TRIGGERED" else None,
+            "triggered_at": datetime.now(UTC).isoformat() if status == "TRIGGERED" else None,
         })
         await self.redis.set(key, value)
         logger.debug("set_circuit_breaker: returning None")
 
-    async def get_circuit_breaker(self) -> Optional[dict]:
+    async def get_circuit_breaker(self) -> dict | None:
         """Get circuit breaker state."""
         logger.debug("get_circuit_breaker: entering")
         if not self.redis:
@@ -225,7 +229,7 @@ class RedisClient:
 
     # --- AI Cache ---
 
-    async def get_ai_cache(self, cache_key: str) -> Optional[dict]:
+    async def get_ai_cache(self, cache_key: str) -> dict | None:
         """Get cached AI result."""
         if not self.redis:
             return None
@@ -256,7 +260,7 @@ class RedisClient:
             await self.redis.hset(
                 "system:heartbeats",
                 exchange,
-                datetime.now(timezone.utc).isoformat(),
+                datetime.now(UTC).isoformat(),
             )
         except Exception as e:
             logger.error(f"set_exchange_heartbeat: error={e}")

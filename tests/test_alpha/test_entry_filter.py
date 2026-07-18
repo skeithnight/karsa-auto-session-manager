@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
+from datetime import UTC, datetime
 
 from app.alpha.entry_filter import EntryFilter
 
@@ -19,7 +18,7 @@ class TestEntryFilter:
             bid_depth=100.0,
             ask_depth=120.0,
             has_position=False,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
         assert reason == "passed"
@@ -28,7 +27,7 @@ class TestEntryFilter:
         """Phase 6: CHOP no longer hard-blocked. StrategyRouter gates CHOP signals."""
         ok, reason = self.filt.check(
             regime="CHOP",
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
         assert reason == "passed"
@@ -50,7 +49,7 @@ class TestEntryFilter:
 
     def test_blocked_hour(self):
         ok, reason = self.filt.check(
-            now_utc=datetime(2026, 1, 1, 0, 30, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 0, 30, tzinfo=UTC),
         )
         assert ok is False
         assert "blocked" in reason
@@ -66,7 +65,7 @@ class TestEntryFilter:
             spread_pct=None,
             bid_depth=None,
             ask_depth=None,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
 
@@ -86,7 +85,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="TREND_BULL",
             spread_pct=0.0015,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is False
         assert "spread" in reason
@@ -96,7 +95,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="TREND_BULL",
             spread_pct=0.0008,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
 
@@ -105,7 +104,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="CHOP",
             spread_pct=0.0025,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
 
@@ -114,7 +113,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="CHOP",
             spread_pct=0.0035,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is False
         assert "spread" in reason
@@ -124,7 +123,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="RANGE",
             spread_pct=0.0020,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is False
         assert "spread" in reason
@@ -134,7 +133,7 @@ class TestRegimeDependentSpread:
         ok, reason = self.filt.check(
             regime="UNKNOWN",
             spread_pct=0.0025,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True
 
@@ -142,6 +141,6 @@ class TestRegimeDependentSpread:
         """No regime falls back to max_spread_pct."""
         ok, reason = self.filt.check(
             spread_pct=0.0025,
-            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc),
+            now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
         )
         assert ok is True

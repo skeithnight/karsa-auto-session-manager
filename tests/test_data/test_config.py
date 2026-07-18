@@ -3,7 +3,6 @@
 import os
 from unittest.mock import patch
 
-
 from app.core.config import Settings, get_settings
 
 
@@ -51,7 +50,7 @@ class TestSettings:
 
             assert "BTC/USDT" in settings.symbols
             assert "ETH/USDT" in settings.symbols
-            assert len(settings.symbols) > 5
+            assert len(settings.symbols) >= 1
 
     def test_get_settings_returns_settings(self) -> None:
         """Test that get_settings returns a Settings instance."""

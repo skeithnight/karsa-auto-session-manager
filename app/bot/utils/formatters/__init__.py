@@ -8,8 +8,8 @@ Import path updated: app.bot.utils.formatters (was src.utils.formatters).
 """
 
 from decimal import Decimal
-from html import escape
-from app.bot.utils.format import HTML, bold, italic, code, pre, fmt
+
+from app.bot.utils.format import HTML, bold, code, fmt, italic, pre
 
 
 def format_price(p) -> str:
@@ -104,7 +104,6 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
         ((entry - mark) / entry * 100) if entry > 0 else 0
     )
     pnl_icon = "🟢" if pnl >= 0 else "🔴"
-    side_icon = "⬆️" if side == "Buy" else "⬇️"
     side_label = "LONG" if side == "Buy" else "SHORT"
 
     # Position allocation bar
@@ -264,4 +263,8 @@ __all__ = [
     "format_breakeven_alert",
     "format_entry_alert",
     "TradeHistoryFormatter",
+    "HTML",
+    "code",
+    "format_shadow_funnel",
 ]
+from .shadow_funnel_formatter import format_shadow_funnel

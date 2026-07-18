@@ -9,14 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from collections.abc import Callable, Coroutine
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Callable, Coroutine, Optional
+from typing import Any
 
 from loguru import logger
 
-from app.core import metrics
 from app.alpha.position_judge import PositionJudge
+from app.core import metrics
 from app.core.position_store import PositionStore
 from app.execution.bybit_client import BybitClient
 from app.execution.sor import SmartOrderRouter
@@ -49,7 +50,7 @@ class TrailingStopManager:
     async def run(
         self,
         kill_switch: asyncio.Event,
-        price_getter: Callable[[str], Coroutine[Any, Any, Optional[Decimal]]],
+        price_getter: Callable[[str], Coroutine[Any, Any, Decimal | None]],
     ) -> None:
         """Main loop. price_getter: async callable(symbol) -> Optional[Decimal]."""
         logger.info("Trailing Stop Manager starting...")
@@ -76,10 +77,7 @@ class TrailingStopManager:
             return
 
         # Update peak
-        if side == "buy" and current_price > peak:
-            peak = current_price
-            await self.store.update_peak(symbol, side, current_price)
-        elif side == "sell" and current_price < peak:
+        if side == "buy" and current_price > peak or side == "sell" and current_price < peak:
             peak = current_price
             await self.store.update_peak(symbol, side, current_price)
 
@@ -87,9 +85,9 @@ class TrailingStopManager:
         amount = Decimal(pos.get("amount", "0"))
         if amount <= 0:
             return
-            
+
         max_distance = self.max_loss_usd / amount
-        
+
         if atr <= 0:
             # No trailing stop available, just enforce the static max_loss cap
             if side == "buy":
@@ -104,25 +102,19 @@ class TrailingStopManager:
             # Cap: never widen SL beyond max_loss_usd from entry
             if side == "buy":
                 floor_sl = entry - max_distance
-                if new_sl < floor_sl:
-                    new_sl = floor_sl
+                new_sl = max(new_sl, floor_sl)
                 if new_sl <= 0:
                     new_sl = Decimal("0.000001")
             else:
                 ceiling_sl = entry + max_distance
-                if new_sl > ceiling_sl:
-                    new_sl = ceiling_sl
+                new_sl = min(new_sl, ceiling_sl)
 
         old_sl_str = pos.get("sl_price", "")
         old_sl = Decimal(old_sl_str) if old_sl_str else Decimal("0")
 
         # Only amend if there's no SL yet, or new SL is better (higher for long, lower for short)
         now = time.time()
-        if old_sl == 0:
-            await self._amend(pos, new_sl, now)
-        elif side == "buy" and new_sl > old_sl:
-            await self._amend(pos, new_sl, now)
-        elif side == "sell" and new_sl < old_sl:
+        if old_sl == 0 or side == "buy" and new_sl > old_sl or side == "sell" and new_sl < old_sl:
             await self._amend(pos, new_sl, now)
 
     def _calc_sl(self, side: str, peak: Decimal, atr: Decimal) -> Decimal:
@@ -140,7 +132,7 @@ class TrailingStopManager:
 
         sl_id = pos.get("sl_order_id", "")
         amount = Decimal(pos["amount"])
-        
+
         if not sl_id:
             new_order = await self.client.place_stop_loss(symbol, pos["side"], new_sl, amount)
         else:
@@ -175,15 +167,15 @@ class CheckpointManager:
         hard_fail_30min_pct: Decimal = Decimal("-0.02"),
         hard_fail_ever_pct: Decimal = Decimal("-0.03"),
         clear_win_atr_mult: Decimal = Decimal("3"),
-        position_judge: Optional[PositionJudge] = None,
-        trade_store: Optional[Any] = None,
-        alert_service: Optional[Any] = None,
-        trade_memory: Optional[Any] = None,
+        position_judge: PositionJudge | None = None,
+        trade_store: Any | None = None,
+        alert_service: Any | None = None,
+        trade_memory: Any | None = None,
         min_profit_to_protect_usd: Decimal = Decimal("0.50"),
         profit_drawdown_ratio: Decimal = Decimal("0.50"),
-        hard_fail_30min_usd: Optional[Decimal] = None,
-        hard_fail_ever_usd: Optional[Decimal] = None,
-        sor: Optional[SmartOrderRouter] = None,
+        hard_fail_30min_usd: Decimal | None = None,
+        hard_fail_ever_usd: Decimal | None = None,
+        sor: SmartOrderRouter | None = None,
     ) -> None:
         """Callers: main.py (passes trade_store, alert_service). No schema change."""
         logger.debug("CheckpointManager.__init__: entering")
@@ -201,7 +193,7 @@ class CheckpointManager:
         self.profit_drawdown_ratio = profit_drawdown_ratio
         self.hard_fail_30min_usd = hard_fail_30min_usd
         self.hard_fail_ever_usd = hard_fail_ever_usd
-        
+
         self.checkpoint_1h_min_pnl = Decimal("-0.005")
         self.checkpoint_4h_min_pnl = Decimal("0.0")
         self.checkpoint_24h_min_pnl = Decimal("0.005")
@@ -210,7 +202,7 @@ class CheckpointManager:
     async def run(
         self,
         kill_switch: asyncio.Event,
-        price_getter: Callable[[str], Coroutine[Any, Any, Optional[Decimal]]],
+        price_getter: Callable[[str], Coroutine[Any, Any, Decimal | None]],
         state_manager=None,
     ) -> None:
         """Main loop. price_getter: async callable(symbol) -> Optional[Decimal]."""
@@ -237,7 +229,7 @@ class CheckpointManager:
         if not entered_str:
             return
         entered_at = datetime.fromisoformat(entered_str)
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         elapsed = (now - entered_at).total_seconds()
 
         current_price = await price_getter(symbol)
@@ -377,15 +369,15 @@ class CheckpointManager:
             is_checkpoint_review = True
             min_pnl = self.checkpoint_24h_min_pnl
             new_checkpoint = "24H"
-        
+
         if is_checkpoint_review and min_pnl is not None:
             # First, update the checkpoint in DB so we don't trigger this again
             await self.store.update_checkpoint(symbol, side, new_checkpoint)
-            
+
             # Check performance
             if pnl_pct < min_pnl:
                 logger.warning(f"Checkpoint {new_checkpoint}: {symbol} {side} underperforming (pnl={pnl_pct:.4f} < min={min_pnl:.4f})")
-                
+
                 # Invoke PositionJudge explicitly for checkpoint review if available
                 if self.position_judge:
                     regime = pos.get("regime", "UNKNOWN")
@@ -430,7 +422,7 @@ class CheckpointManager:
                         elif verdict.action == "TIGHTEN_STOP":
                             await self._tighten_stop(pos, current_price, atr)
 
-    async def _exit(self, pos: dict, state_manager, exit_reason: str = "checkpoint", current_price: Optional[Decimal] = None) -> None:
+    async def _exit(self, pos: dict, state_manager, exit_reason: str = "checkpoint", current_price: Decimal | None = None) -> None:
         """Execute exit for a position.
 
         Profitable/non-urgent exits route through SOR post-only to save taker fees.
@@ -484,12 +476,12 @@ class CheckpointManager:
             entered_str = pos.get("entered_at", "")
             if entered_str:
                 entered_at = datetime.fromisoformat(entered_str)
-                duration = (datetime.now(timezone.utc) - entered_at).total_seconds()
+                duration = (datetime.now(UTC) - entered_at).total_seconds()
                 metrics.position_lifecycle_duration.observe(duration)
             logger.info(f"Position exited: {symbol} {side}")
             entry_price = Decimal(pos.get("entry_price", "0"))
             pnl = (exit_price - entry_price) * amount if side == "buy" else (entry_price - exit_price) * amount
-            
+
             # Record trade exit in Postgres — refuse if exit_price is zero (corrupted data)
             if self.trade_store:
                 if exit_price <= 0:
@@ -513,7 +505,7 @@ class CheckpointManager:
                     hold_min = 0
                     if entered_str:
                         entered_at = datetime.fromisoformat(entered_str)
-                        hold_min = int((datetime.now(timezone.utc) - entered_at).total_seconds() / 60)
+                        hold_min = int((datetime.now(UTC) - entered_at).total_seconds() / 60)
                     regime = pos.get("regime", "UNKNOWN")
                     entry_conf = Decimal(str(pos.get("entry_confidence", "0"))) if pos.get("entry_confidence") else Decimal("0")
                     await self.trade_memory.store(
@@ -529,7 +521,7 @@ class CheckpointManager:
             # Push exit alert to Telegram
             if self.alert_service:
                 try:
-                    from app.bot.utils.formatters import format_tp_alert, format_sl_alert, format_breakeven_alert
+                    from app.bot.utils.formatters import format_breakeven_alert, format_sl_alert, format_tp_alert
                     pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
                     if pnl > 0:
                         await self.alert_service.send(format_tp_alert(symbol, side, float(entry_price), float(exit_price), float(pnl), float(pnl_pct)))

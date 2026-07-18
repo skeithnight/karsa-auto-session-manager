@@ -7,7 +7,7 @@ Ported from karsa-claude-trading src/utils/format.py.
 Import path updated: app.bot.utils.format (was src.utils.format).
 """
 from html import escape
-from typing import Union, List
+from typing import Union
 
 TextLike = Union[str, "HTML", None]
 
@@ -57,6 +57,6 @@ def fmt(*parts: TextLike, sep: str = "") -> HTML:
     return HTML(sep.join(_safe(p) for p in parts if p is not None))
 
 
-def join(items: List[TextLike], sep: str = "\n") -> HTML:
+def join(items: list[TextLike], sep: str = "\n") -> HTML:
     """Join list of items with separator."""
     return fmt(*items, sep=sep)

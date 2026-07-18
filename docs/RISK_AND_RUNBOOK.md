@@ -1,7 +1,8 @@
 # Risk Management & Operations Runbook
 **Project Name:** `karsa-auto-session-manager`  
 **Document Status:** Approved / Locked  
-**Classification:** CRITICAL / SAFETY  
+**Classification:** CRITICAL / SAFETY
+**Last Revised:** 2026-07-17 — Shadow Mode operations added, WARP→WireGuard cleanup (Phase 3.1)  
 
 ---
 
@@ -44,20 +45,20 @@ When triggered, the bot immediately executes the following sequence, ignoring al
 
 ---
 
-## 3. Proxy Failover (WARP Degradation Protocol)
-**Context:** Because Bybit is geo-blocked, the WARP SOCKS5 proxy is a mandatory single point of failure. If the proxy drops, we cannot trust our execution latency.
+## 3. Proxy Failover (VPN Tunnel Degradation Protocol)
+**Context:** Because Bybit is geo-blocked, the WireGuard VPN tunnel (gluetun) is a mandatory single point of failure. If the tunnel drops, we cannot trust our execution latency.
 
 ### Detection
 The Watchdog monitors the Bybit Private WebSocket heartbeat and REST API response times. 
 
 ### Failover Actions
-If the WARP proxy drops or latency spikes > 2000ms:
+If the WireGuard VPN tunnel drops or latency spikes > 2000ms:
 1. **DO NOT attempt to Market Flatten immediately.** Sending market orders through a degraded proxy will result in catastrophic slippage or failed requests, leaving the bot blind.
 2. **Cancel Pending Orders:** Immediately cancel all open Limit orders. *(Reason: We don't want a limit order to accidentally fill 5 minutes later when the proxy reconnects while we are unaware).*
 3. **Rely on Exchange-Side Stops:** Ensure all open positions have **hard Stop-Loss orders resting on the Bybit exchange server** (not just in the bot's memory). 
 4. **Halt Trading:** Stop the Alpha Bridge from generating new signals.
-5. **Alert Human:** Send Telegram alert: *"⚠️ WARP Proxy Degraded. Open orders canceled. Existing positions protected by exchange-side SL. Bot paused."*
-6. **Resume:** The bot will automatically attempt to reconnect the proxy every 30 seconds. Once stable for 60 seconds, it will resume trading.
+5. **Alert Human:** Send Telegram alert: *"⚠️ VPN Tunnel Degraded. Open orders canceled. Existing positions protected by exchange-side SL. Bot paused."*
+6. **Resume:** The bot will automatically attempt to reconnect the VPN tunnel every 30 seconds. Once stable for 60 seconds, it will resume trading.
 
 ---
 
@@ -123,3 +124,44 @@ To enforce this runbook, the following code patterns are **mandatory** for the d
 1. **Exchange-Side Stop Losses:** Every time the Bybit Executor opens a position, it **must** immediately place a hard Stop-Loss order on the Bybit exchange server. The bot's internal "soft" stop-loss is secondary. If the bot dies, the exchange SL saves the capital.
 2. **Idempotent Execution:** The execution logic must be idempotent. If the bot crashes while sending an order, and restarts, the State Reconciliation engine must ensure it doesn't accidentally send the exact same order twice.
 3. **Graceful Shutdown:** The `main.py` must catch `SIGINT` (Ctrl+C) and `SIGTERM` (Docker stop). Upon catching these, it must execute the **Kill Switch Sequence** (Cancel orders -> Flatten -> Exit) before allowing the process to die. *Never just kill the process without flattening.*
+
+---
+
+## 8. Shadow Mode Operations (Phase 3.1)
+
+**Activation:** Set `SHADOW_MODE_ENABLED=true` in `.env`. Restart the bot. Shadow components substitute live components automatically via conditional wiring in `main.py`.
+
+**What changes in shadow mode:**
+- No real orders placed on Bybit
+- Startup reconciliation is skipped (shadow positions have no exchange counterpart)
+- Position reconciler task (`position_reconciler_task`) is not started
+- `ShadowExecutor` replaces `SmartOrderRouter` for entry/exit
+- `ShadowAPM` replaces `ActivePositionManager` for post-trade monitoring
+- Shadow positions tracked under `shadow:position:*` Redis keys
+- Shadow trades written to `shadow_trades` table
+
+**Monitoring:**
+- `karsa_shadow_mode_active` = 1 confirms shadow mode is running
+- `karsa_shadow_pnl_usdt` for virtual PnL distribution
+- `karsa_shadow_fees_total_usdt` for cumulative trading fees
+- `karsa_shadow_funding_fees_total_usdt` for funding rate drag
+- `karsa_shadow_sl_hits_total` for stop-loss hit count
+- `karsa_shadow_limit_orders_unfilled_total` for expired pending orders
+
+**Switching back to live:**
+1. Set `SHADOW_MODE_ENABLED=false` in `.env`
+2. Restart the bot
+3. Live components resume automatically
+4. Shadow positions in Redis are orphaned (not cleaned up) — this is intentional, they don't interfere with live operation
+
+**Failure modes:**
+- If shadow mode is active and Bybit reconciliation runs (bug), it will see shadow positions as "ghost" and delete them. The code explicitly skips reconciliation — verify on startup logs that "SHADOW MODE ENABLED — no real orders will be placed" warning appears.
+- If `SHADOW_MODE_ENABLED=true` but live Bybit positions exist, the live positions are invisible to the shadow APM. Shadow mode does NOT close live positions — they remain on Bybit unmanaged. Always close live positions before switching to shadow mode.
+
+**Verification checklist (after activation):**
+1. `karsa_shadow_mode_active` metric = 1
+2. Startup log shows "SHADOW MODE ENABLED" warning
+3. No "Reconciliation failed" errors (should be skipped entirely)
+4. `position_reconciler_task` is NOT started
+5. Shadow positions appear under `shadow:position:*` Redis keys after first virtual fill
+6. Shadow trades appear in `shadow_trades` table after virtual close

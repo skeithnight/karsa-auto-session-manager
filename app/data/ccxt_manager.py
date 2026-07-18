@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
-from typing import Dict
+from datetime import UTC, datetime
 
 import ccxt.pro as ccxt_pro
 from loguru import logger
@@ -17,9 +16,9 @@ class CCXTManager:
 
     def __init__(self) -> None:
         logger.debug("CCXTManager.__init__: entering")
-        self.exchanges: Dict[str, ccxt_pro.Exchange] = {}
+        self.exchanges: dict[str, ccxt_pro.Exchange] = {}
         self.markets_loaded: list[str] = []  # exchanges with successfully loaded markets
-        self.last_update: Dict[str, datetime] = {}
+        self.last_update: dict[str, datetime] = {}
         self.stale_threshold_seconds: int = 15
         logger.debug("CCXTManager.__init__: returning")
 
@@ -178,7 +177,7 @@ class CCXTManager:
         try:
             target = self._resolve_symbol(symbol, exchange_id)
             orderbook = await exchange.watch_order_book(target)
-            self.last_update[exchange_id] = datetime.now(timezone.utc)
+            self.last_update[exchange_id] = datetime.now(UTC)
             logger.debug("watch_orderbook: returning dict")
             return orderbook
         except Exception as e:
@@ -203,7 +202,7 @@ class CCXTManager:
         try:
             target = self._resolve_symbol(symbol, exchange_id)
             trades = await exchange.watch_trades(target)
-            self.last_update[exchange_id] = datetime.now(timezone.utc)
+            self.last_update[exchange_id] = datetime.now(UTC)
             logger.debug("watch_trades: returning list")
             return trades
         except Exception as e:
@@ -227,7 +226,7 @@ class CCXTManager:
             logger.debug("is_stale: returning True (no last update)")
             return True
 
-        elapsed = (datetime.now(timezone.utc) - last).total_seconds()
+        elapsed = (datetime.now(UTC) - last).total_seconds()
         result = elapsed > self.stale_threshold_seconds
         metrics.exchange_status.labels(exchange=exchange_id).set(1 if result else 0)
         logger.debug(f"is_stale: returning {result}")

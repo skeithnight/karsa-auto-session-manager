@@ -1,6 +1,6 @@
 # Metrics Dictionary
 **Project Name:** `karsa-auto-session-manager`
-**Document Status:** Draft — Proposed (consolidates metric names scattered across `DEFINITION_OF_DONE.md`, `MVP_SCOPE.md`, `ARCHITECTURE.md`, `RISK_AND_RUNBOOK.md`)
+**Document Status:** Draft — Proposed, rev. 2 (added Shadow Mode + Pipeline Funnel metrics, WARP -> gluetun)
 **Purpose:** One canonical list of every Prometheus metric the system exposes, so naming doesn't drift as components get built independently.
 
 ---
@@ -65,7 +65,7 @@
 | `karsa_dead_mans_switch_ping_total` | Counter | `result` (`success`\|`failed`) | Every external ping attempt (Healthchecks.io / Telegram) |
 | `karsa_event_loop_lag_seconds` | Gauge | — | Measured `asyncio` loop blocking delay — Watchdog acts if this exceeds 100ms |
 | `karsa_kill_switch_triggered_total` | Counter | `trigger_source` (`telegram`\|`file_flag`\|`sigterm`\|`sigint`) | Every kill switch activation and its source |
-| `karsa_proxy_latency_ms` | Histogram | — | WARP proxy round-trip latency, sampled independently of order latency, used for the >2000ms failover trigger in `RISK_AND_RUNBOOK.md` §3 |
+| `karsa_proxy_latency_ms` | Histogram | — | VPN tunnel (gluetun) round-trip latency, sampled independently of order latency, used for the >2000ms failover trigger in `RISK_AND_RUNBOOK.md` §3 |
 | `karsa_memory_usage_bytes` | Gauge | — | Process RSS, checked against Docker memory limits |
 
 ---
@@ -111,12 +111,42 @@
 
 ---
 
-## 11. Dashboards vs. Raw Metrics
+## 11. Shadow Mode Metrics (Phase 3.1 -- Built)
 
-Per `MVP_SCOPE.md` §4, Grafana is explicitly out of scope for the MVP — these metrics are meant to be queried raw via `/metrics` or `curl`'d directly during the MVP phase, not built into dashboards yet (see `IDEAS_BACKLOG.md` #7).
+| Metric | Type | Labels | Description |
+|:---|:---|:---|:---|
+| `karsa_shadow_mode_active` | Gauge | — | 1 when shadow mode is active, 0 otherwise |
+| `karsa_shadow_orders_placed_total` | Counter | `symbol`, `side` | Shadow virtual orders placed |
+| `karsa_shadow_exits_placed_total` | Counter | `symbol`, `reason` | Shadow virtual exits placed |
+| `karsa_shadow_pnl_usdt` | Histogram | — | Shadow virtual PnL in USDT per closed trade |
+| `karsa_shadow_fees_total_usdt` | Counter | — | Cumulative shadow trading fees in USDT |
+| `karsa_shadow_slippage_total_usdt` | Counter | — | Cumulative shadow slippage cost in USDT |
+| `karsa_shadow_positions_open` | Gauge | — | Currently open shadow positions |
+| `karsa_shadow_sl_hits_total` | Counter | `symbol`, `side` | Shadow stop-loss hits triggered |
+| `karsa_shadow_funding_fees_total_usdt` | Counter | — | Cumulative shadow funding rate fees in USDT |
+| `karsa_shadow_limit_orders_unfilled_total` | Counter | `symbol` | Shadow post-only limit orders that expired unfilled (TTL 600s) |
 
 ---
 
-## 12. Adding a New Metric
+## 12. Pipeline Funnel Metrics (Phase 6 -- Built)
+
+| Metric | Type | Labels | Description |
+|:---|:---|:---|:---|
+| `karsa_regime_classified_total` | Counter | `symbol`, `regime` | Signals classified by regime |
+| `karsa_strategy_scored_total` | Counter | `regime`, `score_bucket` | Signals scored by strategy router |
+| `karsa_signal_confidence_passed_total` | Counter | `regime` | Signals that passed confidence threshold |
+| `karsa_signal_killed_total` | Counter | `stage`, `reason` | Signals killed at each pipeline stage |
+| `karsa_strategy_score` | Histogram | `symbol`, `regime` | Strategy router score distribution |
+| `karsa_signal_confidence` | Histogram | — | Final signal confidence distribution |
+
+---
+
+## 13. Dashboards vs. Raw Metrics
+
+Per `MVP_SCOPE.md` §4, Grafana is out of scope for MVP — most metrics are queried raw via `/metrics` or `curl`'d directly. One dashboard does exist: `grafana/dashboards/asm-pipeline-funnel.json` covers the Phase 6 pipeline funnel metrics. Additional dashboards should be added there as new metric sections land (see `IDEAS_BACKLOG.md` #7).
+
+---
+
+## 14. Adding a New Metric
 
 Before adding anything not in this table: (1) confirm it maps to a real DoD or Runbook requirement — don't add speculative metrics, (2) follow the `karsa_<component>_<measurement>_<unit>` convention, (3) update this file in the same PR that adds the metric, so this dictionary never drifts out of sync with the code the way the original docs drifted from each other.

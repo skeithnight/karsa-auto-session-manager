@@ -2,8 +2,7 @@
 
 from decimal import Decimal
 
-
-from app.data.normalizer import Normalizer, ExchangeData
+from app.data.normalizer import ExchangeData, Normalizer
 
 
 class TestNormalizer:

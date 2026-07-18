@@ -27,7 +27,7 @@ class AlertService:
         """Set bot instance. Called by run_bot() after PTB application starts."""
         self._bot = bot
         logger.info(f"AlertService bot registered, chat_id={self._chat_id}")
-        
+
         # Flush any queued messages
         import asyncio
         for msg in self._queue:
@@ -42,7 +42,7 @@ class AlertService:
             self._queue.append(text)
             logger.debug("AlertService: Bot not ready, queued message.")
             return
-            
+
         try:
             await self._bot.send_message(self._chat_id, text, parse_mode="HTML")
         except Exception as e:

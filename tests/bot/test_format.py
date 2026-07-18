@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-
-from app.bot.utils.format import bold, italic, code, pre, fmt, join, HTML
+from app.bot.utils.format import HTML, bold, code, fmt, italic, join, pre
 
 
 class TestHTMLFragments:

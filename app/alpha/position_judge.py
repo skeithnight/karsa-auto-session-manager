@@ -10,18 +10,18 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any
 
 from loguru import logger
 
-from app.core import metrics
 from app.alpha.ta_tools import (
-    calculate_rsi,
-    calculate_bollinger_bands,
-    calculate_macd,
     calculate_atr,
+    calculate_bollinger_bands,
     calculate_ema,
+    calculate_macd,
+    calculate_rsi,
 )
+from app.core import metrics
 from app.core.ai_client import AIClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
@@ -121,7 +121,7 @@ class PositionJudge:
         prev_conf: int = 0,
         recent_trades: str = "",
         is_checkpoint_review: bool = False,
-    ) -> Optional[JudgeVerdict]:
+    ) -> JudgeVerdict | None:
         """Judge an open position. Returns None if AI unavailable."""
         pnl_pct = float((current_price - entry_price) / entry_price * 100)
         if side == "sell":
@@ -187,7 +187,7 @@ class PositionJudge:
 
     async def _cheap_pass(
         self, symbol, side, entry_price, current_price, atr, regime, elapsed_seconds,
-    ) -> Optional[JudgeVerdict]:
+    ) -> JudgeVerdict | None:
         """Quick haiku pass, no TA tools."""
         pnl_pct = float((current_price - entry_price) / entry_price * 100)
         if side == "sell":
@@ -217,7 +217,7 @@ class PositionJudge:
     async def _escalated_pass(
         self, symbol, side, entry_price, current_price, peak_price, atr, regime,
         elapsed_seconds, prev_action, prev_conf, hold_count, recent_trades="",
-    ) -> Optional[JudgeVerdict]:
+    ) -> JudgeVerdict | None:
         """Full TA pass with escalated model."""
         candles = await self.fetcher.fetch(symbol, "1h", 200)
         rsi = bb = macd = ema = price_vs_ema = "N/A"
@@ -298,7 +298,7 @@ class PositionJudge:
             metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="escalated").inc()
         return verdict
 
-    def _parse_response(self, response: str, tier: str) -> Optional[JudgeVerdict]:
+    def _parse_response(self, response: str, tier: str) -> JudgeVerdict | None:
         try:
             text = response.strip()
             if text.startswith("```"):

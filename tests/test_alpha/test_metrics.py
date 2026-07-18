@@ -4,12 +4,11 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-
 from app.alpha.metrics import (
-    calculate_vwap,
-    calculate_skew,
-    calculate_lead_lag,
     AlphaMetrics,
+    calculate_lead_lag,
+    calculate_skew,
+    calculate_vwap,
 )
 
 

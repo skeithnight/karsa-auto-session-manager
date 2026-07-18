@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from app.alpha.regime_classifier import MarketRegime
 from app.alpha.strategy_router import (
-    CHOP_SCORE_FUNDING_EXTREME,
-    CHOP_SCORE_LIQUIDITY_SWEEP,
+    CHOP_SCORE_WICK_SNAPBACK,
     RANGE_SCORE_BB_EDGE,
     RANGE_SCORE_WICK,
     TREND_SCORE_BREAKOUT,
@@ -120,12 +118,16 @@ class TestChopStrategy:
         router = StrategyRouter()
         candles = np.zeros((50, 6))
         candles[:] = [1000, 100, 101, 99, 100, 1000]
+        # Last 2 candles create wick snapback: lower_wick > body
+        candles[-2] = [1000 + 48 * 3600, 100, 102, 98, 101, 1000]
+        candles[-1] = [1000 + 49 * 3600, 101, 102, 96, 102, 1000]
         result = router.evaluate_signal(
             candles,
             regime=MarketRegime.CHOP,
             direction="LONG",
             orderbook_delta=-0.5,
             funding_rate=-0.001,
+            oi_change=-0.3,
         )
         assert result == 100.0
 
@@ -133,14 +135,16 @@ class TestChopStrategy:
         router = StrategyRouter()
         candles = np.zeros((50, 6))
         candles[:] = [1000, 100, 101, 99, 100, 1000]
+        # Single wick snapback: low well below close range
+        candles[-2] = [1000 + 48 * 3600, 100, 102, 98, 100, 1000]
+        candles[-1] = [1000 + 49 * 3600, 100, 102, 97, 101, 1000]
         result = router.evaluate_signal(
             candles,
             regime=MarketRegime.CHOP,
             direction="LONG",
-            orderbook_delta=-0.5,
             funding_rate=0.0,
         )
-        assert result == CHOP_SCORE_LIQUIDITY_SWEEP
+        assert result == CHOP_SCORE_WICK_SNAPBACK
 
 
 class TestEdgeCases:

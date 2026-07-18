@@ -1,13 +1,14 @@
 # Architecture Document
 **Project Name:** `karsa-auto-session-manager`  
 **Document Status:** Approved / Locked  
+**Last Revised:** 2026-07-17 — WARP→WireGuard cleanup, Shadow Mode section added (§4.E)
 
 ---
 
 ## 1. Architectural Philosophy
 The system is built on a strict **"Read Global, Execute Local"** paradigm. It ingests aggregated market data from the broader crypto universe to establish the "true" market state, and executes directional trades exclusively on Bybit. 
 
-Because Bybit execution must be routed through a Cloudflare WARP (SOCKS5) proxy due to geo-restrictions, the system introduces unavoidable network latency. To mitigate this, the architecture deliberately abandons microservices in favor of a **Single-Process Monolith** and shifts the trading timeframe to Intraday/Swing (15m - 4h), where proxy latency is mathematically irrelevant to the alpha.
+Because Bybit execution must be routed through a WireGuard VPN tunnel (gluetun sidecar) due to geo-restrictions, the system introduces unavoidable network latency. To mitigate this, the architecture deliberately abandons microservices in favor of a **Single-Process Monolith** and shifts the trading timeframe to Intraday/Swing (15m - 4h), where proxy latency is mathematically irrelevant to the alpha.
 
 ---
 
@@ -52,7 +53,7 @@ graph TD
     BINANCE & OKX & BYBIT_DATA -->|Public WebSockets| DATA
     DATA -->|Normalized Global State| ALPHA
     
-    EXEC <-->|Private WebSockets <br/> via WARP SOCKS5 Proxy| BYBIT_EXEC
+    EXEC <-->|Private WebSockets <br/> via WireGuard VPN (gluetun)| BYBIT_EXEC
     
     STATE <-->|Persistent Audit Trail| POSTGRES
     WATCHDOG -->|Exposes /metrics| PROM
@@ -66,7 +67,7 @@ graph TD
 In traditional enterprise software, separating the "Signal Generator" (Orchestrator) and the "Order Executor" (Bot) into different containers communicating via Redis Pub/Sub is best practice. **In this system, it is a fatal flaw.**
 
 ### Why we merged them:
-1. **Proxy Latency Mitigation:** The WARP proxy adds ~150ms to Bybit execution. If we add a 5ms-10ms network hop for Redis Pub/Sub between internal containers, we compound the latency. A single process shares memory; passing a signal from the Alpha Bridge to the Executor takes `< 0.01ms`.
+1. **Proxy Latency Mitigation:** The VPN proxy adds ~100-300ms to Bybit execution. If we add a 5ms-10ms network hop for Redis Pub/Sub between internal containers, we compound the latency. A single process shares memory; passing a signal from the Alpha Bridge to the Executor takes `< 0.01ms`.
 2. **State Divergence Prevention:** If the Bot fails to fill an order on Bybit, a microservice architecture requires complex two-phase commits to update the Orchestrator. In a single process, the Executor updates the in-memory state immediately and synchronously.
 3. **Event Loop Efficiency:** Python's `asyncio` is highly efficient at handling hundreds of concurrent WebSockets in a single thread. Splitting them forces context switching and IPC (Inter-Process Communication) overhead.
 
@@ -93,11 +94,45 @@ In traditional enterprise software, separating the "Signal Generator" (Orchestra
 *   **Circuit Breaker:** Hard stops the bot if daily drawdown hits -2%.
 
 ### D. Bybit Executor (Key 4)
-*   Connects to Bybit **Private WebSockets** via the WARP SOCKS5 proxy.
+*   Connects to Bybit **Private WebSockets** via the WireGuard VPN via gluetun.
 *   Executes the Smart Order Routing (SOR): Post-Only Limit $\rightarrow$ Reprice $\rightarrow$ Market/IOC.
 *   **Position Lifecycle:** TrailingStopManager amends SL when price moves favorably (60s cooldown). CheckpointManager evaluates HARD_FAIL (-2% in 30min, -3% ever), CLEAR_WIN (>3x ATR), and TIME_STOP (>72h).
 
-### E. State Manager (Key 5)
+### E. Shadow Mode (Phase 3.1 — Built)
+
+Shadow Mode simulates the full trade lifecycle on live market data without placing real orders. It validates strategy math, fee impact, and slippage assumptions before going live.
+
+**Architecture:**
+A conditional component substitution layer in `main.py`. When `SHADOW_MODE_ENABLED=true`:
+- `ShadowExecutor` replaces `SmartOrderRouter` for entry/exit calls
+- `ShadowAPM` replaces `ActivePositionManager` for post-trade position monitoring
+- `ShadowExchangeClient` (Redis-backed mock) replaces `BybitClient` for APM's live price reads
+- Startup reconciliation is skipped (shadow positions have no exchange counterpart)
+- Position reconciler task is not started
+
+**Key components:**
+- `ShadowExecutor` (`app/execution/shadow.py`): Simulated order routing with asymmetric fees (maker 0.02% vs taker 0.055%) based on `is_post_only` flag, plus 0.05% simulated slippage. Returns `PENDING_VIRTUAL_FILL` status for post-only limit orders.
+- `ShadowAPM` (`app/execution/shadow.py`): 2-second monitoring loop with:
+  - **Wick miss prevention:** Tracks `worst_price_seen` in Redis. SL detection uses worst price, not current price.
+  - **Funding rate drag:** Deducts 8-hour funding fee on held positions.
+  - **Pending limit fills:** Activates `PENDING` orders when live price crosses virtual entry. Expires after 600s TTL.
+- `ShadowPositionStore` (`app/core/shadow_store.py`): Redis position state under `shadow:position:{symbol}:{side}` keys.
+- `ShadowTradeStore` (`app/core/shadow_store.py`): Postgres CRUD targeting `shadow_trades` table.
+
+**State isolation (non-negotiable):**
+- Shadow Redis keys use `shadow:position:*` prefix — never `position:*`
+- Shadow trades write to `shadow_trades` table — never `trades`
+- Switching from shadow to live mode does not clean up orphaned shadow state (intentional)
+
+**4 refinements applied (from `docs/review/refinement_shadom_plan.md`):**
+1. Fee asymmetry (maker vs taker based on order type)
+2. Wick miss prevention (worst_price_seen)
+3. Funding rate drag (8-hour deduction)
+4. Pending limit order state machine (PENDING_VIRTUAL_FILL)
+
+**Monitoring:** 10 Prometheus metrics track virtual PnL, fees, funding, SL hits, pending expiry, and position counts.
+
+### F. State Manager (Key 5)
 *   Writes all trade events, risk decisions, and state changes to PostgreSQL via `asyncpg`.
 *   Handles **Startup Reconciliation**: Queries Bybit REST API on boot to ensure local DB matches actual exchange positions.
 
@@ -290,7 +325,7 @@ sequenceDiagram
     Risk-->>Exec: Signal APPROVED
 
     Note over Exec,DB: 4. EXECUTION & STATE
-    Exec->>Universe: Send Order via WARP Proxy (SOR)
+    Exec->>Universe: Send Order via WireGuard VPN (SOR)
     Exec->>Exec: Record signal_generated_at timestamp
     Universe-->>Exec: Order Filled
     Exec->>Exec: Measure latency, record to Watchdog
@@ -384,7 +419,7 @@ flowchart LR
 | **Market Data** | `ccxt.pro` | Unified API for WebSockets across 100+ exchanges. |
 | **Database** | PostgreSQL 15 + `asyncpg` | Relational integrity for trade logs; `asyncpg` is the fastest async Python DB driver. |
 | **Metrics** | `prometheus-client` | Exposes `/metrics` endpoint for Dockerized Prometheus to scrape. |
-| **Proxy** | Cloudflare WARP (SOCKS5) | Mandatory for bypassing Bybit geo-restrictions. |
+| **Proxy** | WireGuard VPN via gluetun | Mandatory for bypassing Bybit geo-restrictions. |
 | **Containerization**| Docker & Docker Compose | Ensures identical environments for local dev and future cloud deployment. |
 | **Cache Layer** | Redis 7 | High-speed state caching (`global:state`, `system:heartbeat`, `system:circuit_breaker`, `system:config:regime`). Session state. Already implemented. |
 
@@ -395,79 +430,85 @@ flowchart LR
 ```text
 karsa-auto-session-manager/
 │
-├── app/                            # Main application code
+├── app/
 │   ├── __init__.py
-│   ├── main.py                     # Entry point: initializes asyncio loop, starts all tasks
-│   │
-│   ├── core/                       # Core orchestration & configuration
-│   │   ├── config.py               # Pydantic settings (loads .env)
-│   │   ├── session.py              # Session Orchestrator (UTC time blocks, regime logic)
-│   │   ├── state.py                # In-memory state management & Postgres sync
-│   │   ├── redis_client.py         # Redis connection + key operations
-│   │   └── position_store.py       # Redis-backed position lifecycle state (Phase 4)
-│   │
-│   ├── data/                       # Key 1: Global Read Engine
-│   │   ├── ccxt_manager.py         # WebSocket connections, auto-reconnect logic
-│   │   ├── normalizer.py           # Standardizes exchange payloads
-│   │   ├── filters.py              # Bad tick & outlier rejection
-│   │   ├── ohlcv_fetcher.py        # Cached OHLCV REST fetcher
-│   │   ├── universe_scorer.py      # Dynamic universe scoring (Volume+Momentum+Squeeze+Overextension)
-│   │   └── sector_mapping.py       # Static sector classification for diversity cap
-│   │
-│   ├── alpha/                      # Key 2: Signal Generation
-│   │   ├── metrics.py              # Global VWAP, Skew, Funding calculations
-│   │   ├── signals.py              # Multi-signal composite (skew+lead_lag+funding+OI)
-│   │   ├── regime.py               # Hurst + ADX regime classifier
-│   │   ├── lead_lag_buffer.py      # 15-min rolling price buffer
-│   │   ├── entry_filter.py         # Pre-entry structural checklist (5 checks)
-│   │   ├── ta_tools.py             # Deterministic TA indicators (RSI, BB, MACD, ATR, EMA)
-│   │   ├── analyst.py              # AI CryptoAnalyst (MANDATORY, via 9router)
-│   │   ├── position_judge.py       # AI PositionJudge (MANDATORY, 2-tier escalation)
-│   │   ├── multi_tf.py             # Multi-timeframe confirmation (1H+4H)
-│   │   └── trade_memory.py         # Trade history injection into AI prompts
-│   │
-│   ├── execution/                  # Key 4: Local Write Engine
-│   │   ├── bybit_client.py         # Bybit Private WS & REST via WARP proxy (+ SL methods, Phase 0B)
-│   │   ├── sor.py                  # Smart Order Routing (Limit -> Reprice -> Market)
-│   │   └── position_lifecycle.py   # Trailing stop + performance checkpoints (Phase 4)
-│   │
-│   ├── risk/                       # Key 3: Risk Management
-│   │   ├── gates.py                # The 3-Layer Risk Gate logic
-│   │   ├── circuit_breaker.py      # Daily drawdown limits, hard stops
-│   │   └── sector_cap.py           # Sector diversity cap (max N positions per sector)
-│   │
-│   ├── watchdog/                   # Key 6: Telemetry & Health
-│   │   ├── monitor.py              # Heartbeat tracking, loop lag detection
-│   │   ├── dead_mans_switch.py     # External ping logic (Healthchecks/Telegram)
-│   │   └── metrics.py              # Prometheus metric definitions
-│   │
-│   └── bot/                        # Key 7: Telegram Command Interface
-│       ├── handlers.py             # All command & callback handlers (ported from karsa-claude-trading)
-│       ├── runner.py               # PTB ApplicationBuilder, handler registration, bot_data wiring
+│   ├── main.py                    # Entry point — conditional shadow wiring
+│   ├── core/
+│   │   ├── config.py              # Pydantic Settings, loads .env
+│   │   ├── database.py            # Postgres async pool (asyncpg)
+│   │   ├── redis_client.py        # Redis async client (aioredis)
+│   │   ├── state.py               # In-memory state + Postgres sync
+│   │   ├── position_store.py      # Redis-backed position lifecycle state
+│   │   ├── shadow_store.py        # ShadowPositionStore + ShadowTradeStore
+│   │   ├── trade_store.py         # Postgres trade CRUD
+│   │   ├── ai_client.py           # 9router async HTTP client
+│   │   ├── metrics.py             # Prometheus metrics (incl. 10 shadow metrics)
+│   │   ├── alert_service.py       # Telegram alert dispatcher
+│   │   └── system_constants.py    # System-wide constants
+│   ├── data/                      # Global Data Engine (Key 1)
+│   │   ├── ccxt_manager.py        # CCXT Pro WS + load_markets()
+│   │   ├── normalizer.py          # Raw exchange dict normalization
+│   │   ├── filters.py             # Bad tick rejection
+│   │   ├── ohlcv_fetcher.py       # Cached OHLCV REST fetcher
+│   │   ├── universe_scorer.py     # Dynamic universe scoring
+│   │   └── sector_mapping.py      # Static sector classification
+│   ├── alpha/                     # Alpha Bridge (Key 2)
+│   │   ├── signals.py             # Multi-signal composite
+│   │   ├── regime.py              # Original Hurst + ADX classifier
+│   │   ├── regime_classifier.py   # [BUILT] Hub: ADX+Hurst+ATR classifier
+│   │   ├── strategy_router.py     # [BUILT] Spokes: per-regime scoring
+│   │   ├── entry_filter.py        # Pre-entry structural checklist
+│   │   ├── ta_tools.py            # Deterministic TA indicators
+│   │   ├── analyst.py             # MANDATORY AI pre-entry analyst
+│   │   ├── position_judge.py      # MANDATORY AI position judge
+│   │   ├── multi_tf.py            # Multi-timeframe confirmation
+│   │   ├── lead_lag_buffer.py     # 15-min rolling price buffer
+│   │   └── trade_memory.py        # Trade history injection
+│   ├── risk/                      # Risk Gate (Key 3)
+│   │   ├── gates.py               # 3-layer: liquidity, spread, CB
+│   │   ├── circuit_breaker.py     # Per-session -2% hard stop
+│   │   ├── sector_cap.py          # Max 2 per sector
+│   │   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade gate
+│   │   └── dynamic_risk_gate.py   # [BUILT] Regime-specific risk profiles
+│   ├── execution/                 # Bybit Executor + APM (Key 4)
+│   │   ├── bybit_client.py        # Bybit REST/WS client
+│   │   ├── sor.py                 # Smart Order Routing
+│   │   ├── position_lifecycle.py  # Trailing stop + checkpoints
+│   │   ├── position_manager.py    # [BUILT] ActivePositionManager
+│   │   └── shadow.py              # [BUILT] ShadowExecutor + ShadowAPM
+│   ├── watchdog/                  # Watchdog (Key 6)
+│   │   ├── monitor.py             # Heartbeats, latency, event loop
+│   │   └── dead_mans_switch.py    # External health ping
+│   └── bot/                       # Telegram (Key 7)
+│       ├── handlers.py
+│       ├── runner.py
 │       └── utils/
-│           ├── format.py           # HTML composable formatters (bold, italic, code, pre, fmt)
-│           ├── telegram_helpers.py # send_or_edit_message, send_toast, format_pre_table
-│           └── formatters/
-│               ├── __init__.py     # format_position_card, format_risk_button_text, regime display
-│               └── trade_history_formatter.py  # TradeHistoryFormatter (paginated)
-│
-├── tests/                          # Unit and integration tests
-│   ├── test_alpha_math.py
-│   ├── test_risk_gates.py
-│   └── bot/                        # Bot layer tests
-│       ├── test_auth.py
-│       ├── test_format.py
-│       └── test_decimal_safety.py
-│
-├── docs/                           # All documentation (PRD, MVP, etc.)
-├── docker-compose.yml              # Full stack: app, gluetun, db, redis, prometheus, grafana, 9router
-├── Dockerfile                      # Python 3.11 slim image + entrypoint.sh DNS fix
-├── entrypoint.sh                   # Writes gluetun DNS to /etc/resolv.conf at container startup
-├── prometheus.yml                  # Scrapes gluetun:8001 (app metrics proxy)
-├── grafana/                        # Dashboards: data-ingestion, operations, signal-confidence
-├── requirements.txt                # Python dependencies
-├── .env.example                    # Template for secrets
-└── README.md                       # Project overview
+│           ├── format.py
+│           └── telegram_helpers.py
+├── tests/
+├── scripts/
+│   ├── migrations/
+│   │   ├── 001_init.sql
+│   │   ├── 002_ai_decisions.sql
+│   │   └── 003_shadow_trades.sql  # Shadow trades table + indexes
+│   └── pipeline-funnel.sh
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── DATA_MODEL.md
+│   ├── RISK_AND_RUNBOOK.md
+│   ├── METRICS_DICTIONARY.md
+│   ├── DEFINITION_OF_DONE.md
+│   ├── TESTING_STRATEGY.md
+│   └── plan/
+│       └── backtest-shadow/
+│           └── BLUEPRINT_BACKTEST_SHADOW.md
+├── grafana/
+│   └── dashboards/
+│       └── asm-pipeline-funnel.json
+├── docker-compose.yml
+├── Dockerfile
+├── prometheus.yml
+└── requirements.txt
 ```
 
 ---

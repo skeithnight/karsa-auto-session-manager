@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
-from typing import Optional
 
-from pydantic import BaseModel, Field
 from loguru import logger
+from pydantic import BaseModel, Field
 
 
 class ExchangeData(BaseModel):
@@ -17,7 +16,7 @@ class ExchangeData(BaseModel):
     symbol: str
     bids: list[tuple[Decimal, Decimal]] = Field(default_factory=list)
     asks: list[tuple[Decimal, Decimal]] = Field(default_factory=list)
-    last_price: Optional[Decimal] = None
+    last_price: Decimal | None = None
     timestamp: datetime
     is_stale: bool = False
 
@@ -27,12 +26,12 @@ class GlobalState(BaseModel):
 
     symbol: str
     exchanges: list[ExchangeData] = Field(default_factory=list)
-    global_vwap: Optional[Decimal] = None
-    aggregate_skew: Optional[Decimal] = None
-    best_bid: Optional[Decimal] = None
-    best_ask: Optional[Decimal] = None
-    total_volume: Optional[Decimal] = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    global_vwap: Decimal | None = None
+    aggregate_skew: Decimal | None = None
+    best_bid: Decimal | None = None
+    best_ask: Decimal | None = None
+    total_volume: Decimal | None = None
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class Normalizer:
@@ -58,7 +57,7 @@ class Normalizer:
                 symbol=symbol,
                 bids=bids,
                 asks=asks,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             logger.debug("normalize_orderbook: returning ExchangeData")
             return result
@@ -76,7 +75,7 @@ class Normalizer:
                 exchange=exchange_id,
                 symbol=symbol,
                 last_price=price,
-                timestamp=datetime.now(timezone.utc),
+                timestamp=datetime.now(UTC),
             )
             logger.debug("normalize_trade: returning ExchangeData")
             return result
@@ -138,7 +137,7 @@ class Normalizer:
             best_bid=best_bid,
             best_ask=best_ask,
             total_volume=total_volume,
-            updated_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(UTC),
         )
         logger.debug(f"build_global_state: vwap={global_vwap} skew={aggregate_skew}")
         logger.debug("build_global_state: returning GlobalState")

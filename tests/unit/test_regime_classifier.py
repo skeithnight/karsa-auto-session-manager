@@ -9,11 +9,9 @@ import numpy as np
 import pytest
 
 from app.alpha.regime_classifier import (
-    MIN_CANDLES_FOR_CLASSIFICATION,
     MarketRegime,
     RegimeClassifier,
 )
-
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -211,7 +209,12 @@ class TestGetCurrentRegime:
 
     async def test_redis_returns_trend_bull(self) -> None:
         mock_redis = AsyncMock()
-        mock_redis.get.return_value = json.dumps({"regime": "TREND_BULL", "adx": 27.3})
+        mock_redis.get = AsyncMock(
+            side_effect=lambda key: {
+                "system:regime:BTC:USDT": "TREND_BULL",
+                "system:config:regime": json.dumps({"regime": "TREND_BULL", "adx": 27.3}),
+            }.get(key)
+        )
         classifier = RegimeClassifier(redis_client=mock_redis)
         result = await classifier.get_current_regime()
         assert result == MarketRegime.TREND_BULL

@@ -7,9 +7,9 @@ Schema: trades + ai_decisions tables from scripts/init_db.sql.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from loguru import logger
 from sqlalchemy import text
@@ -30,14 +30,14 @@ class TradeStore:
         side: str,
         amount: Decimal,
         entry_price: Decimal,
-        regime: Optional[str] = None,
-        ai_confidence: Optional[int] = None,
-        entry_regime: Optional[str] = None,
-        initial_risk_per_unit: Optional[Decimal] = None,
-        risk_profile_json: Optional[str] = None,
+        regime: str | None = None,
+        ai_confidence: int | None = None,
+        entry_regime: str | None = None,
+        initial_risk_per_unit: Decimal | None = None,
+        risk_profile_json: str | None = None,
     ) -> int:
         """Record trade entry. Returns trade id."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         try:
             async with self.db.engine.connect() as conn:
                 result = await conn.execute(
@@ -77,14 +77,14 @@ class TradeStore:
         exit_price: Decimal,
         pnl: Decimal,
         exit_reason: str,
-        trade_id: Optional[int] = None,
-        regime: Optional[str] = None,
+        trade_id: int | None = None,
+        regime: str | None = None,
     ) -> int:
         """Close trade. If trade_id given, close that trade; else most recent open for symbol.
         Returns number of rows updated (0 means no matching open trade found).
         If regime is set, also updates the regime column.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         regime_clause = ", regime = :regime" if regime else ""
         try:
             async with self.db.engine.connect() as conn:
@@ -186,7 +186,7 @@ class TradeStore:
 
     async def get_history(
         self, page: int = 1, per_page: int = 20
-    ) -> Tuple[List[Dict[str, Any]], int, int, int, Decimal]:
+    ) -> tuple[list[dict[str, Any]], int, int, int, Decimal]:
         """Get paginated trade history. Returns (trades, total, wins, losses, net_pnl)."""
         offset = (page - 1) * per_page
         async with self.db.engine.connect() as conn:
@@ -233,7 +233,7 @@ class TradeStore:
 
         return trades, total, wins, losses, net_pnl
 
-    async def get_trades_since(self, since: datetime) -> List[Dict[str, Any]]:
+    async def get_trades_since(self, since: datetime) -> list[dict[str, Any]]:
         """Get all trades (open or closed) with entry_time >= since."""
         async with self.db.engine.connect() as conn:
             rows = await conn.execute(
@@ -260,7 +260,7 @@ class TradeStore:
                 for r in rows.fetchall()
             ]
 
-    async def get_open_trade_by_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+    async def get_open_trade_by_symbol(self, symbol: str) -> dict[str, Any] | None:
         """Get the most recent open trade for a symbol (exit_time IS NULL)."""
         async with self.db.engine.connect() as conn:
             row = await conn.execute(
@@ -286,10 +286,10 @@ class TradeStore:
         self,
         symbol: str,
         decision_type: str,
-        model: Optional[str] = None,
-        input_hash: Optional[str] = None,
-        output_json: Optional[str] = None,
-        latency_ms: Optional[int] = None,
+        model: str | None = None,
+        input_hash: str | None = None,
+        output_json: str | None = None,
+        latency_ms: int | None = None,
     ) -> None:
         """Record AI decision for audit trail."""
         try:

@@ -10,9 +10,9 @@ ponytail: single class, no ABC/interface. Reuses TradeStore + BybitClient.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal, DecimalException
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
 
@@ -37,8 +37,8 @@ class Discrepancy:
     kind: str  # missing_entry, missing_exit, price_mismatch, pnl_mismatch
     symbol: str
     side: str
-    bybit_data: Dict[str, Any]
-    local_trade_id: Optional[int] = None
+    bybit_data: dict[str, Any]
+    local_trade_id: int | None = None
     severity: str = "WARNING"  # WARNING or CRITICAL
     repaired: bool = False
 
@@ -50,9 +50,9 @@ class ReconcileReport:
     timestamp: datetime
     bybit_fills_checked: int
     local_trades_checked: int
-    discrepancies: List[Discrepancy] = field(default_factory=list)
+    discrepancies: list[Discrepancy] = field(default_factory=list)
     repairs_made: int = 0
-    errors: List[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
 
 
 def _normalize_side(side: str) -> str:
@@ -103,8 +103,8 @@ class TradeReconciler:
             return 0
 
         reverse_map = {v: k for k, v in self.client._symbol_map.items()}
-        all_records: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        all_records: list[dict[str, Any]] = []
+        cursor: str | None = None
 
         for _ in range(max_pages):
             result = await self.client.get_closed_pnl(limit=50, cursor=cursor)
@@ -123,7 +123,7 @@ class TradeReconciler:
 
         # Fetch all existing local trades for dedup
         oldest_ts = min(int(r.get("createdTime", "0")) for r in all_records)
-        oldest_dt = datetime.fromtimestamp(oldest_ts / 1000, tz=timezone.utc)
+        oldest_dt = datetime.fromtimestamp(oldest_ts / 1000, tz=UTC)
         local_trades = await self.store.get_trades_since(oldest_dt)
 
         # Index local trades by (symbol, side, approximate entry_time) for dedup
@@ -154,8 +154,8 @@ class TradeReconciler:
             pnl = _safe_decimal(r.get("closedPnl", "0"))
             created_ts = int(r.get("createdTime", "0"))
             updated_ts = int(r.get("updatedTime", r.get("createdTime", "0")))
-            entry_time = datetime.fromtimestamp(created_ts / 1000, tz=timezone.utc)
-            exit_time = datetime.fromtimestamp(updated_ts / 1000, tz=timezone.utc)
+            entry_time = datetime.fromtimestamp(created_ts / 1000, tz=UTC)
+            exit_time = datetime.fromtimestamp(updated_ts / 1000, tz=UTC)
 
             # Dedup check
             minute_key = entry_time.strftime("%Y%m%d%H%M")
@@ -192,7 +192,7 @@ class TradeReconciler:
 
     async def reconcile(self) -> ReconcileReport:
         """Main entry. Fetch-compare-repair cycle."""
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         since = now - timedelta(hours=self.lookback_hours)
         grace = now - timedelta(minutes=self.GRACE_PERIOD_MINUTES)
         report = ReconcileReport(
@@ -243,10 +243,10 @@ class TradeReconciler:
 
         return report
 
-    async def _fetch_bybit_fills(self, since: datetime) -> List[Dict[str, Any]]:
+    async def _fetch_bybit_fills(self, since: datetime) -> list[dict[str, Any]]:
         """Fetch all executions since timestamp, with pagination."""
-        all_fills: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        all_fills: list[dict[str, Any]] = []
+        cursor: str | None = None
         since_ms = str(int(since.timestamp() * 1000))
 
         for _ in range(self.MAX_PAGES):
@@ -278,10 +278,10 @@ class TradeReconciler:
             )
         return all_fills
 
-    async def _fetch_bybit_closed_pnl(self, since: datetime) -> List[Dict[str, Any]]:
+    async def _fetch_bybit_closed_pnl(self, since: datetime) -> list[dict[str, Any]]:
         """Fetch closed PnL records since timestamp."""
-        all_records: List[Dict[str, Any]] = []
-        cursor: Optional[str] = None
+        all_records: list[dict[str, Any]] = []
+        cursor: str | None = None
         since_ms = str(int(since.timestamp() * 1000))
 
         for _ in range(self.MAX_PAGES):
@@ -309,23 +309,27 @@ class TradeReconciler:
 
     def _compare_fills(
         self,
-        bybit_fills: List[Dict[str, Any]],
-        local_trades: List[Dict[str, Any]],
+        bybit_fills: list[dict[str, Any]],
+        local_trades: list[dict[str, Any]],
         grace: datetime,
-    ) -> List[Discrepancy]:
+    ) -> list[Discrepancy]:
         """Pass 1: match Bybit executions to local trades."""
-        discrepancies: List[Discrepancy] = []
+        discrepancies: list[Discrepancy] = []
         window = timedelta(minutes=self.TIME_WINDOW_MINUTES)
 
         # Index local trades by (symbol, normalized_side) for fast lookup
-        local_index: Dict[str, List[Dict[str, Any]]] = {}
+        local_index: dict[str, list[dict[str, Any]]] = {}
         for t in local_trades:
             key = f"{t['symbol']}:{_normalize_side(t['side'])}"
             local_index.setdefault(key, []).append(t)
 
         # Group Bybit fills by (symbol, side, orderId) to handle partial fills
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        grouped: dict[str, list[dict[str, Any]]] = {}
         for f in bybit_fills:
+            # Skip closing fills (missing_exit handles them)
+            if _safe_decimal(f.get("closedSize", "0")) > 0:
+                continue
+
             bybit_sym = f.get("symbol", "")
             # Convert Bybit symbol to ccxt format
             reverse_map = {v: k for k, v in self.client._symbol_map.items()}
@@ -355,7 +359,7 @@ class TradeReconciler:
                 weighted_price = weighted_price / total_qty
 
             exec_time_ms = int(fills[0].get("execTime", "0"))
-            exec_time = datetime.fromtimestamp(exec_time_ms / 1000, tz=timezone.utc)
+            exec_time = datetime.fromtimestamp(exec_time_ms / 1000, tz=UTC)
 
             # Skip very recent fills (race with live trading)
             if exec_time > grace:
@@ -413,27 +417,28 @@ class TradeReconciler:
 
     def _compare_closed_pnl(
         self,
-        bybit_records: List[Dict[str, Any]],
-        local_trades: List[Dict[str, Any]],
-    ) -> List[Discrepancy]:
+        bybit_records: list[dict[str, Any]],
+        local_trades: list[dict[str, Any]],
+    ) -> list[Discrepancy]:
         """Pass 2: match Bybit closed PnL to local trades."""
-        discrepancies: List[Discrepancy] = []
+        discrepancies: list[Discrepancy] = []
         reverse_map = {v: k for k, v in self.client._symbol_map.items()}
 
         # Index local open trades by symbol
         open_trades = [t for t in local_trades if t.get("exit_time") is None]
-        open_index: Dict[str, List[Dict[str, Any]]] = {}
+        open_index: dict[str, list[dict[str, Any]]] = {}
         for t in open_trades:
             open_index.setdefault(t["symbol"], []).append(t)
 
         # Index all closed local trades by symbol for PnL comparison
         closed_trades = [t for t in local_trades if t.get("exit_time") is not None]
-        closed_index: Dict[str, List[Dict[str, Any]]] = {}
+        closed_index: dict[str, list[dict[str, Any]]] = {}
         for t in closed_trades:
             closed_index.setdefault(t["symbol"], []).append(t)
 
-        # Group Bybit closed PnL records by (symbol, position_side) to combine partial fills
-        grouped: Dict[str, List[Dict[str, Any]]] = {}
+        # Process each closed PnL record independently
+        matched_local_ids = set()
+
         for r in bybit_records:
             bybit_sym = r.get("symbol", "")
             ccxt_sym = reverse_map.get(bybit_sym, bybit_sym)
@@ -443,41 +448,16 @@ class TradeReconciler:
             # Bybit closedPnl side is the closing order's side. Invert to get position side.
             closing_side = _normalize_side(r.get("side", ""))
             side = "Buy" if closing_side == "Sell" else "Sell"
-            
-            key = f"{ccxt_sym}:{side}"
-            grouped.setdefault(key, []).append(r)
 
-        matched_local_ids = set()
+            pnl = _safe_decimal(r.get("closedPnl", "0"))
+            qty = _safe_decimal(r.get("qty", "0"))
+            entry = _safe_decimal(r.get("avgEntryPrice", "0"))
+            exit_price = _safe_decimal(r.get("avgExitPrice", "0"))
+            updated_time_ms = int(r.get("updatedTime", r.get("createdTime", "0")))
 
-        for key, records in grouped.items():
-            ccxt_sym, side = key.split(":")
-            
-            total_pnl = Decimal("0")
-            total_qty = Decimal("0")
-            weighted_entry = Decimal("0")
-            weighted_exit = Decimal("0")
-            
-            for r in records:
-                qty = _safe_decimal(r.get("qty", "0"))
-                pnl = _safe_decimal(r.get("closedPnl", "0"))
-                entry = _safe_decimal(r.get("avgEntryPrice", "0"))
-                exit_price = _safe_decimal(r.get("avgExitPrice", "0"))
-                
-                total_pnl += pnl
-                total_qty += qty
-                weighted_entry += qty * entry
-                weighted_exit += qty * exit_price
-                
-            if total_qty > 0:
-                avg_entry = weighted_entry / total_qty
-                avg_exit = weighted_exit / total_qty
-            else:
-                avg_entry = Decimal("0")
-                avg_exit = Decimal("0")
+            matched = False
 
-            latest_updated = max((int(r.get("updatedTime", r.get("createdTime", "0"))) for r in records), default=0)
-
-            # Check if there's an open local trade that should be closed
+            # 1. Check if there's an open local trade to close
             open_candidates = open_index.get(ccxt_sym, [])
             for t in open_candidates:
                 if _normalize_side(t["side"]) == side and t.get("id") not in matched_local_ids:
@@ -488,47 +468,79 @@ class TradeReconciler:
                             symbol=ccxt_sym,
                             side=side,
                             bybit_data={
-                                "closed_pnl": str(total_pnl),
-                                "avg_entry_price": str(avg_entry),
-                                "avg_exit_price": str(avg_exit),
-                                "qty": str(total_qty),
-                                "updated_time_ms": str(latest_updated),
+                                "closed_pnl": str(pnl),
+                                "avg_entry_price": str(entry),
+                                "avg_exit_price": str(exit_price),
+                                "qty": str(qty),
+                                "updated_time_ms": str(updated_time_ms),
                             },
                             local_trade_id=t.get("id"),
                             severity="CRITICAL",
                         )
                     )
+                    matched = True
                     break
-            else:
-                # No open trade found — check PnL match on closed trades
-                closed_candidates = closed_index.get(ccxt_sym, [])
-                for t in closed_candidates:
-                    if _normalize_side(t["side"]) != side or t.get("id") in matched_local_ids:
-                        continue
-                        
-                    local_pnl = _safe_decimal(t.get("pnl", "0"))
-                    if total_pnl != Decimal("0") and local_pnl != Decimal("0"):
-                        diff = abs(local_pnl - total_pnl) / abs(total_pnl)
-                        if diff > self.PNL_TOLERANCE:
-                            matched_local_ids.add(t.get("id"))
-                            discrepancies.append(
-                                Discrepancy(
-                                    kind="pnl_mismatch",
-                                    symbol=ccxt_sym,
-                                    side=side,
-                                    bybit_data={
-                                        "bybit_pnl": str(total_pnl),
-                                        "local_pnl": str(local_pnl),
-                                    },
-                                    local_trade_id=t.get("id"),
-                                    severity="WARNING",
+
+            if matched:
+                continue
+
+            # 2. Check if it matches an already closed trade
+            closed_candidates = closed_index.get(ccxt_sym, [])
+            for t in closed_candidates:
+                if _normalize_side(t["side"]) != side or t.get("id") in matched_local_ids:
+                    continue
+
+                local_pnl = _safe_decimal(t.get("pnl", "0"))
+
+                # Check if it matches closely enough in time (within a few hours) or exact PnL
+                local_exit_time = t.get("exit_time")
+                if local_exit_time:
+                    bybit_exit_time = datetime.fromtimestamp(updated_time_ms / 1000, tz=UTC)
+                    time_diff = abs((local_exit_time - bybit_exit_time).total_seconds())
+                    if time_diff < 1800: # 30 mins
+                        matched_local_ids.add(t.get("id"))
+                        matched = True
+                        # Check PnL mismatch
+                        if pnl != Decimal("0") and local_pnl != Decimal("0"):
+                            diff = abs(local_pnl - pnl) / max(abs(pnl), Decimal("0.0001"))
+                            if diff > self.PNL_TOLERANCE:
+                                discrepancies.append(
+                                    Discrepancy(
+                                        kind="pnl_mismatch",
+                                        symbol=ccxt_sym,
+                                        side=side,
+                                        bybit_data={
+                                            "bybit_pnl": str(pnl),
+                                            "local_pnl": str(local_pnl),
+                                        },
+                                        local_trade_id=t.get("id"),
+                                        severity="WARNING",
+                                    )
                                 )
-                            )
-                            break
+                        break
+
+            if not matched:
+                # No open trade to close, no closed trade matched -> Backfill as complete trade
+                discrepancies.append(
+                    Discrepancy(
+                        kind="missing_exit",
+                        symbol=ccxt_sym,
+                        side=side,
+                        bybit_data={
+                            "closed_pnl": str(pnl),
+                            "avg_entry_price": str(entry),
+                            "avg_exit_price": str(exit_price),
+                            "qty": str(qty),
+                            "updated_time_ms": str(updated_time_ms),
+                        },
+                        local_trade_id=None,
+                        severity="WARNING",
+                    )
+                )
 
         return discrepancies
 
-    async def _auto_repair(self, discrepancies: List[Discrepancy]) -> int:
+    async def _auto_repair(self, discrepancies: list[Discrepancy]) -> int:
         """Auto-repair missing entries and missing exits. Returns count of repairs made."""
         repairable = [
             d
@@ -550,7 +562,7 @@ class TradeReconciler:
             repairable = repairable[: self.MAX_REPAIRS_PER_CYCLE]
 
         repairs = 0
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         for d in repairable:
             try:
                 amount = _safe_decimal(d.bybit_data.get("qty", "0"))
@@ -640,7 +652,11 @@ class TradeReconciler:
                         is_recent = (now_ms - updated_time_ms) < (15 * 60 * 1000)  # 15 minutes
 
                         if is_recent:
-                            from app.bot.utils.formatters import format_tp_alert, format_sl_alert, format_breakeven_alert
+                            from app.bot.utils.formatters import (
+                                format_breakeven_alert,
+                                format_sl_alert,
+                                format_tp_alert,
+                            )
                             entry_price = _safe_decimal(d.bybit_data.get("avg_entry_price", "0"))
                             pnl_pct = (pnl / (entry_price * amount) * 100) if entry_price * amount else Decimal("0")
                             if pnl > 0:
@@ -662,7 +678,7 @@ class TradeReconciler:
 
         return repairs
 
-    async def _alert_discrepancies(self, discrepancies: List[Discrepancy]) -> None:
+    async def _alert_discrepancies(self, discrepancies: list[Discrepancy]) -> None:
         """Send Telegram alert for CRITICAL discrepancies."""
         critical = [d for d in discrepancies if d.severity == "CRITICAL" and not d.repaired]
         if not critical:
@@ -682,7 +698,7 @@ class TradeReconciler:
         except Exception as e:
             logger.error(f"Trade reconciler alert failed: {e}")
 
-    async def _audit_repair(self, d: Discrepancy, details: Dict[str, Any]) -> None:
+    async def _audit_repair(self, d: Discrepancy, details: dict[str, Any]) -> None:
         """Write reconciliation repair to ai_decisions audit trail."""
         import json
         try:

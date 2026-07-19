@@ -320,7 +320,7 @@ async def main() -> None:  # noqa: PLR0915
             live_keys: set[str] = set()
             for pos in (raw or []):
                 sym = (pos.get("symbol") or "").replace("/", "")
-                side = "buy" if pos.get("side") == "Long" else "sell"
+                side = pos.get("side", "")  # already "buy" or "sell" from fetch_positions
                 live_keys.add(f"{sym}:{side}")
 
             redis_keys = await position_store.redis.keys("karsa:position:*")

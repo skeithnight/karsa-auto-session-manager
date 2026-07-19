@@ -204,7 +204,7 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": side.capitalize(),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(side.upper(), side.capitalize()),
             "orderType": "Limit",
             "qty": str(self._round_qty(symbol, amount)),
             "price": str(self._round_price(symbol, price)),
@@ -230,7 +230,7 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": side.capitalize(),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(side.upper(), side.capitalize()),
             "orderType": "Market",
             "qty": str(self._round_qty(symbol, amount)),
         }

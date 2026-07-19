@@ -178,7 +178,7 @@ class StateReconciler:
         if self._trade_store is None:
             return
         try:
-            async with self._db.engine.connect() as conn:
+            async with self._db.acquire() as conn:
                 await conn.execute(
                     text("""
                         INSERT INTO trades (

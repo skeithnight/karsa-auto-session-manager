@@ -8,6 +8,7 @@ Separate namespace from live stores — zero collision risk.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -25,9 +26,62 @@ class ShadowPositionStore(PositionStore):
     def _key(self, symbol: str, side: str) -> str:
         return f"shadow:position:{symbol}:{side}"
 
+    async def list_all(self) -> list[dict[str, Any]]:
+        """List all active shadow positions (shadow: prefix)."""
+        keys = await self.redis.keys("shadow:position:*")
+        positions = []
+        for key in keys:
+            raw = await self.redis.get(key)
+            if raw:
+                try:
+                    positions.append(json.loads(raw))
+                except Exception:
+                    pass
+        return positions
+
     async def cleanup_stale(self, exchange_symbols: set[str]) -> int:
         """No exchange truth in shadow mode — return 0."""
         return 0
+
+    async def close_orphans(self, trade_store: ShadowTradeStore) -> int:
+        """Close DB trades that have no backing Redis position."""
+        closed = 0
+        try:
+            keys = await self.redis.keys("shadow:position:*")
+            active = set()
+            for key in keys:
+                raw = await self.redis.get(key)
+                if raw:
+                    try:
+                        pos = json.loads(raw)
+                        active.add((pos.get("symbol", ""), pos.get("side", "")))
+                    except Exception:
+                        pass
+
+            async with trade_store.db.engine.connect() as conn:
+                from sqlalchemy import text
+                result = await conn.execute(
+                    text("SELECT id, symbol, side FROM shadow_trades WHERE exit_time IS NULL")
+                )
+                rows = result.fetchall()
+                for row in rows:
+                    trade_id, symbol, side = row[0], row[1], row[2]
+                    if (symbol, side) not in active:
+                        await conn.execute(
+                            text(
+                                "UPDATE shadow_trades SET exit_time=NOW(), "
+                                "exit_price=entry_price, pnl=0, exit_reason='orphan_cleanup' "
+                                "WHERE id=:id"
+                            ),
+                            {"id": trade_id},
+                        )
+                        closed += 1
+                await conn.commit()
+        except Exception as e:
+            logger.error(f"Shadow orphan cleanup failed: {e}")
+        if closed:
+            logger.warning(f"Shadow orphan cleanup: closed {closed} orphaned DB trades")
+        return closed
 
 
 class ShadowTradeStore(TradeStore):
@@ -116,8 +170,11 @@ class ShadowTradeStore(TradeStore):
                         text(f"""UPDATE shadow_trades SET exit_price = :exit_price,
                             pnl = :pnl, exit_reason = :exit_reason,
                             exit_time = :exit_time{regime_clause}
-                            WHERE symbol = :symbol AND exit_time IS NULL
-                            ORDER BY entry_time DESC LIMIT 1"""),
+                            WHERE id = (
+                                SELECT id FROM shadow_trades
+                                WHERE symbol = :symbol AND exit_time IS NULL
+                                ORDER BY entry_time DESC LIMIT 1
+                            )"""),
                         {
                             "symbol": symbol,
                             "exit_price": str(exit_price),

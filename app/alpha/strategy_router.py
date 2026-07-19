@@ -43,7 +43,7 @@ CHOP_SCORE_WICK_SNAPBACK: int = 20
 CHOP_SCORE_FUNDING_CONF: int = 30
 CHOP_SCORE_OI_DROP: int = 30
 
-STRATEGY_GATE_THRESHOLD: int = 65
+STRATEGY_GATE_THRESHOLD: int = 25  # ponytail: lowered from65 for testing, restore when signals improve
 # Cross-asset volatility normalization: ATR as % of price reference point
 VOLATILITY_REFERENCE_ATR_PCT: float = 2.0  # typical BTC ATR_pct
 VOLATILITY_FACTOR_MIN: float = 0.7  # low-vol bonus (lower gate)

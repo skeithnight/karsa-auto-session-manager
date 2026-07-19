@@ -59,10 +59,12 @@ async def _on_signal_shadow(
     2. Execute via ShadowExecutor (virtual fill).
     3. Record shadow trade in DB.
     """
-    # Skip if position already open
-    has_pos = await shadow_pos_store.has_position(symbol)
-    if has_pos:
-        logger.info("shadow skip %s — position already open", symbol)
+    # Skip if position already open (check both LONG and SHORT)
+    has_long = await shadow_pos_store.get(symbol, "LONG")
+    has_short = await shadow_pos_store.get(symbol, "SHORT")
+    if has_long or has_short:
+        existing_side = "LONG" if has_long else "SHORT"
+        logger.info("shadow skip %s — position already open (%s)", symbol, existing_side)
         return
 
     # AI Analyst gate — skip for high-confidence signals (score >= 75)
@@ -127,6 +129,8 @@ async def _on_signal_shadow(
         entry_confidence=signal.score,
         regime=signal.regime.value,
         risk_profile_json=signal.risk_profile.to_json(),
+        virtual_sl=str(signal.sl_price) if signal.sl_price else None,
+        virtual_tp=str(signal.tp_price) if signal.tp_price else None,
     )
 
     # Record trade
@@ -151,15 +155,31 @@ async def _on_candle(_symbol: str, _candle: list) -> None:
     pass
 
 
+async def _read_universe(redis: Any) -> list[str] | None:
+    """Read universe symbols from DynamicUniverseScanner Redis key."""
+    try:
+        import json as _json
+        raw = await redis.get("system:universe:symbols")
+        if raw:
+            data = _json.loads(raw)
+            symbols = data.get("symbols")
+            if symbols and isinstance(symbols, list):
+                return symbols
+    except Exception:
+        logger.debug("shadow: failed to read universe from Redis")
+    return None
+
+
 def _start_ingestor(
     settings: Any,
     redis: Any,
     consumer: MarketConsumer,
+    initial_symbols: list[str],
 ) -> tuple[MarketDataIngestor, asyncio.Task]:
     """Create ingestor + sync loop. Returns (ingestor, task)."""
     ingestor = MarketDataIngestor(
         redis_client=redis,
-        symbols=settings.watchlist.split(",") if settings.watchlist else settings.symbols,
+        symbols=initial_symbols,
         poll_interval_s=30,
         api_key=settings.bybit_api_key or "",
         api_secret=settings.bybit_api_secret or "",
@@ -180,15 +200,42 @@ def _start_ingestor(
     return ingestor, asyncio.create_task(_sync_loop(), name="shadow-ingestor")
 
 
-def _build_shadow_components(
-    redis: Any, pool: Any,
+async def _universe_refresh_loop(
+    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400
+) -> None:
+    """Periodically refresh symbol list from DynamicUniverseScanner."""
+    while True:
+        await asyncio.sleep(interval_s)
+        new_symbols = await _read_universe(redis)
+        if new_symbols:
+            ingestor.update_symbols(new_symbols)
+
+
+async def _orphan_cleanup_loop(
+    pos_store: Any, trade_store: Any, interval_s: int = 300
+) -> None:
+    """Close DB trades with no backing Redis position every 5 minutes."""
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await pos_store.close_orphans(trade_store)
+        except Exception as e:
+            logger.debug(f"orphan cleanup loop error: {e}")
+
+
+async def _build_shadow_components(
+    redis: Any, settings: Any,
 ) -> tuple[Any, Any, Any, Any]:
     """Create ShadowPositionStore, ShadowTradeStore, ShadowExecutor, ShadowAPM."""
+    from app.core.database import DatabaseEngine
     from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
     from app.execution.shadow import ShadowAPM, ShadowExecutor
 
+    db_engine = DatabaseEngine()
+    await db_engine.connect(settings.postgres_url)
+
     pos_store = ShadowPositionStore(redis)
-    trade_store = ShadowTradeStore(pool)
+    trade_store = ShadowTradeStore(db_engine)
     executor = ShadowExecutor(
         redis_client=redis,
         position_store=pos_store,
@@ -239,7 +286,7 @@ async def main() -> None:
 
     # Build shadow-specific stores and executor
     try:
-        shadow_pos_store, shadow_trade_store, shadow_executor, shadow_apm = _build_shadow_components(redis, pool)
+        shadow_pos_store, shadow_trade_store, shadow_executor, shadow_apm = await _build_shadow_components(redis, settings)
     except Exception:
         logger.exception("failed to create shadow components")
         await shutdown()
@@ -277,6 +324,9 @@ async def main() -> None:
         sector_mapping = _SectorMapping()
         bybit_client = BybitClient()
         await bybit_client.connect()
+        from app.core import metrics
+        metrics.vpn_status.set(1)
+        metrics.bybit_status.set(1)
 
         risk_manager = PortfolioRiskManager(
             redis_client=redis,
@@ -297,9 +347,15 @@ async def main() -> None:
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 
+    # Read dynamic universe from Redis, fall back to static config
+    universe_symbols = await _read_universe(redis)
+    initial_symbols = universe_symbols if universe_symbols else (
+        settings.watchlist.split(",") if settings.watchlist else settings.symbols
+    )
+    logger.info(f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}")
+
     # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
-    symbols_to_prefill = settings.watchlist.split(",") if settings.watchlist else settings.symbols[:5]
-    for sym in symbols_to_prefill:
+    for sym in initial_symbols[:10]:
         try:
             candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
             if candles:
@@ -309,9 +365,15 @@ async def main() -> None:
         except Exception as e:
             logger.warning(f"failed to pre-fill {sym}: {e}")
 
-    ingestor, ingestor_task = _start_ingestor(settings, redis, consumer)
+    ingestor, ingestor_task = _start_ingestor(settings, redis, consumer, initial_symbols)
+    universe_task = asyncio.create_task(
+        _universe_refresh_loop(redis, ingestor), name="shadow-universe"
+    )
     consumer_task = asyncio.create_task(consumer.start(), name="shadow-consumer")
     apm_task = asyncio.create_task(shadow_apm.run(), name="shadow-apm")
+    orphan_task = asyncio.create_task(
+        _orphan_cleanup_loop(shadow_pos_store, shadow_trade_store), name="shadow-orphan"
+    )
 
     logger.info("karsa-shadow started")
 
@@ -320,14 +382,20 @@ async def main() -> None:
     finally:
         consumer.stop()
         ingestor_task.cancel()
+        universe_task.cancel()
         consumer_task.cancel()
         apm_task.cancel()
+        orphan_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await consumer_task
         with contextlib.suppress(asyncio.CancelledError):
             await ingestor_task
         with contextlib.suppress(asyncio.CancelledError):
+            await universe_task
+        with contextlib.suppress(asyncio.CancelledError):
             await apm_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await orphan_task
         await ingestor.stop()
         await emitter.stop()
         await shutdown()

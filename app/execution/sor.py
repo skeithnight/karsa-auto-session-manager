@@ -84,11 +84,15 @@ class SmartOrderRouter:
 
         # Step 1: Post-Only Limit
         logger.info(f"SOR Step 1: Post-Only Limit {side} {amount} @ {price}")
+        metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") == "open":
-                logger.info(f"Post-Only filled: {order['id']}")
+                logger.info(f"Post-Only filled: {order['orderId']}")
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+                fill_price = Decimal(str(order.get("average", price)))
+                slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+                metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                 sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
                 order["sl_order_id"] = sl_id
                 logger.debug("execute: returning dict (Post-Only filled)")
@@ -114,6 +118,7 @@ class SmartOrderRouter:
                     break
 
             logger.info(f"SOR Step 2: Reprice attempt {attempt + 1} @ {current_price}")
+            metrics.sor_step_total.labels(symbol=symbol, step="reprice").inc()
             try:
                 # Cancel unfilled order if exists
                 if order and order.get("id"):
@@ -121,7 +126,10 @@ class SmartOrderRouter:
 
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
-                    logger.info(f"Reprice filled: {order['id']}")
+                    logger.info(f"Reprice filled: {order['orderId']}")
+                    fill_price = Decimal(str(order.get("average", current_price)))
+                    slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+                    metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                     sl_id = await self._place_sl_after_fill(
                         symbol, side, current_price, amount, max_loss_usd, price_tick
                     )
@@ -133,13 +141,17 @@ class SmartOrderRouter:
 
         # Step 3: Market/IOC fallback
         logger.info("SOR Step 3: Market/IOC fallback")
+        metrics.sor_step_total.labels(symbol=symbol, step="market").inc()
         try:
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
 
             market_order = await self.client.create_market_order(symbol, side, amount)
-            logger.info(f"Market fallback filled: {market_order['id']}")
+            logger.info(f"Market fallback filled: {market_order['orderId']}")
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+            fill_price = Decimal(str(market_order.get("average", price)))
+            slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+            metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
             sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
             market_order["sl_order_id"] = sl_id
             logger.debug("execute: returning dict (Market fallback)")
@@ -180,7 +192,7 @@ class SmartOrderRouter:
         try:
             order = await self.client.create_limit_order(symbol, side, remaining, price)
             if order.get("status") == "open":
-                logger.info(f"Exit Post-Only filled: {order['id']}")
+                logger.info(f"Exit Post-Only filled: {order['orderId']}")
                 return order
         except Exception as e:
             logger.warning(f"Exit Post-Only failed: {e}")
@@ -223,7 +235,7 @@ class SmartOrderRouter:
                     break  # fully filled across attempts
                 order = await self.client.create_limit_order(symbol, side, remaining, current_price)
                 if order.get("status") == "open":
-                    logger.info(f"Exit reprice filled: {order['id']}")
+                    logger.info(f"Exit reprice filled: {order['orderId']}")
                     return order
             except Exception as e:
                 logger.warning(f"Exit reprice failed: {e}")
@@ -235,7 +247,7 @@ class SmartOrderRouter:
                 if order and order.get("id"):
                     await self.client.cancel_order(order["id"], symbol)
                 market_order = await self.client.create_market_order(symbol, side, remaining)
-                logger.info(f"Exit market fallback filled: {market_order['id']}")
+                logger.info(f"Exit market fallback filled: {market_order['orderId']}")
                 return market_order
             except Exception as e:
                 logger.error(f"Exit market fallback failed: {e}")
@@ -310,7 +322,7 @@ class SmartOrderRouter:
             for order in orders:
                 if order["symbol"] == symbol:
                     await self.client.cancel_order(order["id"], symbol)
-                    logger.info(f"Cancelled order: {order['id']}")
+                    logger.info(f"Cancelled order: {order['orderId']}")
         except Exception as e:
             logger.error(f"Cancel all failed: {e}")
             logger.debug(f"cancel_all: error={e}")
@@ -323,7 +335,7 @@ class SmartOrderRouter:
             orders = await self.client.fetch_open_orders()
             for order in orders:
                 await self.client.cancel_order(order["id"], order["symbol"])
-                logger.info(f"Cancelled order: {order['id']} ({order['symbol']})")
+                logger.info(f"Cancelled order: {order['orderId']} ({order['symbol']})")
         except Exception as e:
             logger.error(f"Cancel all positions failed: {e}")
             logger.debug(f"cancel_all_positions: error={e}")
@@ -451,10 +463,14 @@ class SmartOrderRouter:
 
     async def _try_post_only(self, symbol: str, side: str, amount: Decimal, price: Decimal) -> dict[str, Any] | None:
         """Attempt a single Post-Only limit order."""
+        metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") == "open":
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+                fill_price = Decimal(str(order.get("average", price)))
+                slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+                metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                 return order
         except Exception as exc:
             logger.warning("SOR: Post-Only failed: %s", exc)
@@ -489,11 +505,15 @@ class SmartOrderRouter:
                 current_price -= effective_tick
             if current_price <= 0:
                 break
+            metrics.sor_step_total.labels(symbol=symbol, step="reprice").inc()
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
             try:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
+                    fill_price = Decimal(str(order.get("average", current_price)))
+                    slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+                    metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                     sl_id = await self._place_sl_after_fill(
                         symbol,
                         side,
@@ -510,9 +530,13 @@ class SmartOrderRouter:
         # Step 3: Market fallback
         if order and order.get("id"):
             await self.client.cancel_order(order["id"], symbol)
+        metrics.sor_step_total.labels(symbol=symbol, step="market").inc()
         try:
             market_order = await self.client.create_market_order(symbol, side, amount)
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+            fill_price = Decimal(str(market_order.get("average", price)))
+            slippage_bps = abs(fill_price - price) / price * Decimal("10000")
+            metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
             sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
             market_order["sl_order_id"] = sl_id
             return market_order

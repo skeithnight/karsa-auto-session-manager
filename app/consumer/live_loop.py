@@ -314,6 +314,23 @@ async def main() -> None:  # noqa: PLR0915
             )
             recon_results = await reconciler.reconcile()
             logger.info("reconciliation_complete: %s", recon_results)
+
+            # Clean stale Redis position keys using exchange truth
+            exchange_syms: set[str] = set()
+            for pos in (recon_results.get("exchange_positions_raw") or []):
+                s = pos.get("symbol", "").replace("/", "")
+                if s:
+                    exchange_syms.add(s)
+            if not exchange_syms:
+                # Fallback: re-fetch
+                raw = await bybit_client.fetch_positions()
+                for pos in (raw or []):
+                    s = (pos.get("symbol") or "").replace("/", "")
+                    if s:
+                        exchange_syms.add(s)
+            cleaned = await position_store.cleanup_stale(exchange_syms)
+            if cleaned:
+                logger.warning("stale_position_cleanup: removed %d orphaned Redis keys", cleaned)
     except Exception:
         logger.exception("reconciliation_failed — continuing startup")
 

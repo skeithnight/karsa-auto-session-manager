@@ -58,7 +58,8 @@ class ShadowPositionStore(PositionStore):
                     except Exception:
                         pass
 
-            async with trade_store.db.acquire() as conn:
+            async with trade_store.db.engine.connect() as conn:
+                from sqlalchemy import text
                 result = await conn.execute(
                     text("SELECT id, symbol, side FROM shadow_trades WHERE exit_time IS NULL")
                 )

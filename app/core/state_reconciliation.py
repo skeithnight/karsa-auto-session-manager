@@ -192,7 +192,6 @@ class StateReconciler:
                     str(pos["entry_price"]),
                     str(pos.get("unrealized_pnl", 0)),
                 )
-                await conn.commit()
             logger.info(
                 "StateReconciler: recorded orphaned position %s %s",
                 pos["symbol"], pos["side"],

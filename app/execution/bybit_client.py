@@ -156,7 +156,7 @@ class BybitClient:
                     self.connected = False  # force session recovery next attempt
                 except Exception as e:
                     last_exc = e
-                    logger.warning("pybit_error attempt=%d: %s", attempt + 1, e)
+                    logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
                     if "auth" in str(e).lower():
                         self.connected = False  # force session recovery on auth failure
 

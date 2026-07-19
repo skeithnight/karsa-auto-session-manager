@@ -663,7 +663,7 @@ def get_live_funnel_metrics() -> dict:
         - int(get_metric_sum("karsa_ai_analyst_rejections")),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
-        "trade_orders": int(get_metric_sum("karsa_live_orders_placed")),
-        "trade_sl_hits": int(get_metric_sum("karsa_live_sl_hits")),
-        "trade_exits": int(get_metric_sum("karsa_live_exits_placed")),
+        "trade_orders": int(get_metric_sum("karsa_orders_placed")),
+        "trade_sl_hits": int(get_metric_sum("karsa_stop_loss_placement")),
+        "trade_exits": int(get_metric_sum("karsa_positions_closed")),
     }

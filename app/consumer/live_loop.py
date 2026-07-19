@@ -316,59 +316,77 @@ async def main() -> None:  # noqa: PLR0915
             recon_results = await reconciler.reconcile()
             logger.info("reconciliation_complete: %s", recon_results)
 
-            # Clean stale Redis position keys using exchange truth
-            # ponytail: reconciliation already detects orphans — use its results
-            # to clean keys for positions NOT on exchange
+            # Sync exchange positions to Redis — save any orphaned exchange
+            # positions so max_positions count is accurate on restart
             try:
                 exchange_positions = recon_results.get("exchange_positions_raw") or []
                 if not exchange_positions:
                     exchange_positions = await bybit_client.fetch_positions() or []
 
-                logger.info("stale_cleanup: exchange_positions=%s", [
-                    f"{p.get('symbol')}:{p.get('side')}" for p in exchange_positions
-                ])
-
-                exchange_keys: set[str] = set()
+                # Build set of exchange positions: symbol (ccxt format) + side
+                exchange_map: dict[str, dict] = {}
                 for p in exchange_positions:
-                    # fetch_positions returns symbol like "BTCUSDT", side "buy"/"sell"
                     sym = (p.get("symbol") or "").replace("/", "")
-                    side = {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(
-                        (p.get("side") or "").lower(), p.get("side", ""),
-                    )
-                    exchange_keys.add(f"{sym}:{side}")
+                    side = p.get("side", "")  # already "buy"/"sell" from fetch_positions
+                    exchange_map[f"{sym}:{side}"] = p
 
-                all_keys = await position_store.redis.keys("karsa:position:*")
-                logger.info("stale_cleanup: redis_keys=%s", all_keys)
-                cleaned = 0
-                for key in all_keys:
+                # Check which exchange positions are NOT in Redis
+                existing_keys = await position_store.redis.keys("karsa:position:*")
+                existing: set[str] = set()
+                for key in existing_keys:
+                    try:
+                        raw = await position_store.redis.get(key if isinstance(key, str) else key.decode())
+                        if raw:
+                            pos = json.loads(raw)
+                            p_sym = (pos.get("symbol") or "").replace("/", "")
+                            p_side = pos.get("side", "")
+                            existing.add(f"{p_sym}:{p_side}")
+                    except Exception:
+                        pass
+
+                # Also clean stale keys (in Redis but NOT on exchange)
+                stale_keys: list[str] = []
+                for key in existing_keys:
                     key_str = key if isinstance(key, str) else key.decode()
                     raw = await position_store.redis.get(key_str)
                     if not raw:
-                        await position_store.redis.delete(key_str)
-                        cleaned += 1
+                        stale_keys.append(key_str)
                         continue
                     try:
                         pos = json.loads(raw)
-                        # Normalize: symbol "BTC/USDT" → "BTCUSDT", side "LONG" → "buy"
                         p_sym = (pos.get("symbol") or "").replace("/", "")
-                        p_side = {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(
-                            (pos.get("side") or "").lower(), pos.get("side", ""),
-                        )
-                        match_key = f"{p_sym}:{p_side}"
-                        if match_key not in exchange_keys:
-                            logger.info("stale_cleanup: CLEANING %s (match=%s, exchange=%s)", key_str, match_key, exchange_keys)
-                            await position_store.redis.delete(key_str)
-                            cleaned += 1
-                        else:
-                            logger.info("stale_cleanup: KEEPING %s (match=%s)", key_str, match_key)
+                        p_side = pos.get("side", "")
+                        if f"{p_sym}:{p_side}" not in exchange_map:
+                            stale_keys.append(key_str)
                     except Exception:
-                        pass  # ponytail: leave unknown keys, don't nuke
-                if cleaned:
-                    logger.warning("stale_position_cleanup: removed %d orphaned Redis keys", cleaned)
-                else:
-                    logger.info("stale_position_cleanup: no stale keys found")
+                        stale_keys.append(key_str)
+
+                for key_str in stale_keys:
+                    await position_store.redis.delete(key_str)
+                if stale_keys:
+                    logger.warning("stale_cleanup: removed %d stale Redis keys", len(stale_keys))
+
+                # Save exchange positions missing from Redis
+                synced = 0
+                for ex_key, p in exchange_map.items():
+                    if ex_key not in existing:
+                        # Convert buy/sell back to LONG/SHORT for position_store
+                        ccxt_sym = (p.get("symbol") or "").replace("/", "")
+                        ccxt_sym_fmt = ccxt_sym[:-4] + "/" + ccxt_sym[-4:] if len(ccxt_sym) > 4 else ccxt_sym
+                        side_long = "LONG" if p.get("side") == "buy" else "SHORT"
+                        await position_store.save(
+                            symbol=ccxt_sym_fmt,
+                            side=side_long,
+                            entry_price=Decimal(str(p.get("entry_price", 0))),
+                            amount=Decimal(str(p.get("contracts", 0))),
+                        )
+                        synced += 1
+                        logger.info("reconciled_position: saved %s %s to Redis", ccxt_sym_fmt, side_long)
+
+                if synced:
+                    logger.warning("reconciled_position: synced %d exchange positions to Redis", synced)
             except Exception:
-                logger.exception("stale_position_cleanup failed")
+                logger.exception("position_sync failed")
     except Exception:
         logger.exception("reconciliation_failed — continuing startup")
 

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import signal
 import sys
@@ -315,39 +316,39 @@ async def main() -> None:  # noqa: PLR0915
             recon_results = await reconciler.reconcile()
             logger.info("reconciliation_complete: %s", recon_results)
 
-            # Clean stale Redis position keys using exchange truth (symbol + side)
-            raw = await bybit_client.fetch_positions()
-            live_keys: set[str] = set()
-            for pos in (raw or []):
-                bybit_sym = pos.get("symbol") or ""  # e.g. "BTCUSDT"
-                side = pos.get("side", "")  # "buy" or "sell"
-                # Convert to ccxt format for Redis key match (BTCUSDT → BTC/USDT)
-                ccxt_sym = bybit_sym[:-4] + "/" + bybit_sym[-4:] if len(bybit_sym) > 4 else bybit_sym
-                live_keys.add(f"{ccxt_sym}:{side}")
+            # Clean stale Redis position keys using exchange truth
+            try:
+                exchange_positions = await bybit_client.fetch_positions()
+                exchange_set: set[str] = set()
+                for p in (exchange_positions or []):
+                    sym = (p.get("symbol") or "").replace("/", "")
+                    side = p.get("side", "")
+                    exchange_set.add(f"{sym}:{side}")
 
-            redis_keys = await position_store.redis.keys("karsa:position:*")
-            cleaned = 0
-            for key in redis_keys:
-                key_str = key if isinstance(key, str) else key.decode()
-                raw_val = await position_store.redis.get(key_str)
-                if not raw_val:
-                    await position_store.redis.delete(key_str)
-                    cleaned += 1
-                    continue
-                try:
-                    import json as _json
-                    p = _json.loads(raw_val)
-                    p_sym = p.get("symbol", "").replace("/", "")
-                    p_side = p.get("side", "")
-                    if f"{p_sym}:{p_side}" not in live_keys:
+                all_keys = await position_store.redis.keys("karsa:position:*")
+                cleaned = 0
+                for key in all_keys:
+                    key_str = key if isinstance(key, str) else key.decode()
+                    raw = await position_store.redis.get(key_str)
+                    if not raw:
                         await position_store.redis.delete(key_str)
-                        logger.info("Cleaned stale position: %s %s", p.get("symbol"), p_side)
                         cleaned += 1
-                except Exception:
-                    await position_store.redis.delete(key_str)
-                    cleaned += 1
-            if cleaned:
-                logger.warning("stale_position_cleanup: removed %d orphaned Redis keys", cleaned)
+                        continue
+                    try:
+                        pos = json.loads(raw)
+                        p_sym = (pos.get("symbol") or "").replace("/", "")
+                        p_side = pos.get("side", "")
+                        if f"{p_sym}:{p_side}" not in exchange_set:
+                            await position_store.redis.delete(key_str)
+                            logger.info("Cleaned stale position: %s %s", pos.get("symbol"), p_side)
+                            cleaned += 1
+                    except Exception:
+                        await position_store.redis.delete(key_str)
+                        cleaned += 1
+                if cleaned:
+                    logger.warning("stale_position_cleanup: removed %d orphaned Redis keys", cleaned)
+            except Exception:
+                logger.exception("stale_position_cleanup failed")
     except Exception:
         logger.exception("reconciliation_failed — continuing startup")
 

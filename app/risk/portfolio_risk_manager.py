@@ -141,7 +141,7 @@ class PortfolioRiskManager:
 
         try:
             wallet = await self._bybit_client.get_wallet_balance()  # type: ignore[attr-defined]
-            equity = Decimal(str(wallet.get("equity", wallet.get("available", "0"))))
+            equity = Decimal(str(wallet.get("balance", wallet.get("available", "0"))))
             if equity <= 0:
                 return CheckResult(passed=True)
 

@@ -70,6 +70,13 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — position already open", symbol)
         return
 
+    # Max positions check (ponytail: read from Redis if set, default 3)
+    open_positions = await position_store.list_all()
+    max_pos = 3  # ponytail: hardcoded default, Redis override available
+    if len(open_positions) >= max_pos:
+        logger.info("skip %s — max positions %d reached (%d open)", symbol, max_pos, len(open_positions))
+        return
+
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is not None:
         from app.risk.portfolio_risk_manager import PRMResult

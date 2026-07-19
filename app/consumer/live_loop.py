@@ -317,12 +317,16 @@ async def main() -> None:  # noqa: PLR0915
             logger.info("reconciliation_complete: %s", recon_results)
 
             # Clean stale Redis position keys using exchange truth
+            # Normalize sides: LONG→buy, SHORT→sell (position_store saves as LONG/SHORT)
+            def _norm_side(s: str) -> str:
+                return {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(s.lower(), s)
+
             try:
                 exchange_positions = await bybit_client.fetch_positions()
                 exchange_set: set[str] = set()
                 for p in (exchange_positions or []):
                     sym = (p.get("symbol") or "").replace("/", "")
-                    side = p.get("side", "")
+                    side = _norm_side(p.get("side", ""))
                     exchange_set.add(f"{sym}:{side}")
 
                 all_keys = await position_store.redis.keys("karsa:position:*")
@@ -337,7 +341,7 @@ async def main() -> None:  # noqa: PLR0915
                     try:
                         pos = json.loads(raw)
                         p_sym = (pos.get("symbol") or "").replace("/", "")
-                        p_side = pos.get("side", "")
+                        p_side = _norm_side(pos.get("side", ""))
                         if f"{p_sym}:{p_side}" not in exchange_set:
                             await position_store.redis.delete(key_str)
                             logger.info("Cleaned stale position: %s %s", pos.get("symbol"), p_side)

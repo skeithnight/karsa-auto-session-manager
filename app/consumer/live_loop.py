@@ -319,9 +319,11 @@ async def main() -> None:  # noqa: PLR0915
             raw = await bybit_client.fetch_positions()
             live_keys: set[str] = set()
             for pos in (raw or []):
-                sym = (pos.get("symbol") or "").replace("/", "")
-                side = pos.get("side", "")  # already "buy" or "sell" from fetch_positions
-                live_keys.add(f"{sym}:{side}")
+                bybit_sym = pos.get("symbol") or ""  # e.g. "BTCUSDT"
+                side = pos.get("side", "")  # "buy" or "sell"
+                # Convert to ccxt format for Redis key match (BTCUSDT → BTC/USDT)
+                ccxt_sym = bybit_sym[:-4] + "/" + bybit_sym[-4:] if len(bybit_sym) > 4 else bybit_sym
+                live_keys.add(f"{ccxt_sym}:{side}")
 
             redis_keys = await position_store.redis.keys("karsa:position:*")
             cleaned = 0

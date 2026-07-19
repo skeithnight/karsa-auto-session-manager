@@ -324,6 +324,10 @@ async def main() -> None:  # noqa: PLR0915
                 if not exchange_positions:
                     exchange_positions = await bybit_client.fetch_positions() or []
 
+                logger.info("stale_cleanup: exchange_positions=%s", [
+                    f"{p.get('symbol')}:{p.get('side')}" for p in exchange_positions
+                ])
+
                 exchange_keys: set[str] = set()
                 for p in exchange_positions:
                     # fetch_positions returns symbol like "BTCUSDT", side "buy"/"sell"
@@ -334,6 +338,7 @@ async def main() -> None:  # noqa: PLR0915
                     exchange_keys.add(f"{sym}:{side}")
 
                 all_keys = await position_store.redis.keys("karsa:position:*")
+                logger.info("stale_cleanup: redis_keys=%s", all_keys)
                 cleaned = 0
                 for key in all_keys:
                     key_str = key if isinstance(key, str) else key.decode()
@@ -349,10 +354,13 @@ async def main() -> None:  # noqa: PLR0915
                         p_side = {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(
                             (pos.get("side") or "").lower(), pos.get("side", ""),
                         )
-                        if f"{p_sym}:{p_side}" not in exchange_keys:
+                        match_key = f"{p_sym}:{p_side}"
+                        if match_key not in exchange_keys:
+                            logger.info("stale_cleanup: CLEANING %s (match=%s, exchange=%s)", key_str, match_key, exchange_keys)
                             await position_store.redis.delete(key_str)
-                            logger.info("Cleaned stale position: %s %s", pos.get("symbol"), pos.get("side"))
                             cleaned += 1
+                        else:
+                            logger.info("stale_cleanup: KEEPING %s (match=%s)", key_str, match_key)
                     except Exception:
                         pass  # ponytail: leave unknown keys, don't nuke
                 if cleaned:

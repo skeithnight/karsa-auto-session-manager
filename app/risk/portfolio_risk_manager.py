@@ -137,6 +137,7 @@ class PortfolioRiskManager:
         # Pending team ratification — conservative defaults
         PRM_MAX_GROSS_EXPOSURE_PCT = Decimal("0.50")  # 50% of equity
         PRM_MAX_NET_EXPOSURE_PCT = Decimal("0.30")  # 30% of equity
+        PRM_MAX_SINGLE_POSITION_PCT = Decimal("0.40")  # 40% equity per position
 
         try:
             wallet = await self._bybit_client.get_wallet_balance()  # type: ignore[attr-defined]
@@ -161,12 +162,17 @@ class PortfolioRiskManager:
                 else:
                     net_notional -= notional
 
-            # Check signal's additional exposure
-            symbol = getattr(signal, "symbol", None)
-            if symbol:
-                # Estimate new position notional (rough — no live price here)
-                # Use 1% of equity as proxy; actual size checked in executor_task
-                pass
+            # Per-position allocation cap
+            signal_entry = getattr(signal, "entry_price", None)
+            signal_amount = getattr(signal, "amount", None)
+            if signal_entry and signal_amount:
+                signal_notional = Decimal(str(signal_entry)) * Decimal(str(signal_amount))
+                max_single = equity * PRM_MAX_SINGLE_POSITION_PCT
+                if signal_notional > max_single:
+                    return CheckResult(
+                        passed=False,
+                        reason=f"position notional {signal_notional:.2f} > {PRM_MAX_SINGLE_POSITION_PCT*100}% of equity {equity:.2f}",
+                    )
 
             if gross_notional > equity * PRM_MAX_GROSS_EXPOSURE_PCT:
                 return CheckResult(

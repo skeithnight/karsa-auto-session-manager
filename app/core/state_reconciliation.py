@@ -17,9 +17,6 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
-from sqlalchemy import text
-
-
 class StateReconciler:
     """Reconcile exchange state with internal stores on startup."""
 
@@ -180,22 +177,20 @@ class StateReconciler:
         try:
             async with self._db.acquire() as conn:
                 await conn.execute(
-                    text("""
+                    """
                         INSERT INTO trades (
                             symbol, side, amount, entry_price, regime,
                             entry_time, exit_time, pnl
                         ) VALUES (
-                            :symbol, :side, :amount, :entry_price, 'RECONCILED',
-                            NOW(), NULL, :pnl
+                            $1, $2, $3, $4, 'RECONCILED',
+                            NOW(), NULL, $5
                         )
-                    """),
-                    {
-                        "symbol": pos["symbol"],
-                        "side": pos["side"],
-                        "amount": str(pos["contracts"]),
-                        "entry_price": str(pos["entry_price"]),
-                        "pnl": str(pos.get("unrealized_pnl", 0)),
-                    },
+                    """,
+                    pos["symbol"],
+                    pos["side"],
+                    str(pos["contracts"]),
+                    str(pos["entry_price"]),
+                    str(pos.get("unrealized_pnl", 0)),
                 )
                 await conn.commit()
             logger.info(

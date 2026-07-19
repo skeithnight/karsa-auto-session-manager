@@ -70,6 +70,7 @@ class StateReconciler:
             "updated": len(updated),
             "active_orders": len(exchange_orders),
             "elapsed_ms": round(elapsed),
+            "exchange_positions_raw": exchange_positions,
         }
 
         logger.info(

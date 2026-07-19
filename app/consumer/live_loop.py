@@ -317,17 +317,21 @@ async def main() -> None:  # noqa: PLR0915
             logger.info("reconciliation_complete: %s", recon_results)
 
             # Clean stale Redis position keys using exchange truth
-            # Normalize sides: LONG→buy, SHORT→sell (position_store saves as LONG/SHORT)
-            def _norm_side(s: str) -> str:
-                return {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(s.lower(), s)
-
+            # ponytail: reconciliation already detects orphans — use its results
+            # to clean keys for positions NOT on exchange
             try:
-                exchange_positions = await bybit_client.fetch_positions()
-                exchange_set: set[str] = set()
-                for p in (exchange_positions or []):
+                exchange_positions = recon_results.get("exchange_positions_raw") or []
+                if not exchange_positions:
+                    exchange_positions = await bybit_client.fetch_positions() or []
+
+                exchange_keys: set[str] = set()
+                for p in exchange_positions:
+                    # fetch_positions returns symbol like "BTCUSDT", side "buy"/"sell"
                     sym = (p.get("symbol") or "").replace("/", "")
-                    side = _norm_side(p.get("side", ""))
-                    exchange_set.add(f"{sym}:{side}")
+                    side = {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(
+                        (p.get("side") or "").lower(), p.get("side", ""),
+                    )
+                    exchange_keys.add(f"{sym}:{side}")
 
                 all_keys = await position_store.redis.keys("karsa:position:*")
                 cleaned = 0
@@ -340,17 +344,21 @@ async def main() -> None:  # noqa: PLR0915
                         continue
                     try:
                         pos = json.loads(raw)
+                        # Normalize: symbol "BTC/USDT" → "BTCUSDT", side "LONG" → "buy"
                         p_sym = (pos.get("symbol") or "").replace("/", "")
-                        p_side = _norm_side(pos.get("side", ""))
-                        if f"{p_sym}:{p_side}" not in exchange_set:
+                        p_side = {"long": "buy", "short": "sell", "buy": "buy", "sell": "sell"}.get(
+                            (pos.get("side") or "").lower(), pos.get("side", ""),
+                        )
+                        if f"{p_sym}:{p_side}" not in exchange_keys:
                             await position_store.redis.delete(key_str)
-                            logger.info("Cleaned stale position: %s %s", pos.get("symbol"), p_side)
+                            logger.info("Cleaned stale position: %s %s", pos.get("symbol"), pos.get("side"))
                             cleaned += 1
                     except Exception:
-                        await position_store.redis.delete(key_str)
-                        cleaned += 1
+                        pass  # ponytail: leave unknown keys, don't nuke
                 if cleaned:
                     logger.warning("stale_position_cleanup: removed %d orphaned Redis keys", cleaned)
+                else:
+                    logger.info("stale_position_cleanup: no stale keys found")
             except Exception:
                 logger.exception("stale_position_cleanup failed")
     except Exception:

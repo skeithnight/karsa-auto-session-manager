@@ -437,6 +437,19 @@ class ActivePositionManager:
 
         r_mult = self._calculate_r_multiple(side, entry_price, live_price, initial_risk)
 
+        # Track Peak Price for Chandelier Trailing
+        peak_price = Decimal(str(pos.get("peak_price", entry_price)))
+        peak_updated = False
+        if side == "LONG" and live_price > peak_price:
+            peak_price = live_price
+            peak_updated = True
+        elif side == "SHORT" and live_price < peak_price:
+            peak_price = live_price
+            peak_updated = True
+            
+        if peak_updated:
+            pos["peak_price"] = str(peak_price)
+
         # --- $1 hard cap: if current SL would lose > $1, tighten SL to exactly -$1 ---
         # Rule: if already in loss beyond $1 — let it be (don't widen SL).
         # Only tighten when the SL *would* cause a loss exceeding $1 on fill.
@@ -479,11 +492,26 @@ class ActivePositionManager:
         if not pos.get("tp_placed") and entry_regime in ("RANGE", "CHOP"):
             await self._ensure_take_profit(pos, entry_price, initial_risk, side)
 
-        # Scale-out: RANGE/CHOP close 50% at +1R, TREND close 30% at +2R
-        scale_threshold = APM_BREAKEVEN_LOCK_R if "TREND" not in entry_regime else Decimal("2.0")
-        scale_pct = Decimal("0.50") if "TREND" not in entry_regime else Decimal("0.30")
-        if not pos.get("scaled_out") and r_mult >= scale_threshold:
-            await self._scale_out_position(pos, scale_pct, entry_price, side)
+        # Multi-Tier Scale-Outs
+        scale_tier = pos.get("scale_tier", 0)
+        
+        # Range/Chop logic: 50% at 1R (Tier 1)
+        if "TREND" not in entry_regime:
+            if scale_tier < 1 and r_mult >= APM_BREAKEVEN_LOCK_R:
+                await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
+                pos["scale_tier"] = 1
+        # Trend logic: 33% at 1.5R (Tier 1), 33% at 3.0R (Tier 2)
+        else:
+            if scale_tier < 1 and r_mult >= Decimal("1.5"):
+                await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+                pos["scale_tier"] = 1
+                # Force breakeven lock upon Tier 1 scale-out to secure a free ride
+                if not moved_to_be:
+                    await self._move_stop_to_breakeven(pos, entry_price, side)
+                    moved_to_be = True
+            elif scale_tier < 2 and r_mult >= Decimal("3.0"):
+                await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+                pos["scale_tier"] = 2
 
         # ATR-based BE trigger: price must move beyond noise threshold
         atr = Decimal(str(pos.get("atr", "0")))
@@ -504,6 +532,14 @@ class ActivePositionManager:
 
         await self._check_regime_shift(pos, symbol, entry_regime)
 
+        pos["last_check_at"] = datetime.now(UTC).isoformat()
+        try:
+            from app.core.position_store import _normalize_side
+            side_key = _normalize_side(side)
+            redis_key = f"karsa:position:{symbol}:{side_key}"
+            await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+        except Exception:
+            pass
     # ------------------------------------------------------------------
     # R-multiple calculation
     # ------------------------------------------------------------------
@@ -588,7 +624,10 @@ class ActivePositionManager:
                 return
             await self._client.reduce_position(symbol, api_side, close_qty)  # type: ignore[attr-defined]
             pos["scaled_out"] = True
-            self._log.info(f"APM: scale-out {pct*100}% ({close_qty}) for {symbol}")
+            # Update amount in pos dict so subsequent calculations use reduced quantity
+            new_amount = amount - close_qty
+            pos["amount"] = str(new_amount)
+            self._log.info(f"APM: scale-out {pct*100}% ({close_qty}) for {symbol}, remaining={new_amount}")
         except Exception:
             self._log.exception(f"APM: scale-out failed for {symbol}")
 
@@ -658,13 +697,16 @@ class ActivePositionManager:
             return
 
         trail_distance = atr * APM_TREND_TRAIL_ATR_MULT
+        
+        # True Chandelier: trail from the peak price reached, not current live price
+        peak = Decimal(str(pos.get("peak_price", live_price)))
 
         if side == "LONG":
-            new_sl = live_price - trail_distance
+            new_sl = peak - trail_distance
             if new_sl <= current_sl:
                 return
         else:
-            new_sl = live_price + trail_distance
+            new_sl = peak + trail_distance
             if new_sl >= current_sl:
                 return
 
@@ -673,7 +715,11 @@ class ActivePositionManager:
             amount = Decimal(str(pos.get("amount", "0")))
             api_side = "buy" if side == "LONG" else "sell"
             await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
-            self._log.info(f"APM: trailing SL amended for {symbol} to {new_sl}")
+            # Update local pos dict with new SL so we don't spam requests
+            new_sl_str = str(new_sl)
+            pos["current_sl"] = new_sl_str
+            pos["stop_loss"] = new_sl_str
+            self._log.info(f"APM: trailing SL amended for {symbol} to {new_sl} (Peak={peak})")
         except Exception:
             self._log.exception(f"APM: trailing SL amend failed for {symbol}")
 

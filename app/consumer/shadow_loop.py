@@ -74,11 +74,13 @@ async def _on_signal_shadow(
         logger.info("shadow skip %s — consecutive loss block", symbol)
         return
 
-    # AI Analyst gate — skip for high-confidence signals (score >= 75)
-    # High-confidence = multiple confluence components aligned; AI veto was
-    # blocking all trades due to systematic direction disagreement.
+    # AI Analyst gate — skip for high-confidence signals (score >= 75) and CHOP regime
+    # CHOP has inherently conflicting indicators, so the AI systematically rejects
+    # CHOP signals. Bypass AI entirely for CHOP to get clean signal data.
     AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
-    if crypto_analyst and signal.score >= 40.0 and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD:
+    from app.alpha.regime_classifier import MarketRegime
+    is_chop = signal.regime in (MarketRegime.CHOP, MarketRegime.RANGE)
+    if crypto_analyst and signal.score >= 40.0 and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD and not is_chop:
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
@@ -287,11 +289,34 @@ async def main() -> None:
 
     # Build shared decision engine
     from app.alpha.trade_memory import TradeMemory
+    from app.alpha.multi_tf import MultiTFFilter
+    from app.data.ohlcv_fetcher import OHLCVFetcher
+    import ccxt.async_support as ccxt
+    
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
     trade_memory = TradeMemory(redis)
-    engine = DecisionEngine(classifier, router, risk_gate, trade_memory=trade_memory, redis_client=redis)
+    
+    # Init Fetcher & Multi-TF
+    exchange = ccxt.bybit({'enableRateLimit': True})
+    ohlcv_fetcher = OHLCVFetcher(exchange)
+    multi_tf = MultiTFFilter(ohlcv_fetcher)
+    
+    engine = DecisionEngine(
+        classifier,
+        router,
+        risk_gate,
+        trade_memory=trade_memory,
+        redis_client=redis,
+        multi_tf=multi_tf
+    )
+
+    # Set wallet balance for shadow mode — use config-based balance
+    # so position sizing uses proper risk calculations instead of fallback
+    SHADOW_WALLET_BALANCE = Decimal("100.0")  # $100 simulated equity
+    engine.set_wallet_balance(SHADOW_WALLET_BALANCE)
+    logger.info("shadow wallet balance set to %s", SHADOW_WALLET_BALANCE)
 
     # Build shadow-specific stores and executor
     try:
@@ -312,9 +337,7 @@ async def main() -> None:
             auth_token=settings.nine_router_auth_token,
             model=settings.nine_router_model,
         )
-        import ccxt.async_support as ccxt
-        exchange = ccxt.bybit({'enableRateLimit': True})
-        ohlcv_fetcher = OHLCVFetcher(exchange)
+        # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
         crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
     except Exception as e:
         logger.warning(f"Could not initialize CryptoAnalyst in shadow loop: {e}")
@@ -407,6 +430,8 @@ async def main() -> None:
             await orphan_task
         await ingestor.stop()
         await emitter.stop()
+        await exchange.close()
+        await db_engine.dispose()
         await shutdown()
         logger.info("karsa-shadow stopped")
 

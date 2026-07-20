@@ -46,7 +46,7 @@ class RedisClient:
             self.settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=50,
+            max_connections=500,
             timeout=10,               # wait up to 10s for a free connection
             socket_timeout=socket_timeout,
             socket_connect_timeout=5.0,

@@ -1294,10 +1294,10 @@ async def main() -> None:
     # Dynamic symbol discovery — fetch top Bybit USDT perps by 24h volume
     # Falls back to static config list if Bybit API unavailable
     dropped = 0
-    dynamic_symbols = await ccxt_manager.fetch_bybit_perps(min_volume_usd=1_000_000, top_n=30)
+    dynamic_symbols = await ccxt_manager.fetch_bybit_perps(min_volume_usd=250_000, top_n=150)
     if dynamic_symbols:
         valid_symbols = dynamic_symbols
-        logger.info(f"Dynamic universe: {len(valid_symbols)} Bybit USDT perps (>$5M vol)")
+        logger.info(f"Dynamic universe: {len(valid_symbols)} Bybit USDT perps (>$250k vol)")
     else:
         # Fallback: static config validated against Bybit
         validated = ccxt_manager.get_bybit_universe(settings.symbols)
@@ -1434,6 +1434,7 @@ async def main() -> None:
             )
         ),
         asyncio.create_task(portfolio_risk_manager.reset_daily_state_loop()),
+        asyncio.create_task(portfolio_risk_manager.monitor_circuit_breakers()),
         asyncio.create_task(shadow_apm.run() if shadow_apm else active_position_manager.start_monitoring()),
     ]
 

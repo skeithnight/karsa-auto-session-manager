@@ -175,11 +175,14 @@ async def _asm_session_loop(
     await session_manager.run_loop()
 
 
-async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None) -> None:  # noqa: PLR0915, PLR0912
+async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, shutdown_event: asyncio.Event | None = None) -> None:  # noqa: PLR0915, PLR0912
     """Main engine loop — connects exchanges, starts poll tasks.
 
     Runs DynamicUniverseScanner in background. Reads universe list from
     Redis periodically and dynamically creates/cancels poll tasks.
+
+    Args:
+        shutdown_event: Shared event from main() — DO NOT create a local one.
     """
     pool = get_pool()
     redis = get_redis()
@@ -211,12 +214,10 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None) ->
     )
     scanner_task = asyncio.create_task(scanner.start(), name="universe-scanner")
 
-    # Regime metrics + ASM session tasks (shutdown_event from outer scope)
-    shutdown_event = asyncio.Event()
-    import signal as _signal
-    loop = asyncio.get_running_loop()
-    for sig in (_signal.SIGINT, _signal.SIGTERM):
-        loop.add_signal_handler(sig, shutdown_event.set)
+    # Regime metrics + ASM session tasks — use the shutdown_event passed from main()
+    # (DO NOT create a new Event or install signal handlers here — main() owns them)
+    if shutdown_event is None:
+        shutdown_event = asyncio.Event()
 
     # Create OHLCVFetcher from the bybit exchange connector for regime classification
     bybit_connector = exchanges[0] if exchanges else None
@@ -355,7 +356,7 @@ async def main() -> None:
     emitter = TelemetryEmitter(get_redis(), "data-engine")
     await emitter.start()
 
-    engine_task = asyncio.create_task(_run_engine(settings, emitter))
+    engine_task = asyncio.create_task(_run_engine(settings, emitter, shutdown_event=shutdown_event))
 
     # Wait for shutdown signal
     await shutdown_event.wait()

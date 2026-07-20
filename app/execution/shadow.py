@@ -25,6 +25,15 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
+from app.alpha.regime_classifier import RegimeClassifier, MarketRegime
+from app.execution.position_manager import (
+    APM_BREAKEVEN_FEE_PCT,
+    APM_TREND_TRAIL_ATR_MULT,
+    APM_TREND_TRAIL_ACTIVATE_R,
+    APM_BREAKEVEN_LOCK_R,
+    REGIME_SHIFT_CONFIRM_COUNT,
+)
+
 from loguru import logger
 
 from app.core import metrics
@@ -84,8 +93,8 @@ class ShadowExecutor:
                     return price
             except Exception:
                 pass
-        # Check system:state keys
-        raw = await self._redis.get(f"system:state:{symbol}")
+        # Check global:state keys (written by RedisClient.set_global_state)
+        raw = await self._redis.get(f"global:state:{symbol}")
         if raw:
             try:
                 data = _json.loads(raw)
@@ -247,12 +256,12 @@ class ShadowExchangeClient:
         pass
 
     async def fetch_tickers(self) -> dict:
-        """Read live prices from Redis system:state:* keys."""
+        """Read live prices from Redis global:state:* keys (written by RedisClient.set_global_state)."""
         result: dict[str, dict] = {}
         try:
             settings = get_settings()
             for symbol in settings.symbols[:10]:
-                raw = await self._redis.get(f"system:state:{symbol}")
+                raw = await self._redis.get(f"global:state:{symbol}")
                 if raw:
                     data = _json.loads(raw)
                     bid = Decimal(str(data.get("bid", "0")))
@@ -325,6 +334,7 @@ class ShadowAPM:
         self._redis = redis_client
         self._pos_store = position_store
         self._trade_store = trade_store
+        self._regime_shift_counts: dict[str, int] = {}
 
     async def run(self) -> None:
         """Main monitoring loop — 2s interval."""
@@ -351,6 +361,18 @@ class ShadowAPM:
 
         if status == "OPEN":
             await self._manage_open_position(pos)
+
+    @staticmethod
+    def _calculate_r_multiple(side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal) -> Decimal:
+        try:
+            if initial_risk <= 0:
+                return Decimal("0")
+            if side == "LONG":
+                return (live_price - entry_price) / initial_risk
+            else:
+                return (entry_price - live_price) / initial_risk
+        except Exception:
+            return Decimal("0")
 
     # --- Refinement 4: Pending limit fill detection ---
 
@@ -403,12 +425,24 @@ class ShadowAPM:
 
     # --- Refinement 2: Wick miss prevention + SL detection ---
 
+    async def _get_current_regime(self, symbol: str) -> str:
+        """Fetch regime from Redis (written by RegimeEngine)."""
+        raw = await self._redis.get(f"global:regime:{symbol}")
+        if raw:
+            try:
+                data = _json.loads(raw)
+                return data.get("regime", "")
+            except Exception:
+                pass
+        return ""
+
     async def _manage_open_position(self, pos: dict) -> None:
         """Check live price against virtual SL, using worst_price_seen for wicks."""
         symbol = pos.get("symbol", "")
         side = pos.get("side", "")
         entry_price = Decimal(pos.get("entry_price", "0"))
         virtual_sl = Decimal(pos.get("virtual_sl", "0"))
+        entry_regime = pos.get("regime", "")
 
         if not symbol or not side or entry_price <= 0:
             return
@@ -424,12 +458,67 @@ class ShadowAPM:
             worst = mid
         pos["worst_price_seen"] = str(worst)
 
-        # Persist worst_price_seen back to Redis
-        key = self._pos_store._key(symbol, side)
-        await self._redis.set(key, _json.dumps(pos))
-
         # Update peak for trailing stop logic
         await self._pos_store.update_peak(symbol, side, mid)
+        peak = Decimal(str(pos.get("peak_price", mid)))
+
+        key = self._pos_store._key(symbol, side)
+
+        # --- Regime Shift Kill Switch ---
+        current_regime = await self._get_current_regime(symbol)
+        if current_regime and entry_regime and current_regime != entry_regime:
+            self._regime_shift_counts[symbol] = self._regime_shift_counts.get(symbol, 0) + 1
+            if self._regime_shift_counts[symbol] >= REGIME_SHIFT_CONFIRM_COUNT:
+                logger.warning(
+                    f"SHADOW KILL SWITCH: {symbol} regime shift {entry_regime} -> {current_regime}"
+                )
+                await self._close_shadow_position(pos, mid, f"regime_shift_{entry_regime}_to_{current_regime}")
+                self._regime_shift_counts.pop(symbol, None)
+                return
+        else:
+            self._regime_shift_counts.pop(symbol, None)
+
+        # Calculate R-Multiple
+        try:
+            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
+            initial_risk_pct = Decimal(str(risk_profile.get("sl_pct", "0")))
+            initial_risk = entry_price * initial_risk_pct
+        except Exception:
+            initial_risk = Decimal("0")
+
+        r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
+
+        # --- +1R Breakeven Lock ---
+        if not pos.get("moved_to_breakeven") and r_multiple >= APM_BREAKEVEN_LOCK_R:
+            if side == "LONG":
+                new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
+            else:
+                new_sl = entry_price - entry_price * APM_BREAKEVEN_FEE_PCT
+            pos["virtual_sl"] = str(new_sl)
+            pos["moved_to_breakeven"] = True
+            virtual_sl = new_sl
+            logger.info(f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})")
+
+        # --- Trend Trailing Stop (Chandelier ATR) ---
+        if entry_regime in ("TREND_BULL", "TREND_BEAR") and r_multiple >= APM_TREND_TRAIL_ACTIVATE_R:
+            atr = Decimal(str(pos.get("atr", "0")))
+            if atr > 0:
+                trail_distance = atr * APM_TREND_TRAIL_ATR_MULT
+                if side == "LONG":
+                    new_sl = peak - trail_distance
+                    if new_sl > virtual_sl:
+                        pos["virtual_sl"] = str(new_sl)
+                        virtual_sl = new_sl
+                        logger.info(f"SHADOW TRAILING STOP: {symbol} {side} SL raised to {new_sl} (Peak={peak})")
+                else:
+                    new_sl = peak + trail_distance
+                    if new_sl < virtual_sl or virtual_sl == 0:
+                        pos["virtual_sl"] = str(new_sl)
+                        virtual_sl = new_sl
+                        logger.info(f"SHADOW TRAILING STOP: {symbol} {side} SL lowered to {new_sl} (Peak={peak})")
+
+        # Persist state back to Redis
+        await self._redis.set(key, _json.dumps(pos))
 
         # --- $1 hard cap: if current SL would lose > $1, tighten SL to -$1 level ---
         amount = Decimal(pos.get("amount", "0"))

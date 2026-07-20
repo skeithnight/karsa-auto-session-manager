@@ -71,6 +71,40 @@ class SmartOrderRouter:
         if price <= 0:
             logger.warning(f"SOR: invalid price {price} for {symbol}, skipping")
             return None
+            
+        # Iceberg / TWAP Order Slicing
+        notional = price * amount
+        if notional > Decimal("2000"):
+            logger.info(f"SOR Iceberg Mode: {symbol} notional > $2000, slicing into 4 chunks")
+            import random
+            chunk_amount = (amount / Decimal("4")).quantize(Decimal("0.001"))
+            if chunk_amount > 0:
+                filled_amount = Decimal("0")
+                last_order = None
+                for i in range(4):
+                    current_amount = chunk_amount if i < 3 else (amount - (chunk_amount * 3))
+                    if current_amount <= 0:
+                        continue
+                    if i > 0:
+                        await asyncio.sleep(random.uniform(1.5, 3.5))
+                    try:
+                        last_order = await self.client.create_market_order(symbol, side, current_amount)
+                        if last_order:
+                            filled_amount += current_amount
+                    except Exception as e:
+                        logger.error(f"SOR Iceberg chunk {i} failed: {e}")
+                        # Place SL on what we have so far — don't leave position unprotected
+                        if filled_amount > 0 and last_order:
+                            break
+
+                if last_order and filled_amount > 0:
+                    metrics.orders_placed.labels(symbol=symbol, side=side).inc()
+                    # SL on actual filled amount, not the theoretical full amount
+                    sl_id = await self._place_sl_after_fill(symbol, side, price, filled_amount, max_loss_usd, price_tick)
+                    last_order["sl_order_id"] = sl_id or ""
+                    last_order["amount"] = str(filled_amount)  # Return actual filled for downstream
+                    return last_order
+                return None
 
         # High latency mode — skip to market directly
         if self.skip_to_market:
@@ -107,7 +141,37 @@ class SmartOrderRouter:
         # Derive tick from price (0.1% of price, min 0.01) — prevents negative prices on low-value tokens
         effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
         for attempt in range(self.max_reprice_attempts):
-            await asyncio.sleep(self.reprice_delay_seconds)
+            delay = self.reprice_delay_seconds
+            try:
+                # Spread-adaptive repricing: fast delay if spread is wide
+                tickers = await self.client.fetch_tickers()
+                # fetch_tickers() returns dict keyed by symbol — handle both formats
+                if isinstance(tickers, dict):
+                    ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                    if ticker:
+                        bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                        ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                        if bid > 0 and ask > 0:
+                            spread = (ask - bid) / bid
+                            if spread > Decimal("0.002"):
+                                delay = 0.1
+                                logger.info(f"SOR Reprice: aggressive spread {spread:.4f}, dropping delay to 100ms")
+                else:
+                    # Fallback: iterate if it's a list of dicts
+                    for t in tickers:
+                        sym = t.get("symbol", "").replace("/", "") if isinstance(t, dict) else ""
+                        if sym == symbol.replace("/", ""):
+                            bid = Decimal(str(t.get("bid", "0") or "0"))
+                            ask = Decimal(str(t.get("ask", "0") or "0"))
+                            if bid > 0 and ask > 0:
+                                spread = (ask - bid) / bid
+                                if spread > Decimal("0.002"):
+                                    delay = 0.1
+                                    logger.info(f"SOR Reprice: aggressive spread {spread:.4f}, dropping delay to 100ms")
+                            break
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
 
             # Move price toward market (buy: higher, sell: lower)
             if side == "buy":

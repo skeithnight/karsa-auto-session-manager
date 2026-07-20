@@ -32,8 +32,8 @@ When triggered, the bot immediately executes the following sequence, ignoring al
 
 | Breaker Name | Trigger Condition | Bot Action |
 | :--- | :--- | :--- |
-| **Daily Drawdown (Hard)** | Realized + Unrealized PnL drops **> 2%** from the starting daily equity. | **HARD STOP:** Cancel all orders, flatten all positions, halt bot, alert Telegram. |
-| **Consecutive Losses (Soft)** | **3** losing trades in a row. | **SOFT STOP:** Halt *new* trade generation for 60 minutes. Existing positions are managed normally. |
+| **Daily Drawdown (Hard)** | Realized + Unrealized PnL drops **> 2.5%** from the starting daily equity. | **4-HOUR COOLDOWN:** Cancel orders, block new entries for 4 hours. Triggers **System Doctor** AI to diagnose and auto-treat `karsa:auto:config` in Redis. |
+| **Consecutive Losses (Soft)** | **3** losing trades in a row. | **4-HOUR COOLDOWN:** Halt *new* trade generation for 4 hours. Triggers **System Doctor** AI to diagnose and patch configuration. |
 | **Execution Latency Spike** | Average order execution latency exceeds **1500ms** over a 5-minute rolling window. | **HALT:** Cancel open orders, pause new entries. Alert Telegram: *"Proxy degradation detected."* |
 | **Margin Utilization** | Total Bybit margin used exceeds **40%** of total account equity. | **HALT:** Block all new position openings. Allow existing positions to be managed/closed. |
 | **Stale Data** | Global Read Engine (Binance/OKX) receives no WebSocket updates for **> 15 seconds**. | **HALT:** Pause Alpha generation. Do not open new trades. Alert Telegram. |
@@ -102,7 +102,8 @@ A quick-reference guide for the operator when alerts fire.
 | Alert / Symptom | Bot's Automated Action | Human Operator Action |
 | :--- | :--- | :--- |
 | **🚨 KILL SWITCH ACTIVATED** | Flattened all, bot stopped. | Investigate why it was triggered. Check Bybit UI to confirm flat. Restart bot manually when ready. |
-| **🛑 Daily Drawdown > 2%** | Flattened all, bot stopped. | Review trade logs in Postgres. Analyze if market regime changed. Reset daily equity tracker tomorrow. |
+| **🛑 Daily Drawdown > 2.5%** | 4-Hour Cooldown, System Doctor triggered. | Review Doctor's AI diagnosis in Telegram. Verify if `karsa:auto:config` treatment is sufficient. Reset manually if safe. |
+| **🛑 3 Consecutive Losses** | 4-Hour Cooldown, System Doctor triggered. | Review Doctor's AI diagnosis in Telegram. Verify if `karsa:auto:config` treatment is sufficient. Reset manually if safe. |
 | **⚠️ VPN Tunnel Down** | Paused trading, stale data warnings. | Check `docker logs karsa-gluetun`. Verify WireGuard server is running on droplet. Check DO Cloud Firewall allows UDP 51820. |
 | **📉 Stale Data (>15s)** | Paused new entries. | Check VPN tunnel. Check if Binance/OKX are experiencing global outages. |
 | **⏳ Execution Latency > 1500ms** | Paused new entries. | Check Docker resource usage. Check VPN routing. |

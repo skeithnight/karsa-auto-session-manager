@@ -18,7 +18,7 @@ from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 logger = logging.getLogger(__name__)
 
-_GATE_THRESHOLD = 40.0  # ponytail: raised from 25, restore to 65 when confident
+_GATE_THRESHOLD = 65.0  # restored from 40.0 for higher win rate
 _MIN_CANDLES = 50
 _SLIPPAGE_PCT = Decimal("0.0005")
 _TAKER_FEE = Decimal("0.00055")
@@ -83,6 +83,7 @@ class DecisionEngine:
         maker_fee: Decimal = _MAKER_FEE,
         trade_memory: object | None = None,
         redis_client: object | None = None,
+        multi_tf: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._router = router
@@ -95,6 +96,7 @@ class DecisionEngine:
         self._wallet_balance: Decimal = Decimal("0")
         self._trade_memory = trade_memory
         self._redis = redis_client
+        self._multi_tf = multi_tf
 
     def set_wallet_balance(self, balance: Decimal) -> None:
         """Update wallet balance for position sizing."""
@@ -168,6 +170,38 @@ class DecisionEngine:
 
         # Step 3: Score each direction, take first pass
         for direction in directions:
+            # Extreme Funding Rate Block
+            if funding_rate is not None:
+                if direction == "LONG" and funding_rate > 0.0005:
+                    logger.info("evaluate: %s LONG blocked due to extreme positive funding %.5f", symbol, funding_rate)
+                    continue
+                if direction == "SHORT" and funding_rate < -0.0005:
+                    logger.info("evaluate: %s SHORT blocked due to extreme negative funding %.5f", symbol, funding_rate)
+                    continue
+
+            # Multi-Timeframe Trend Alignment Block
+            if self._multi_tf:
+                mtf_res = await self._multi_tf.check(symbol, direction)
+                if mtf_res.get("blocked"):
+                    logger.info("evaluate: %s %s blocked by 4H Multi-Timeframe filter", symbol, direction)
+                    continue
+                    
+                # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
+                momentum_exemption = False
+                if len(arr) >= 24:
+                    close_now = arr[-1][4]
+                    close_24h_ago = arr[-24][4]
+                    pct_change = (close_now - close_24h_ago) / close_24h_ago
+                    if direction == "LONG" and pct_change > 0.15:
+                        momentum_exemption = True
+                    elif direction == "SHORT" and pct_change < -0.15:
+                        momentum_exemption = True
+
+                # Macro Anchor (Lead-Lag) Penalty
+                macro_penalty = 1.0
+                if symbol not in ["BTC/USDT", "ETH/USDT"] and not momentum_exemption:
+                    macro_penalty = await self._multi_tf.get_macro_anchor_penalty(direction)
+
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
             score, vol_factor = self._router.evaluate_signal(
@@ -179,10 +213,27 @@ class DecisionEngine:
                 funding_rate=funding_rate,
                 oi_change=oi_change,
             )
+            
+            # Momentum Exemption: Do not penalize explosive gainers for their volatility
+            if momentum_exemption:
+                logger.info("evaluate: %s %s has momentum exemption, bypassing volatility gate (vol_factor %.2f -> 1.0)", symbol, direction, vol_factor)
+                vol_factor = 1.0
+                
+                # If StrategyRouter scored it low (e.g. 0) because the explosive move happened a few hours ago,
+                # we force the score up to the base gate so it reaches the AI Analyst.
+                if score < float(self._gate):
+                    logger.info("evaluate: %s %s momentum exemption forcing score %.1f -> %.1f for AI Analyst review", symbol, direction, score, float(self._gate))
+                    score = float(self._gate)
+            
+            # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
+            score = score * macro_penalty
             effective_gate = float(self._gate) * vol_factor
             logger.debug("evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)", symbol, direction, score, effective_gate, vol_factor)
 
             if score >= effective_gate:
+                if await self.check_consecutive_losses(symbol, regime):
+                    return None
+                    
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
                 return await self._build_signal(symbol, direction, regime, score, arr)
 
@@ -205,16 +256,15 @@ class DecisionEngine:
             consecutive = 0
             for t in trades:
                 pnl = t.get("pnl_pct", 0)
-                t_regime = t.get("regime", "")
-                if pnl < 0 and t_regime == regime_str:
+                if pnl < 0:
                     consecutive += 1
                 else:
                     break
 
             if consecutive >= self._CONSECUTIVE_LOSS_THRESHOLD:
                 logger.warning(
-                    "consecutive_loss_block: %s %d losses in %s — REJECTING",
-                    symbol, consecutive, regime_str,
+                    "consecutive_loss_block: %s %d consecutive losses — REJECTING (cooldown)",
+                    symbol, consecutive
                 )
                 from app.core import metrics
                 metrics.signal_confidence_passed_total.labels(regime=regime_str)
@@ -282,9 +332,11 @@ class DecisionEngine:
         if risk_distance <= Decimal("0"):
             amount = self._base_size
         elif self._wallet_balance > 0:
-            # amount = (balance * risk_pct * size_multiplier) / risk_distance
-            risk_pct = await self._get_risk_pct()
-            amount = self._wallet_balance * risk_pct * profile.size_multiplier / risk_distance
+            # Kelly Scaling: Multiply risk_pct by (score/100)
+            base_risk_pct = await self._get_risk_pct()
+            scaled_risk_pct = base_risk_pct * Decimal(str(score / 100.0))
+            
+            amount = self._wallet_balance * scaled_risk_pct * profile.size_multiplier / risk_distance
             # Cap notional to 40% of equity (PRM single position limit)
             max_notional = self._wallet_balance * Decimal("0.40")
             if entry_price > 0:

@@ -154,6 +154,22 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.warning("skip %s — ASM state check failed (fail-closed), blocking trade", symbol)
         return
 
+    # Check Auto-Adjustment Regime Overrides
+    try:
+        raw_cfg = await position_store.redis.get("karsa:auto:config")
+        if raw_cfg:
+            import json
+            cfg = json.loads(raw_cfg)
+            overrides = cfg.get("regime_overrides", {})
+            if overrides.get(signal.regime.value) == "DISABLE":
+                logger.info(
+                    "skip %s — %s regime is temporarily DISABLED by Shadow Auto-Adjustment",
+                    symbol, signal.regime.value
+                )
+                return
+    except Exception as e:
+        logger.debug("regime_overrides check failed: %s", e)
+
     # Skip if position already open
     has_pos = await position_store.has_position(symbol)
     if has_pos:
@@ -653,11 +669,28 @@ async def main() -> None:  # noqa: PLR0915
 
     # Build components
     from app.alpha.trade_memory import TradeMemory
+    from app.alpha.multi_tf import MultiTFFilter
+    from app.data.ohlcv_fetcher import OHLCVFetcher
+    import ccxt.async_support as ccxt
+    
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
     trade_memory = TradeMemory(redis)
-    engine = DecisionEngine(classifier, router, risk_gate, trade_memory=trade_memory, redis_client=redis)
+    
+    # Init Fetcher & Multi-TF
+    exchange = ccxt.bybit({'enableRateLimit': True})
+    ohlcv_fetcher = OHLCVFetcher(exchange)
+    multi_tf = MultiTFFilter(ohlcv_fetcher)
+    
+    engine = DecisionEngine(
+        classifier, 
+        router, 
+        risk_gate, 
+        trade_memory=trade_memory, 
+        redis_client=redis,
+        multi_tf=multi_tf
+    )
 
     position_store = PositionStore(redis)
 
@@ -743,9 +776,7 @@ async def main() -> None:  # noqa: PLR0915
 
     # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
     try:
-        import ccxt.async_support as ccxt
-        exchange = ccxt.bybit({'enableRateLimit': True})
-        ohlcv_fetcher = OHLCVFetcher(exchange)
+        # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
         for sym in initial_symbols:
             try:
                 candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
@@ -869,7 +900,7 @@ async def main() -> None:  # noqa: PLR0915
                             side=side_long,
                             entry_price=entry_price,
                             amount=amount,
-                            atr=str(atr_val),
+                            atr=atr_val,
                             entry_confidence="0",
                             regime=entry_regime,
                         )
@@ -976,6 +1007,8 @@ async def main() -> None:  # noqa: PLR0915
             await wallet_metrics_task
         await ingestor.stop()
         await emitter.stop()
+        await exchange.close()
+        await db_engine.dispose()
         await shutdown()
         logger.info("karsa-live stopped")
 

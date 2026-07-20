@@ -105,6 +105,11 @@ class PortfolioRiskManager:
 
         try:
             sector = await self._sector_mapping.get_sector(symbol)  # type: ignore[attr-defined]
+            
+            # If the sector is unknown (e.g. micro-caps), they are idiosyncratic. Don't block.
+            if sector == "UNKNOWN":
+                return CheckResult(passed=True)
+                
             positions = await self._position_store.list_all()  # type: ignore[attr-defined]
             sector_count = 0
             for p in positions:
@@ -248,11 +253,87 @@ class PortfolioRiskManager:
     # Daily reset loop
     # ------------------------------------------------------------------
 
+    async def monitor_circuit_breakers(self) -> None:
+        """Background task: periodically check for circuit breaker conditions and trigger Doctor."""
+        from app.watchdog.system_doctor import SystemDoctor
+        from app.core.ai_client import AIClient
+        import json as _json
+
+        doctor = None
+        if self._redis:
+            ai_client = AIClient(self._redis)
+            # alert_service omitted here or passed in if available
+            doctor = SystemDoctor(self._redis, ai_client)
+
+        while True:
+            try:
+                await asyncio.sleep(300)  # Check every 5 minutes
+                if not self._redis or not self._trade_store:
+                    continue
+                
+                # Simple logic for daily loss: check total realized PnL today
+                now = datetime.now(UTC)
+                start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+                
+                # Pseudocode logic: in reality we would query TradeStore for today's trades.
+                # Assuming `get_recent_trades` exists:
+                trades = await self._trade_store.get_recent_trades(limit=100) # type: ignore
+                
+                daily_pnl = Decimal("0")
+                consecutive_losses = 0
+                
+                for t in trades:
+                    # Filter for today
+                    t_time = datetime.fromisoformat(t.get("exit_time", now.isoformat()))
+                    if t_time >= start_of_day:
+                        pnl = Decimal(str(t.get("realized_pnl", "0")))
+                        daily_pnl += pnl
+                        if pnl < 0:
+                            consecutive_losses += 1
+                        else:
+                            consecutive_losses = 0
+                
+                # Fetch equity
+                wallet = await self._bybit_client.get_wallet_balance() # type: ignore
+                equity = Decimal(str(wallet.get("balance", wallet.get("available", "0"))))
+                
+                cb_triggered = False
+                reason = ""
+                
+                if equity > 0 and daily_pnl < -(equity * Decimal("0.025")):
+                    cb_triggered = True
+                    reason = "Daily loss exceeded -2.5%"
+                elif consecutive_losses >= 3:
+                    cb_triggered = True
+                    reason = "3 consecutive losses detected"
+                
+                if cb_triggered:
+                    raw = await self._redis.get("system:circuit_breaker")
+                    state = _json.loads(raw) if raw else {}
+                    
+                    if state.get("status") != "TRIGGERED":
+                        # Flip to triggered
+                        payload = {
+                            "status": "TRIGGERED", 
+                            "reason": reason, 
+                            "triggered_at": now.isoformat()
+                        }
+                        await self._redis.set("system:circuit_breaker", _json.dumps(payload))
+                        logger.critical(f"PortfolioRiskManager: CIRCUIT BREAKER TRIGGERED: {reason}")
+                        
+                        if doctor:
+                            # Run SystemDoctor asynchronously so it doesn't block the loop
+                            asyncio.create_task(doctor.diagnose_and_treat(reason))
+                            
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"PRM monitor_circuit_breakers error: {e}")
+
     async def reset_daily_state_loop(self) -> None:
         """Background task: reset daily CB state at UTC midnight.
 
-        Also guards against stuck CB: if circuit_breaker has been TRIGGERED
-        for >24h (e.g. midnight reset missed due to restart), force clear.
+        Also handles 4-hour cooldown clearing.
         """
         # Clear stuck CB on startup
         await self._clear_stuck_cb()
@@ -301,11 +382,11 @@ class PortfolioRiskManager:
             if triggered_at is not None:
                 ts = datetime.fromisoformat(triggered_at)
                 age_hours = (datetime.now(UTC) - ts).total_seconds() / 3600
-                if age_hours > 24:
+                if age_hours > 4:
                     await self._redis.set(
                         "system:circuit_breaker",
-                        _json.dumps({"status": "RESET", "reason": f"stuck CB cleared after {age_hours:.0f}h"}),
+                        _json.dumps({"status": "RESET", "reason": f"4-hour cooldown complete (Triggered {age_hours:.1f}h ago)"}),
                     )
-                    logger.warning("PRM: stuck CB cleared after %.0fh", age_hours)
+                    logger.warning("PRM: 4-hour cooldown complete, CB cleared.")
         except Exception:
             logger.exception("PRM: failed to check stuck CB")

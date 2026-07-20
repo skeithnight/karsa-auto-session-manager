@@ -101,11 +101,11 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         regime="CHOP",
         size_multiplier=CHOP_SIZE_MULT,
         take_profit_type="SCALP",
-        stop_loss_type="MICRO",
+        stop_loss_type="TIGHT",
         max_hold_time_mins=CHOP_MAX_HOLD_MINS,
         use_post_only=True,
         trail_atr_mult=Decimal("1.5"),
-        sl_atr_buffer=Decimal("0.5"),
+        sl_atr_buffer=Decimal("1.5"),
     ),
 }
 

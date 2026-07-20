@@ -60,35 +60,42 @@ class BybitClient:
         mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
         # Build symbol map: ccxt "PEPE/USDT" → bybit "1000PEPEUSDT"
         try:
-            resp = await asyncio.to_thread(self.session.get_instruments_info, category="linear")
-            if resp.get("retCode") == 0:
-                for inst in resp["result"]["list"]:
-                    bybit_sym = inst["symbol"]
-                    if not bybit_sym.endswith("USDT"):
-                        continue  # skip PERP contracts
-                    base = bybit_sym.removesuffix("USDT")
-                    # Strip leading multiplier digits: 1000PEPE → PEPE
-                    i = 0
-                    while i < len(base) and base[i].isdigit():
-                        i += 1
-                    token = base[i:] if i > 0 else base
-                    if not token:  # skip pure-numeric symbols like "4USDT"
-                        continue
-                    ccxt_sym = f"{token}/USDT"
-                    self._symbol_map[ccxt_sym] = bybit_sym
-                    # Store lot size and min qty for order rounding
-                    lot_filter = inst.get("lotSizeFilter", {})
-                    ls = lot_filter.get("qtyStep", "1")
-                    mq = lot_filter.get("minOrderQty", "1")
-                    self._lot_sizes[ccxt_sym] = Decimal(str(ls))
-                    self._min_qty[ccxt_sym] = Decimal(str(mq))
+            cursor = None
+            while True:
+                resp = await asyncio.to_thread(self.session.get_instruments_info, category="linear", limit=1000, cursor=cursor)
+                if resp.get("retCode") == 0:
+                    for inst in resp["result"]["list"]:
+                        bybit_sym = inst["symbol"]
+                        if not bybit_sym.endswith("USDT"):
+                            continue  # skip PERP contracts
+                        base = bybit_sym.removesuffix("USDT")
+                        # Strip leading multiplier digits: 1000PEPE → PEPE
+                        i = 0
+                        while i < len(base) and base[i].isdigit():
+                            i += 1
+                        token = base[i:] if i > 0 else base
+                        if not token:  # skip pure-numeric symbols like "4USDT"
+                            continue
+                        ccxt_sym = f"{token}/USDT"
+                        self._symbol_map[ccxt_sym] = bybit_sym
+                        # Store lot size and min qty for order rounding
+                        lot_filter = inst.get("lotSizeFilter", {})
+                        ls = lot_filter.get("qtyStep", "1")
+                        mq = lot_filter.get("minOrderQty", "1")
+                        self._lot_sizes[ccxt_sym] = Decimal(str(ls))
+                        self._min_qty[ccxt_sym] = Decimal(str(mq))
 
-                    price_filter = inst.get("priceFilter", {})
-                    ts = price_filter.get("tickSize", "0.01")
-                    self._price_ticks[ccxt_sym] = Decimal(str(ts))
-                logger.info(f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped")
-            else:
-                logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
+                        price_filter = inst.get("priceFilter", {})
+                        ts = price_filter.get("tickSize", "0.01")
+                        self._price_ticks[ccxt_sym] = Decimal(str(ts))
+                    
+                    cursor = resp["result"].get("nextPageCursor")
+                    if not cursor:
+                        break
+                else:
+                    logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
+                    break
+            logger.info(f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped")
         except Exception as e:
             logger.warning(f"Symbol map fetch failed: {e}, using naive mapping")
         logger.debug("connect: returning None")
@@ -377,15 +384,19 @@ class BybitClient:
         if symbol:
             params["symbol"] = self._to_bybit_symbol(symbol)
         result = await self._execute(self.session.get_tickers, **params)
-        tickers = [
-            {
-                "symbol": t["symbol"],
+        tickers = []
+        for t in result.get("list", []):
+            sym = t["symbol"]
+            if sym.endswith("USDT"):
+                sym = sym[:-4] + "/USDT"
+            elif sym.endswith("USDC"):
+                sym = sym[:-4] + "/USDC"
+            tickers.append({
+                "symbol": sym,
                 "last": _safe_decimal(t.get("lastPrice")),
                 "bid": _safe_decimal(t.get("bid1Price")),
                 "ask": _safe_decimal(t.get("ask1Price")),
-            }
-            for t in result.get("list", [])
-        ]
+            })
         logger.debug(f"fetch_tickers: returning {len(tickers)} tickers")
         return tickers
 
@@ -597,9 +608,9 @@ class BybitClient:
             "positionIdx": 0,
         }
         if stop_loss is not None:
-            params["stopLoss"] = str(stop_loss)
+            params["stopLoss"] = str(self._round_price(symbol, stop_loss))
         if take_profit is not None:
-            params["takeProfit"] = str(take_profit)
+            params["takeProfit"] = str(self._round_price(symbol, take_profit))
 
         result = await self._execute(self.session.set_trading_stop, **params)
         logger.info(f"set_trading_stop: OK for {symbol} sl={stop_loss} tp={take_profit}")

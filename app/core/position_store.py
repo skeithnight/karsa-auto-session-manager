@@ -116,10 +116,10 @@ class PositionStore:
         pos = await self.get(symbol, side)
         if not pos:
             return
-            
+
         norm_side = _normalize_side(side)
         current_peak = pos.get("peak_price")
-        
+
         if current_peak is None:
             updated = True
         else:
@@ -128,7 +128,7 @@ class PositionStore:
                 updated = price > peak
             else:
                 updated = price < peak
-                
+
         if updated:
             pos["peak_price"] = str(price)
             pos["last_check_at"] = datetime.now(UTC).isoformat()

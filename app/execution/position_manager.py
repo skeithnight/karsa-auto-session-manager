@@ -846,11 +846,11 @@ class ActivePositionManager:
         # Parse string to timezone-aware datetime if needed
         if isinstance(entry_time, str):
             try:
-                from datetime import timezone
+                from datetime import UTC
 
                 entry_time = datetime.fromisoformat(entry_time)
                 if entry_time.tzinfo is None:
-                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                    entry_time = entry_time.replace(tzinfo=UTC)
             except Exception:
                 self._log.debug(
                     "APM: could not parse entry_time=%r for time-exit", entry_time

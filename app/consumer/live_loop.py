@@ -103,11 +103,11 @@ async def _wallet_metrics_loop(
                 # Duration from entered_at
                 entered_at = pos.get("entered_at", "")
                 if entered_at:
-                    from datetime import datetime, timezone
+                    from datetime import UTC, datetime
 
                     try:
                         entered = datetime.fromisoformat(entered_at)
-                        elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
+                        elapsed = (datetime.now(UTC) - entered).total_seconds()
                         metrics.position_duration.labels(symbol=sym).set(elapsed)
                     except Exception:
                         pass

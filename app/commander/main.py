@@ -161,7 +161,7 @@ async def shadow_feedback_task(
     logger.debug("shadow_feedback_task: entering")
     from sqlalchemy import text
     import json
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     # Initial wait
     await asyncio.sleep(10)
@@ -169,7 +169,7 @@ async def shadow_feedback_task(
     while not kill_switch.is_set():
         try:
             logger.info("shadow_feedback_task: running Auto-Adjustment check")
-            cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
+            cutoff_date = datetime.now(UTC) - timedelta(days=7)
 
             regime_stats = {}
             async with db_engine.engine.connect() as conn:

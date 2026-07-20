@@ -162,6 +162,27 @@ class DecisionEngine:
         else:
             arr = candles
 
+        # HFT Spread Balloon Gate
+        # Fetch live microsecond best_bid and best_ask from Data Engine state
+        if self._redis:
+            try:
+                import json as _json
+                state_raw = await self._redis.get(f"global:state:{symbol}")
+                if state_raw:
+                    state = _json.loads(state_raw)
+                    best_bid = Decimal(str(state.get("best_bid", "0")))
+                    best_ask = Decimal(str(state.get("best_ask", "0")))
+                    if best_bid > 0 and best_ask > 0:
+                        spread = (best_ask - best_bid) / best_bid
+                        if spread > Decimal("0.005"):
+                            logger.warning(
+                                "evaluate: %s SPREAD BALLOON REJECTION (spread=%.2f%% > 0.5%%) — rejecting to prevent slippage",
+                                symbol, float(spread * 100)
+                            )
+                            return None
+            except Exception as e:
+                logger.debug("Spread balloon check failed for %s: %s", symbol, e)
+
         # Step 1: Regime classification
         regime = self._classifier.classify(arr)
         logger.debug("evaluate: %s regime=%s", symbol, regime.value)

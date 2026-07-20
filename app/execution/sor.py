@@ -35,6 +35,7 @@ class SmartOrderRouter:
         max_reprice_attempts: int = 2,
         reprice_delay_seconds: float = 2.0,
         alert_service: object | None = None,
+        redis_client: RedisClient | None = None,
     ) -> None:
         logger.debug("SmartOrderRouter.__init__: entering")
         self.client = bybit_client
@@ -42,6 +43,7 @@ class SmartOrderRouter:
         self.reprice_delay_seconds = reprice_delay_seconds
         self.skip_to_market = False
         self.alert_service = alert_service
+        self.redis = redis_client
         logger.debug("SmartOrderRouter.__init__: returning")
 
     async def execute(
@@ -167,41 +169,29 @@ class SmartOrderRouter:
             delay = self.reprice_delay_seconds
             try:
                 # Spread-adaptive repricing: fast delay if spread is wide
-                tickers = await self.client.fetch_tickers()
-                # fetch_tickers() returns dict keyed by symbol — handle both formats
-                if isinstance(tickers, dict):
-                    ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
-                    if ticker:
-                        bid = Decimal(str(ticker.get("bid", "0") or "0"))
-                        ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                if self.redis:
+                    state = await self.redis.get_global_state(symbol)
+                    if state and state.get("best_bid") and state.get("best_ask"):
+                        bid = Decimal(str(state["best_bid"]))
+                        ask = Decimal(str(state["best_ask"]))
                         if bid > 0 and ask > 0:
                             spread = (ask - bid) / bid
                             if spread > Decimal("0.002"):
                                 delay = 0.1
-                                logger.info(
-                                    f"SOR Reprice: aggressive spread {spread:.4f}, dropping delay to 100ms"
-                                )
                 else:
-                    # Fallback: iterate if it's a list of dicts
-                    for t in tickers:
-                        sym = (
-                            t.get("symbol", "").replace("/", "")
-                            if isinstance(t, dict)
-                            else ""
-                        )
-                        if sym == symbol.replace("/", ""):
-                            bid = Decimal(str(t.get("bid", "0") or "0"))
-                            ask = Decimal(str(t.get("ask", "0") or "0"))
+                    # Fallback to ccxt fetch_tickers if redis missing
+                    tickers = await self.client.fetch_tickers()
+                    if isinstance(tickers, dict):
+                        ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                        if ticker:
+                            bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                            ask = Decimal(str(ticker.get("ask", "0") or "0"))
                             if bid > 0 and ask > 0:
                                 spread = (ask - bid) / bid
                                 if spread > Decimal("0.002"):
                                     delay = 0.1
-                                    logger.info(
-                                        f"SOR Reprice: aggressive spread {spread:.4f}, dropping delay to 100ms"
-                                    )
-                            break
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug(f"Spread check failed: {e}")
             await asyncio.sleep(delay)
 
             # Move price toward market (buy: higher, sell: lower)
@@ -604,6 +594,22 @@ class SmartOrderRouter:
     async def _check_spread_gate(self, symbol: str, regime: str) -> bool:
         """Reject if bid-ask spread exceeds regime threshold."""
         try:
+            if self.redis:
+                state = await self.redis.get_global_state(symbol)
+                if state and state.get("best_bid") and state.get("best_ask"):
+                    bid = Decimal(str(state["best_bid"]))
+                    ask = Decimal(str(state["best_ask"]))
+                    if bid <= 0 or ask <= 0:
+                        return True
+                    spread = (ask - bid) / bid
+                    threshold = (
+                        CHOP_RANGE_SPREAD_PCT
+                        if regime in ("CHOP", "RANGE")
+                        else TREND_SPREAD_PCT
+                    )
+                    return spread <= threshold
+            
+            # Fallback
             tickers = await self.client.fetch_tickers(symbol=symbol)
             if not tickers:
                 return True

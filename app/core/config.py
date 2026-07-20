@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     shadow_taker_fee_pct: str = "0.00055"
     shadow_maker_fee_pct: str = "0.0002"
 
+    # ── Portfolio Risk Limits ──────────────────────────────────
+    max_gross_exposure_pct: str = "0.50"
+    max_net_exposure_pct: str = "0.30"
+    max_single_position_pct: str = "0.40"
+
     # ── PostgreSQL ─────────────────────────────────────────────
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"
 

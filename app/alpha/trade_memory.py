@@ -60,7 +60,36 @@ class TradeMemory:
                 f"Trade memory: stored {symbol} pnl={pnl_pct}% exit={exit_reason}"
             )
         except Exception as e:
-            logger.error(f"Trade memory store failed for {symbol}: {e}")
+            logger.warning(f"Trade memory: failed to store {symbol}: {e}")
+
+    async def is_in_cooldown(self, symbol: str, cooldown_mins: int = 45) -> bool:
+        """Check if symbol is in a post-loss cooldown period to prevent whipsawing."""
+        key = self._key(symbol)
+        try:
+            # Get the single most recent trade with its score (timestamp)
+            if not self.redis.redis:
+                return False
+            recent = await self.redis.redis.zrevrange(key, 0, 0, withscores=True)
+            if not recent:
+                return False
+            
+            entry_str, timestamp = recent[0]
+            now = time.time()
+            if (now - timestamp) > (cooldown_mins * 60):
+                return False  # cooldown expired
+                
+            entry = json.loads(entry_str)
+            pnl_pct = entry.get("pnl_pct", 0.0)
+            
+            # If the last trade was a loss or breakeven (< 0.2% profit), enforce cooldown
+            if pnl_pct < 0.2:
+                logger.info(f"Cooldown active for {symbol}: last trade was {pnl_pct}% pnl")
+                return True
+                
+            return False
+        except Exception as e:
+            logger.warning(f"Cooldown check failed for {symbol}: {e}")
+            return False
 
     async def get_recent(
         self, symbol: str, regime: str | None = None, count: int = RETRIEVE_COUNT
@@ -118,3 +147,27 @@ class TradeMemory:
         if trades:
             metrics.trade_memory_injected.labels(symbol=symbol).inc()
         return self.format_prompt(symbol, trades)
+
+    async def get_active_cooldowns(self, cooldown_mins: int = 45) -> list[str]:
+        """Return a list of symbols currently in cooldown."""
+        if not self.redis.redis:
+            return []
+        keys = await self.redis.redis.keys("karsa:memory:*")
+        symbols = []
+        for key in keys:
+            if isinstance(key, bytes):
+                key = key.decode()
+            symbol = key.split(":")[-1]
+            if await self.is_in_cooldown(symbol, cooldown_mins):
+                symbols.append(symbol)
+        return symbols
+
+    async def clear_cooldown(self, symbol: str) -> None:
+        """Clear the cooldown for a specific symbol by removing its memory key."""
+        key = self._key(symbol)
+        try:
+            if self.redis.redis:
+                await self.redis.redis.delete(key)
+                logger.info(f"Cooldown cleared for {symbol}")
+        except Exception as e:
+            logger.error(f"Failed to clear cooldown for {symbol}: {e}")

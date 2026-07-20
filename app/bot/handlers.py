@@ -645,10 +645,23 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "\U0001f3e0 Dashboard", callback_data="cmd_dashboard"
                 ),
                 InlineKeyboardButton(
-                    "\U0001f4dc History", callback_data="cmd_trade_history"
+                    "📜 History", callback_data="cmd_trade_history"
                 ),
             ],
         ]
+        
+        # Add Reset Cooldowns button if any exist
+        from app.alpha.trade_memory import TradeMemory
+        trade_memory = TradeMemory(r)
+        active_cooldowns = await trade_memory.get_active_cooldowns(cooldown_mins=45)
+        if active_cooldowns:
+            cooldown_list = ", ".join(active_cooldowns)
+            keyboard.insert(1, [
+                InlineKeyboardButton(
+                    f"❄️ Reset Cooldowns ({len(active_cooldowns)}): {cooldown_list}", callback_data="cmd_reset_cooldowns"
+                )
+            ])
+
         await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as exc:
         logger.error("portfolio_failed", extra={"error": str(exc)})
@@ -1980,6 +1993,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Trade History
     elif data == "cmd_trade_history":
         await trade_history_cmd(update, context)
+
+    # Cooldown Reset
+    elif data == "cmd_reset_cooldowns":
+        await _clear_all_cooldowns(update, context)
+
     elif data.startswith("karsa:history:page:"):
         try:
             page = int(data.split(":")[-1])
@@ -2169,3 +2187,24 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         logger.warning("unhandled_callback_data", extra={"data": data})
     logger.debug("button_callback: returning None")
+
+
+async def _clear_all_cooldowns(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all active symbol cooldowns in TradeMemory."""
+    r = _get_redis(context)
+    from app.alpha.trade_memory import TradeMemory
+    trade_memory = TradeMemory(r)
+    
+    query = update.callback_query
+    active_cooldowns = await trade_memory.get_active_cooldowns()
+    
+    if not active_cooldowns:
+        await query.answer("No active cooldowns to reset.", show_alert=True)
+        return
+        
+    for symbol in active_cooldowns:
+        await trade_memory.clear_cooldown(symbol)
+        
+    await query.answer(f"Reset cooldowns for {len(active_cooldowns)} symbols.", show_alert=True)
+    # Refresh the portfolio view to hide the button
+    await portfolio_cmd(update, context)

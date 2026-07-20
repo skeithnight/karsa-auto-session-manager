@@ -264,9 +264,10 @@ class ShadowExchangeClient:
                 raw = await self._redis.get(f"global:state:{symbol}")
                 if raw:
                     data = _json.loads(raw)
-                    bid = Decimal(str(data.get("bid", "0")))
-                    ask = Decimal(str(data.get("ask", "0")))
-                    last = Decimal(str(data.get("last", "0")))
+                    bid = Decimal(str(data.get("best_bid", "0")))
+                    ask = Decimal(str(data.get("best_ask", "0")))
+                    # use mid price for last
+                    last = (bid + ask) / 2 if bid and ask else Decimal("0")
                     if bid > 0 and ask > 0:
                         result[symbol] = {"bid": bid, "ask": ask, "last": last}
         except Exception as e:
@@ -500,11 +501,27 @@ class ShadowAPM:
 
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
 
+        # Flash-Crash Micro-Circuit Breaker (Wick Guard)
+        _raw_last_tick = pos.get("last_tick_price", pos.get("worst_price_seen", "0")) or "0"
+        last_tick_price = Decimal(str(_raw_last_tick))
+        if last_tick_price > 0 and mid > 0:
+            tick_delta = (mid - last_tick_price) / last_tick_price
+            if (side == "LONG" and tick_delta <= Decimal("-0.03")) or (side == "SHORT" and tick_delta >= Decimal("0.03")):
+                logger.critical(
+                    f"SHADOW WICK GUARD: {symbol} {side} dropped/spiked {tick_delta:.2%} instantly! "
+                    f"live={mid} last={last_tick_price}. FRONT-RUNNING CASCADE!"
+                )
+                await self._close_shadow_position(pos, mid, f"wick_guard_{tick_delta:.2%}")
+                return
+
+        pos["last_tick_price"] = str(mid)
+
         # --- +1R Breakeven Lock ---
         if not pos.get("moved_to_breakeven") and r_multiple >= APM_BREAKEVEN_LOCK_R:
             if side == "LONG":
                 new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
             else:
+                # SHORT: SL must be BELOW entry to lock in breakeven
                 new_sl = entry_price - entry_price * APM_BREAKEVEN_FEE_PCT
             pos["virtual_sl"] = str(new_sl)
             pos["moved_to_breakeven"] = True
@@ -512,6 +529,23 @@ class ShadowAPM:
             logger.info(
                 f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})"
             )
+
+        # --- HFT Step-Trailing Stop (0.2R increments) ---
+        if pos.get("moved_to_breakeven") and initial_risk > 0 and r_multiple >= Decimal("1.2"):
+            step_r = Decimal("0.2")
+            floored_r = (r_multiple // step_r) * step_r
+            trail_r = floored_r - Decimal("1.0")
+            if trail_r > 0:
+                if side == "LONG":
+                    new_step_sl = entry_price + (initial_risk * trail_r)
+                else:
+                    new_step_sl = entry_price - (initial_risk * trail_r)
+                
+                sl_tighter = (side == "LONG" and new_step_sl > virtual_sl) or (side == "SHORT" and (new_step_sl < virtual_sl or virtual_sl == 0))
+                if sl_tighter:
+                    pos["virtual_sl"] = str(new_step_sl)
+                    virtual_sl = new_step_sl
+                    logger.info(f"SHADOW STEP-TRAILING: {symbol} {side} SL amended to {new_step_sl} (+{trail_r}R)")
 
         # --- Trend Trailing Stop (Chandelier ATR) ---
         if (
@@ -634,24 +668,43 @@ class ShadowAPM:
                 await self._close_shadow_position(pos, virtual_tp, "tp_hit")
                 return
 
-        # Time exit
+        # Time exit & Stale Underwater Exit
         try:
             risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
             max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
-            if max_hold_mins > 0:
-                entered_at = pos.get("entered_at", "")
-                if entered_at:
-                    entered = datetime.fromisoformat(entered_at)
-                    elapsed_mins = (datetime.now(UTC) - entered).total_seconds() / 60
-                    if elapsed_mins >= max_hold_mins:
-                        logger.info(
-                            f"SHADOW TIME EXIT: {symbol} {side} held {elapsed_mins:.0f}m >= {max_hold_mins}m"
-                        )
-                        metrics.karsa_shadow_time_exits_total.labels(
-                            symbol=symbol, side=side
-                        ).inc()
-                        await self._close_shadow_position(pos, mid, "time_exit")
-                        return
+            
+            entered_at = pos.get("entered_at", "")
+            if entered_at:
+                entered = datetime.fromisoformat(entered_at)
+                elapsed_mins = (datetime.now(UTC) - entered).total_seconds() / 60
+                
+                # 1. Normal risk_profile time exit
+                if max_hold_mins > 0 and elapsed_mins >= max_hold_mins:
+                    logger.info(
+                        f"SHADOW TIME EXIT: {symbol} {side} held {elapsed_mins:.0f}m >= {max_hold_mins}m"
+                    )
+                    metrics.karsa_shadow_time_exits_total.labels(
+                        symbol=symbol, side=side
+                    ).inc()
+                    await self._close_shadow_position(pos, mid, "time_exit")
+                    return
+                
+                # 2. Stale Underwater Exit (45 mins) - matching Live engine
+                is_underwater = False
+                if side == "LONG" and mid < entry_price:
+                    is_underwater = True
+                elif side == "SHORT" and mid > entry_price:
+                    is_underwater = True
+                    
+                if elapsed_mins >= 45 and is_underwater:
+                    logger.info(
+                        f"SHADOW STALE EXIT: {symbol} {side} underwater after {elapsed_mins:.0f}m"
+                    )
+                    metrics.karsa_shadow_time_exits_total.labels(
+                        symbol=symbol, side=side
+                    ).inc()
+                    await self._close_shadow_position(pos, mid, "stale_exit")
+                    return
         except Exception:
             pass
 

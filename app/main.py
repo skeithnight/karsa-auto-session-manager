@@ -513,6 +513,11 @@ async def alpha_bridge_task(
 
                     metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
 
+                    # Anti-Whipsaw Cooldown: skip if this symbol recently took a loss
+                    if trade_memory and await trade_memory.is_in_cooldown(symbol, cooldown_mins=45):
+                        metrics.signals_skipped.labels(symbol=symbol, reason="whipsaw_cooldown").inc()
+                        continue
+
                     # Data freshness gate — skip scoring if micro-structure data is stale
                     if alpha_metrics.is_stale(symbol):
                         logger.warning(
@@ -1318,9 +1323,27 @@ async def main() -> None:
 
     bybit_client = BybitClient()
     await bybit_client.connect()
+    
+    # CRITICAL FIX: Sync precise tick and lot sizes from CCXT to BybitClient 
+    # to prevent catastrophic 0.01 fallbacks if Bybit API rate limits on startup
+    if "bybit" in ccxt_manager.markets_loaded:
+        bybit_exchange = ccxt_manager.exchanges["bybit"]
+        for sym, market in bybit_exchange.markets.items():
+            if market.get("linear"):
+                base_sym = sym.split(":")[0]  # HEMI/USDT:USDT -> HEMI/USDT
+                price_tick = market.get("precision", {}).get("price")
+                amount_tick = market.get("precision", {}).get("amount")
+                min_qty = market.get("limits", {}).get("amount", {}).get("min")
+                if price_tick:
+                    bybit_client._price_ticks[base_sym] = Decimal(str(price_tick))
+                if amount_tick:
+                    bybit_client._lot_sizes[base_sym] = Decimal(str(amount_tick))
+                if min_qty:
+                    bybit_client._min_qty[base_sym] = Decimal(str(min_qty))
+
     metrics.bybit_status.set(1)  # Bybit connected
     alert_service = AlertService(settings.telegram_chat_id)
-    sor = SmartOrderRouter(bybit_client, alert_service=alert_service)
+    sor = SmartOrderRouter(bybit_client, alert_service=alert_service, redis_client=redis_client)
     circuit_breaker = CircuitBreaker(
         alert_service=alert_service, redis_client=redis_client
     )
@@ -1358,6 +1381,7 @@ async def main() -> None:
     active_position_manager = ActivePositionManager(
         bybit_client=bybit_client,
         position_store=position_store,
+        redis_client=redis_client,
         regime_classifier=regime_classifier,
         alert_service=alert_service,
     )

@@ -96,17 +96,21 @@ class DynamicUniverseScanner:
     async def start(self) -> None:
         """Main loop — refreshes on interval until stop()."""
         self._running = True
-        self._session = ccxt.bybit({
-            "apiKey": self._api_key,
-            "secret": self._api_secret,
-            "options": {"defaultType": "swap"},
-        })
+        self._session = ccxt.bybit(
+            {
+                "apiKey": self._api_key,
+                "secret": self._api_secret,
+                "options": {"defaultType": "swap"},
+            }
+        )
         if self._testnet:
             self._session.set_sandbox_mode(True)
 
         logger.info(
             "UniverseScanner: starting top_n=%d min_vol=$%.0f interval=%ds",
-            self._top_n, self._min_vol, self._interval,
+            self._top_n,
+            self._min_vol,
+            self._interval,
         )
 
         while self._running:
@@ -156,11 +160,13 @@ class DynamicUniverseScanner:
                 continue
             base = symbol.split(":")[0]
             percentage = float(ticker.get("percentage") or 0)
-            candidates.append({
-                "symbol": base,
-                "volume_usd": vol_usd,
-                "percentage": percentage,
-            })
+            candidates.append(
+                {
+                    "symbol": base,
+                    "volume_usd": vol_usd,
+                    "percentage": percentage,
+                }
+            )
 
         if not candidates:
             logger.warning("UniverseScanner: no candidates above volume threshold")
@@ -168,7 +174,8 @@ class DynamicUniverseScanner:
 
         logger.info(
             "UniverseScanner: %d candidates above $%.0f volume",
-            len(candidates), self._min_vol,
+            len(candidates),
+            self._min_vol,
         )
 
         # 3. Compute ATR for top candidates (cap to limit API calls)
@@ -186,18 +193,18 @@ class DynamicUniverseScanner:
         max_vol = max(c["volume_usd"] for c in candidates) or 1.0
         max_atr = max(c.get("atr", 0) for c in candidates) or 1.0
         max_pct = max(abs(c.get("percentage", 0)) for c in candidates) or 1.0
-        
+
         for cand in candidates:
             norm_vol = cand["volume_usd"] / max_vol
             norm_atr = cand.get("atr", 0) / max_atr if max_atr > 0 else 0.0
-            
+
             # Use absolute percentage for momentum, but penalize negative moves slightly
             pct = cand.get("percentage", 0)
             abs_pct = abs(pct)
             norm_pct = abs_pct / max_pct if max_pct > 0 else 0.0
             if pct < 0:
                 norm_pct *= 0.7  # Prefer gainers over losers
-                
+
             cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3
 
         # 5. Sort by composite score, take top N
@@ -244,7 +251,9 @@ class DynamicUniverseScanner:
         }
         try:
             await self._redis.set(REDIS_UNIVERSE_KEY, json.dumps(payload, default=str))
-            await self._redis.set(REDIS_SCANNER_STATUS_KEY, json.dumps(status_data, default=str))
+            await self._redis.set(
+                REDIS_SCANNER_STATUS_KEY, json.dumps(status_data, default=str)
+            )
             metrics.universe_size.set(len(self.symbols))
         except Exception:
             logger.exception("UniverseScanner: Redis write failed")
@@ -255,7 +264,9 @@ class DynamicUniverseScanner:
             logger.info("UniverseScanner: keeping %d cached symbols", len(self.symbols))
             return list(self.symbols)
         if self._fallback:
-            logger.info("UniverseScanner: using %d fallback config symbols", len(self._fallback))
+            logger.info(
+                "UniverseScanner: using %d fallback config symbols", len(self._fallback)
+            )
             self.symbols = list(self._fallback)
             return list(self.symbols)
         return []

@@ -73,7 +73,9 @@ class Watchdog:
                 logger.debug(f"start: error={e}")
                 restart_count += 1
                 if restart_count >= max_restarts:
-                    logger.critical(f"Watchdog crashed {max_restarts}x in a row — giving up")
+                    logger.critical(
+                        f"Watchdog crashed {max_restarts}x in a row — giving up"
+                    )
                     self.running = False
                     break
                 logger.warning(f"Watchdog restart {restart_count}/{max_restarts}")
@@ -142,9 +144,13 @@ class Watchdog:
 
         if lag > self.max_event_loop_lag:
             self._high_lag_streak += 1
-            logger.warning(f"Event loop lag: {lag*1000:.1f}ms (streak: {self._high_lag_streak})")
+            logger.warning(
+                f"Event loop lag: {lag * 1000:.1f}ms (streak: {self._high_lag_streak})"
+            )
             if self._high_lag_streak >= self._max_lag_streak:
-                logger.critical(f"Event loop lag sustained {self._high_lag_streak}x — flattening positions")
+                logger.critical(
+                    f"Event loop lag sustained {self._high_lag_streak}x — flattening positions"
+                )
                 if self.sor:
                     try:
                         await self.sor.flatten_all_positions()
@@ -164,7 +170,9 @@ class Watchdog:
         metrics.execution_latency.observe(avg)
         if avg > self._max_latency_avg:
             if not self.sor.skip_to_market:
-                logger.warning(f"High execution latency: {avg:.1f}s — SOR switching to market-only")
+                logger.warning(
+                    f"High execution latency: {avg:.1f}s — SOR switching to market-only"
+                )
                 self.sor.skip_to_market = True
         elif self.sor.skip_to_market:
             logger.info(f"Latency recovered: {avg:.1f}s — SOR resuming normal routing")
@@ -191,7 +199,9 @@ class Watchdog:
         logger.debug("get_status: entering")
         result = {
             "running": self.running,
-            "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
+            "last_heartbeat": self.last_heartbeat.isoformat()
+            if self.last_heartbeat
+            else None,
             "check_interval": self.check_interval,
             "alpha_paused": self.alpha_paused.is_set() if self.alpha_paused else False,
             "high_lag_streak": self._high_lag_streak,

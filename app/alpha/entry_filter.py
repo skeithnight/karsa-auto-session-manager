@@ -15,10 +15,10 @@ from loguru import logger
 
 # Regime-dependent spread limits (max spread_pct allowed)
 REGIME_SPREAD_LIMITS: dict[str, float] = {
-    "TREND_BULL": 0.001,   # 0.10% — tight for clean breakouts
-    "TREND_BEAR": 0.001,   # 0.10% — tight for clean breakouts
-    "RANGE": 0.0015,       # 0.15% — standard for mean-reversion
-    "CHOP": 0.003,         # 0.30% — relaxed for liquidity sweep events
+    "TREND_BULL": 0.001,  # 0.10% — tight for clean breakouts
+    "TREND_BEAR": 0.001,  # 0.10% — tight for clean breakouts
+    "RANGE": 0.0015,  # 0.15% — standard for mean-reversion
+    "CHOP": 0.003,  # 0.30% — relaxed for liquidity sweep events
     "MEAN_REVERSION": 0.0015,
 }
 
@@ -86,7 +86,10 @@ class EntryFilter:
             logger.debug(
                 f"check: returning False (spread {spread_pct:.4f} > {effective_spread_limit} [{regime}])"
             )
-            return False, f"spread {spread_pct:.4f} > {effective_spread_limit} [{regime}]"
+            return (
+                False,
+                f"spread {spread_pct:.4f} > {effective_spread_limit} [{regime}]",
+            )
 
         # 3. ATR volatility filter (skip dead or chaotic markets)
         if atr is not None:

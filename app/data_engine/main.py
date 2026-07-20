@@ -64,12 +64,16 @@ async def _ingest_historical(
     Returns:
         Number of candles upserted.
     """
-    candles = await connector.fetch_all_candles(symbol, timeframe, days=_HISTORICAL_DAYS)
+    candles = await connector.fetch_all_candles(
+        symbol, timeframe, days=_HISTORICAL_DAYS
+    )
     if not candles:
         return 0
 
     async with pool.acquire() as conn:
-        inserted = await bulk_upsert(conn, connector.exchange_id, symbol, timeframe, candles)
+        inserted = await bulk_upsert(
+            conn, connector.exchange_id, symbol, timeframe, candles
+        )
 
     logger.info("historical ingest: %d candles for %s %s", inserted, symbol, timeframe)
     return inserted
@@ -140,8 +144,12 @@ async def _regime_metrics_loop(
 
     while not shutdown_event.is_set():
         try:
-            candles_1h = await ohlcv_fetcher.fetch("BTC/USDT", "1h", 200, ttl_seconds=900)
-            candles_4h = await ohlcv_fetcher.fetch("BTC/USDT", "4h", 60, ttl_seconds=3600)
+            candles_1h = await ohlcv_fetcher.fetch(
+                "BTC/USDT", "1h", 200, ttl_seconds=900
+            )
+            candles_4h = await ohlcv_fetcher.fetch(
+                "BTC/USDT", "4h", 60, ttl_seconds=3600
+            )
 
             if candles_1h and len(candles_1h) >= 200:
                 regime, hurst, adx = await asyncio.to_thread(
@@ -152,11 +160,21 @@ async def _regime_metrics_loop(
                 metrics.regime_adx.set(adx)
                 adx_4h = 0.0
                 if candles_4h and len(candles_4h) >= 50:
-                    _, _, adx_4h = await asyncio.to_thread(regime_engine.classify, candles_4h, 50)
+                    _, _, adx_4h = await asyncio.to_thread(
+                        regime_engine.classify, candles_4h, 50
+                    )
                     metrics.regime_adx_4h.set(adx_4h)
-                logger.info("BTC regime: %s (hurst=%.4f adx=%.2f adx_4h=%.2f)", regime, hurst, adx, adx_4h)
+                logger.info(
+                    "BTC regime: %s (hurst=%.4f adx=%.2f adx_4h=%.2f)",
+                    regime,
+                    hurst,
+                    adx,
+                    adx_4h,
+                )
             else:
-                logger.warning("Insufficient BTC candles: %d", len(candles_1h) if candles_1h else 0)
+                logger.warning(
+                    "Insufficient BTC candles: %d", len(candles_1h) if candles_1h else 0
+                )
         except Exception:
             logger.exception("regime_metrics_loop error")
 
@@ -175,7 +193,11 @@ async def _asm_session_loop(
     await session_manager.run_loop()
 
 
-async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, shutdown_event: asyncio.Event | None = None) -> None:  # noqa: PLR0915, PLR0912
+async def _run_engine(
+    settings: Any,
+    emitter: TelemetryEmitter | None = None,
+    shutdown_event: asyncio.Event | None = None,
+) -> None:  # noqa: PLR0915, PLR0912
     """Main engine loop — connects exchanges, starts poll tasks.
 
     Runs DynamicUniverseScanner in background. Reads universe list from
@@ -191,12 +213,14 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
     # Determine which exchanges to connect (testnet routing via BYBIT_TESTNET env)
     exchanges: list[ExchangeConnector] = []
     if settings.bybit_api_key:
-        exchanges.append(ExchangeConnector(
-            "bybit",
-            settings.bybit_api_key,
-            settings.bybit_api_secret,
-            sandbox=settings.bybit_testnet,
-        ))
+        exchanges.append(
+            ExchangeConnector(
+                "bybit",
+                settings.bybit_api_key,
+                settings.bybit_api_secret,
+                sandbox=settings.bybit_testnet,
+            )
+        )
     if not exchanges:
         logger.error("no exchanges configured — set at least one API key in .env")
         return
@@ -226,10 +250,15 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
     extra_tasks: list[asyncio.Task] = []
     if regime_fetcher:
         extra_tasks.append(
-            asyncio.create_task(_regime_metrics_loop(regime_fetcher, shutdown_event), name="regime-metrics")
+            asyncio.create_task(
+                _regime_metrics_loop(regime_fetcher, shutdown_event),
+                name="regime-metrics",
+            )
         )
     extra_tasks.append(
-        asyncio.create_task(_asm_session_loop(redis, shutdown_event), name="asm-session")
+        asyncio.create_task(
+            _asm_session_loop(redis, shutdown_event), name="asm-session"
+        )
     )
 
     # Wait for first scan to complete
@@ -243,14 +272,18 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
 
     logger.info(
         "starting data engine: %d exchanges, %d initial symbols, timeframe=%s",
-        len(exchanges), len(initial_symbols), _POLL_TIMEFRAME,
+        len(exchanges),
+        len(initial_symbols),
+        _POLL_TIMEFRAME,
     )
 
     logger.info("starting historical ingest for %d symbols...", len(initial_symbols))
     ingest_tasks = []
     for connector in exchanges:
         for symbol in initial_symbols:
-            ingest_tasks.append(_ingest_historical(connector, symbol, _POLL_TIMEFRAME, pool))
+            ingest_tasks.append(
+                _ingest_historical(connector, symbol, _POLL_TIMEFRAME, pool)
+            )
     await asyncio.gather(*ingest_tasks, return_exceptions=True)
     logger.info("historical ingest complete.")
 
@@ -260,7 +293,9 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
         for symbol in initial_symbols:
             key = f"{connector.exchange_id}:{symbol}"
             active_tasks[key] = asyncio.create_task(
-                _poll_and_publish(connector, publisher, pool, symbol, _POLL_TIMEFRAME, emitter),
+                _poll_and_publish(
+                    connector, publisher, pool, symbol, _POLL_TIMEFRAME, emitter
+                ),
                 name=key,
             )
 
@@ -298,10 +333,17 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
                         continue
                     # Historical ingest for new symbol
                     with contextlib.suppress(Exception):
-                        await _ingest_historical(connector, symbol, _POLL_TIMEFRAME, pool)
+                        await _ingest_historical(
+                            connector, symbol, _POLL_TIMEFRAME, pool
+                        )
                     active_tasks[key] = asyncio.create_task(
                         _poll_and_publish(
-                            connector, publisher, pool, symbol, _POLL_TIMEFRAME, emitter,
+                            connector,
+                            publisher,
+                            pool,
+                            symbol,
+                            _POLL_TIMEFRAME,
+                            emitter,
                         ),
                         name=key,
                     )
@@ -309,7 +351,8 @@ async def _run_engine(settings: Any, emitter: TelemetryEmitter | None = None, sh
 
             if len(active_tasks) != len(active_symbols):
                 logger.info(
-                    "universe updated: %d active poll tasks", len(active_tasks),
+                    "universe updated: %d active poll tasks",
+                    len(active_tasks),
                 )
     finally:
         shutdown_event.set()
@@ -338,6 +381,7 @@ async def main() -> None:
 
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
+
         start_http_server(int(prom_port))
     shutdown_event = asyncio.Event()
 
@@ -356,7 +400,9 @@ async def main() -> None:
     emitter = TelemetryEmitter(get_redis(), "data-engine")
     await emitter.start()
 
-    engine_task = asyncio.create_task(_run_engine(settings, emitter, shutdown_event=shutdown_event))
+    engine_task = asyncio.create_task(
+        _run_engine(settings, emitter, shutdown_event=shutdown_event)
+    )
 
     # Wait for shutdown signal
     await shutdown_event.wait()

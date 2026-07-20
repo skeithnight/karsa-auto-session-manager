@@ -57,7 +57,9 @@ class TradeStore:
                         "entry_time": now,
                         "ai_confidence": ai_confidence,
                         "entry_regime": entry_regime,
-                        "initial_risk_per_unit": str(initial_risk_per_unit) if initial_risk_per_unit is not None else None,
+                        "initial_risk_per_unit": str(initial_risk_per_unit)
+                        if initial_risk_per_unit is not None
+                        else None,
                         "risk_profile_json": risk_profile_json,
                     },
                 )
@@ -128,7 +130,9 @@ class TradeStore:
                         f"id={trade_id or 'latest'} (already closed or missing)"
                     )
                 else:
-                    logger.info(f"Trade closed: {symbol} id={trade_id or 'latest'} pnl={pnl} reason={exit_reason}")
+                    logger.info(
+                        f"Trade closed: {symbol} id={trade_id or 'latest'} pnl={pnl} reason={exit_reason}"
+                    )
                 return updated
         except Exception as e:
             metrics.postgres_write_errors.labels(table="trades").inc()

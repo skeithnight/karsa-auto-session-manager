@@ -39,7 +39,9 @@ def _dns_query(server, hostname):
             while data[offset] != 0:
                 offset += data[offset] + 1
             offset += 1
-        rtype, rclass, ttl, rdlength = _struct.unpack(">HHIH", data[offset : offset + 10])
+        rtype, rclass, ttl, rdlength = _struct.unpack(
+            ">HHIH", data[offset : offset + 10]
+        )
         offset += 10
         if rtype == 1 and rdlength == 4:
             ip = ".".join(str(b) for b in data[offset : offset + 4])
@@ -169,15 +171,29 @@ async def _stream_orderbook(
             retries = 0  # reset backoff on success
             metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
             await redis_client.set_exchange_heartbeat(exchange_id)
-            exchange_data = normalizer.normalize_orderbook(orderbook, exchange_id, symbol)
+            exchange_data = normalizer.normalize_orderbook(
+                orderbook, exchange_id, symbol
+            )
             exchange_data = bad_tick_filter.filter_orderbook(exchange_data)
             if exchange_data.is_stale:
-                metrics.bad_tick_rejected.labels(exchange=exchange_id, symbol=symbol).inc()
-            metrics.orderbook_normalized.labels(exchange=exchange_id, symbol=symbol).inc()
+                metrics.bad_tick_rejected.labels(
+                    exchange=exchange_id, symbol=symbol
+                ).inc()
+            metrics.orderbook_normalized.labels(
+                exchange=exchange_id, symbol=symbol
+            ).inc()
 
             # Feed lead-lag buffer with mid price
-            best_bid = max(exchange_data.bids, key=lambda x: x[0])[0] if exchange_data.bids else None
-            best_ask = min(exchange_data.asks, key=lambda x: x[0])[0] if exchange_data.asks else None
+            best_bid = (
+                max(exchange_data.bids, key=lambda x: x[0])[0]
+                if exchange_data.bids
+                else None
+            )
+            best_ask = (
+                min(exchange_data.asks, key=lambda x: x[0])[0]
+                if exchange_data.asks
+                else None
+            )
             if best_bid and best_ask:
                 mid = (float(best_bid) + float(best_ask)) / 2
                 lead_lag_buffer.update(symbol, exchange_id, mid)
@@ -190,30 +206,54 @@ async def _stream_orderbook(
                         {
                             "global_vwap": str(global_state.global_vwap),
                             "aggregate_skew": global_state.aggregate_skew,
-                            "best_bid": (str(global_state.best_bid) if global_state.best_bid else None),
-                            "best_ask": (str(global_state.best_ask) if global_state.best_ask else None),
-                            "total_volume": (str(global_state.total_volume) if global_state.total_volume else None),
+                            "best_bid": (
+                                str(global_state.best_bid)
+                                if global_state.best_bid
+                                else None
+                            ),
+                            "best_ask": (
+                                str(global_state.best_ask)
+                                if global_state.best_ask
+                                else None
+                            ),
+                            "total_volume": (
+                                str(global_state.total_volume)
+                                if global_state.total_volume
+                                else None
+                            ),
                             "updated_at": global_state.updated_at.isoformat(),
                         },
                     )
                     metrics.global_state_written.labels(symbol=symbol).inc()
                     if global_state.global_vwap is not None:
-                        metrics.vwap_value.labels(symbol=symbol).set(float(global_state.global_vwap))
+                        metrics.vwap_value.labels(symbol=symbol).set(
+                            float(global_state.global_vwap)
+                        )
                     if global_state.aggregate_skew is not None:
-                        metrics.skew_value.labels(symbol=symbol).set(float(global_state.aggregate_skew))
+                        metrics.skew_value.labels(symbol=symbol).set(
+                            float(global_state.aggregate_skew)
+                        )
         except asyncio.CancelledError:
             logger.info(f"Stream {exchange_id}/{symbol} cancelled")
             raise
         except Exception as e:
             retries += 1
-            metrics.orderbook_errors.labels(exchange=exchange_id, symbol=symbol, error_type=type(e).__name__).inc()
-            logger.warning(f"Stream {exchange_id}/{symbol} error (attempt {retries}): {e}")
+            metrics.orderbook_errors.labels(
+                exchange=exchange_id, symbol=symbol, error_type=type(e).__name__
+            ).inc()
+            logger.warning(
+                f"Stream {exchange_id}/{symbol} error (attempt {retries}): {e}"
+            )
             if retries >= 10:
-                logger.error(f"Stream {exchange_id}/{symbol} gave up after {retries} retries")
+                logger.error(
+                    f"Stream {exchange_id}/{symbol} gave up after {retries} retries"
+                )
                 break
             # Exponential backoff with jitter to prevent thundering herd
             delay = min(2 ** min(retries, 6), 30) + random.random()
-            logger.info(f"Stream {exchange_id}/{symbol} retry {retries} in {delay:.1f}s")
+            logger.info(
+                f"Stream {exchange_id}/{symbol} retry {retries} in {delay:.1f}s"
+            )
             await asyncio.sleep(delay)
     logger.debug(f"Stream {exchange_id}/{symbol} exiting")
 
@@ -285,7 +325,9 @@ async def alpha_bridge_task(
     logger.info("Alpha Bridge starting...")
     _signal_cooldown: dict[str, float] = {}
     SIGNAL_COOLDOWN_SECONDS = 45
-    SIGNAL_TTL_S = 5  # Signal expires after 5 seconds — micro-structure alpha decays fast
+    SIGNAL_TTL_S = (
+        5  # Signal expires after 5 seconds — micro-structure alpha decays fast
+    )
     _loop_count = 0
 
     while not kill_switch.is_set():
@@ -300,7 +342,9 @@ async def alpha_bridge_task(
                     refreshed = universe_data.get("symbols", [])
                     if refreshed:
                         symbols = refreshed
-                        logger.info(f"Alpha bridge universe refreshed: {len(symbols)} symbols")
+                        logger.info(
+                            f"Alpha bridge universe refreshed: {len(symbols)} symbols"
+                        )
             except Exception as _ue:
                 logger.warning(f"Universe refresh read failed: {_ue}")
 
@@ -315,9 +359,18 @@ async def alpha_bridge_task(
                 state = await redis_client.get_global_state(symbol)
                 if state:
                     raw_vwap = state.get("global_vwap")
-                    vwap = Decimal(str(raw_vwap)) if raw_vwap and str(raw_vwap) not in ("None", "null") else None
+                    vwap = (
+                        Decimal(str(raw_vwap))
+                        if raw_vwap and str(raw_vwap) not in ("None", "null")
+                        else None
+                    )
                     raw_skew = state.get("aggregate_skew")
-                    skew = float(raw_skew) if raw_skew is not None and str(raw_skew) not in ("None", "null") else 0.0
+                    skew = (
+                        float(raw_skew)
+                        if raw_skew is not None
+                        and str(raw_skew) not in ("None", "null")
+                        else 0.0
+                    )
 
                     # Read per-symbol regime from Redis (set by regime_engine_task)
                     raw_sym_regime = await redis_client.get_symbol_regime(symbol)
@@ -327,7 +380,11 @@ async def alpha_bridge_task(
 
                         try:
                             parsed = json.loads(raw_sym_regime)
-                            regime = parsed.get("regime", "CHOP") if isinstance(parsed, dict) else str(parsed)
+                            regime = (
+                                parsed.get("regime", "CHOP")
+                                if isinstance(parsed, dict)
+                                else str(parsed)
+                            )
                         except json.JSONDecodeError:
                             regime = str(raw_sym_regime)
 
@@ -366,7 +423,9 @@ async def alpha_bridge_task(
                         atr=float(atr_val) if atr_val else None,
                     )
                     if not entry_ok:
-                        metrics.signals_skipped.labels(symbol=symbol, reason=f"entry_filter:{entry_reason}").inc()
+                        metrics.signals_skipped.labels(
+                            symbol=symbol, reason=f"entry_filter:{entry_reason}"
+                        ).inc()
                         logger.debug(f"Entry filtered {symbol}: {entry_reason}")
                         continue
 
@@ -375,7 +434,9 @@ async def alpha_bridge_task(
                     # Replaces CHOP hard-block with regime-aware scoring.
                     # Fetch funding + OI early — StrategyRouter needs them for CHOP confluence.
                     _funding_rate = await alpha_metrics.get_funding_rate(symbol)
-                    funding_float = float(_funding_rate) if _funding_rate is not None else None
+                    funding_float = (
+                        float(_funding_rate) if _funding_rate is not None else None
+                    )
                     oi_val = await alpha_metrics.get_open_interest(symbol)
                     oi_prev = alpha_metrics._oi_cache.get(symbol)
                     oi_change = None
@@ -395,22 +456,36 @@ async def alpha_bridge_task(
                             regime_enum = _regime_map.get(regime, MarketRegime.CHOP)
 
                             # Preliminary direction from skew for scoring
-                            _direction = "LONG" if skew > 0 else ("SHORT" if skew < 0 else "FLAT")
+                            _direction = (
+                                "LONG"
+                                if skew > 0
+                                else ("SHORT" if skew < 0 else "FLAT")
+                            )
                             if _direction == "FLAT":
-                                metrics.signals_skipped.labels(symbol=symbol, reason="strategy_neutral_skew").inc()
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="strategy_neutral_skew"
+                                ).inc()
                                 continue
 
-                            strategy_score, vol_factor = strategy_router.evaluate_signal(
-                                candles=candles_1h if candles_1h else [],
-                                regime=regime_enum,
-                                direction=_direction,
-                                funding_rate=funding_float,
-                                orderbook_delta=-skew,  # CHOP fades the skew (contrarian)
-                                global_prices=lead_lag_buffer.get_latest_prices(symbol),
-                                oi_change=oi_change,
+                            strategy_score, vol_factor = (
+                                strategy_router.evaluate_signal(
+                                    candles=candles_1h if candles_1h else [],
+                                    regime=regime_enum,
+                                    direction=_direction,
+                                    funding_rate=funding_float,
+                                    orderbook_delta=-skew,  # CHOP fades the skew (contrarian)
+                                    global_prices=lead_lag_buffer.get_latest_prices(
+                                        symbol
+                                    ),
+                                    oi_change=oi_change,
+                                )
                             )
-                            metrics.strategy_score.labels(symbol=symbol, regime=regime).observe(strategy_score)
-                            from app.alpha.strategy_router import STRATEGY_GATE_THRESHOLD
+                            metrics.strategy_score.labels(
+                                symbol=symbol, regime=regime
+                            ).observe(strategy_score)
+                            from app.alpha.strategy_router import (
+                                STRATEGY_GATE_THRESHOLD,
+                            )
 
                             effective_gate = STRATEGY_GATE_THRESHOLD * vol_factor
                             if strategy_score < effective_gate:
@@ -425,7 +500,8 @@ async def alpha_bridge_task(
                                 )
                                 continue
                             logger.info(
-                                f"StrategyRouter passed {symbol}: " f"score={strategy_score:.0f} regime={regime}"
+                                f"StrategyRouter passed {symbol}: "
+                                f"score={strategy_score:.0f} regime={regime}"
                             )
                         except Exception as e:
                             logger.warning(f"StrategyRouter error {symbol}: {e}")
@@ -439,8 +515,12 @@ async def alpha_bridge_task(
 
                     # Data freshness gate — skip scoring if micro-structure data is stale
                     if alpha_metrics.is_stale(symbol):
-                        logger.warning("Alpha stale: %s — skipping signal generation", symbol)
-                        metrics.signals_skipped.labels(symbol=symbol, reason="stale_data").inc()
+                        logger.warning(
+                            "Alpha stale: %s — skipping signal generation", symbol
+                        )
+                        metrics.signals_skipped.labels(
+                            symbol=symbol, reason="stale_data"
+                        ).inc()
                         continue
 
                     signal = signal_generator.generate(
@@ -465,7 +545,9 @@ async def alpha_bridge_task(
                                 logger.info(
                                     f"Multi-TF BLOCK {symbol}: {signal.direction} contradicts 4H trend — skipping"
                                 )
-                                metrics.signals_skipped.labels(symbol=symbol, reason="multi_tf_blocked").inc()
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="multi_tf_blocked"
+                                ).inc()
                                 continue
                             elif mtf["penalty_applied"] < 1:
                                 signal.confidence *= float(mtf["penalty_applied"])
@@ -476,21 +558,27 @@ async def alpha_bridge_task(
                                     logger.info(
                                         f"Multi-TF penalty killed {symbol}: conf={signal.confidence:.3f} < {signal_generator.min_confidence}"
                                     )
-                                    metrics.signals_skipped.labels(symbol=symbol, reason="mtf_penalty_low").inc()
+                                    metrics.signals_skipped.labels(
+                                        symbol=symbol, reason="mtf_penalty_low"
+                                    ).inc()
                                     continue
 
                         # AI analyst — ambiguous confidence zone (0.40-0.85)
                         if crypto_analyst and signal.confidence >= 0.40:
                             logger.info(f"AI Analyst validating {signal.symbol} signal")
                             trade_ctx = (
-                                await trade_memory.get_prompt_context(symbol=signal.symbol, regime=regime or None)
+                                await trade_memory.get_prompt_context(
+                                    symbol=signal.symbol, regime=regime or None
+                                )
                                 if trade_memory
                                 else ""
                             )
                             # Compute mid price from orderbook
                             mid_price = None
                             if best_bid and best_ask:
-                                mid_price = Decimal(str((float(best_bid) + float(best_ask)) / 2))
+                                mid_price = Decimal(
+                                    str((float(best_bid) + float(best_ask)) / 2)
+                                )
                             _analyst_start = time.time()
                             analyst_result = await crypto_analyst.analyze(
                                 symbol=signal.symbol,
@@ -510,10 +598,18 @@ async def alpha_bridge_task(
                                     import json as _json
 
                                     _output = {
-                                        "ai_confidence": analyst_result.ai_confidence if analyst_result else 0,
-                                        "direction": analyst_result.direction if analyst_result else "UNKNOWN",
-                                        "reasoning": analyst_result.reasoning if analyst_result else "parse_failed",
-                                        "deterministic_confidence": float(signal.confidence),
+                                        "ai_confidence": analyst_result.ai_confidence
+                                        if analyst_result
+                                        else 0,
+                                        "direction": analyst_result.direction
+                                        if analyst_result
+                                        else "UNKNOWN",
+                                        "reasoning": analyst_result.reasoning
+                                        if analyst_result
+                                        else "parse_failed",
+                                        "deterministic_confidence": float(
+                                            signal.confidence
+                                        ),
                                     }
                                     await trade_store.record_ai_decision(
                                         symbol=signal.symbol,
@@ -527,24 +623,46 @@ async def alpha_bridge_task(
                                         latency_ms=_analyst_ms,
                                     )
                                 except Exception as _db_err:
-                                    logger.warning(f"Failed to record ai_decision for {symbol}: {_db_err}")
+                                    logger.warning(
+                                        f"Failed to record ai_decision for {symbol}: {_db_err}"
+                                    )
                             if analyst_result:
                                 # Blend: 50% deterministic + 50% AI
-                                final_conf = signal.confidence * 0.5 + (analyst_result.ai_confidence / 100.0) * 0.5
+                                final_conf = (
+                                    signal.confidence * 0.5
+                                    + (analyst_result.ai_confidence / 100.0) * 0.5
+                                )
                                 if final_conf < 0.65:
-                                    logger.info(f"AI analyst rejected {symbol}: {analyst_result.reasoning}")
-                                    metrics.signals_skipped.labels(symbol=symbol, reason="ai_rejected").inc()
-                                    metrics.ai_analyst_rejections.labels(reason="low_confidence").inc()
+                                    logger.info(
+                                        f"AI analyst rejected {symbol}: {analyst_result.reasoning}"
+                                    )
+                                    metrics.signals_skipped.labels(
+                                        symbol=symbol, reason="ai_rejected"
+                                    ).inc()
+                                    metrics.ai_analyst_rejections.labels(
+                                        reason="low_confidence"
+                                    ).inc()
                                     continue
                                 signal.confidence = final_conf
                                 signal.metrics["ai_analyst"] = analyst_result.direction
-                                signal.metrics["ai_confidence"] = analyst_result.ai_confidence
+                                signal.metrics["ai_confidence"] = (
+                                    analyst_result.ai_confidence
+                                )
 
-                        metrics.signals_generated.labels(symbol=symbol, direction=signal.direction).inc()
-                        metrics.signal_confidence.labels(symbol=symbol).observe(float(signal.confidence))
+                        metrics.signals_generated.labels(
+                            symbol=symbol, direction=signal.direction
+                        ).inc()
+                        metrics.signal_confidence.labels(symbol=symbol).observe(
+                            float(signal.confidence)
+                        )
                         now_ts = time.time()
-                        if now_ts - _signal_cooldown.get(signal.symbol, 0) < SIGNAL_COOLDOWN_SECONDS:
-                            logger.debug(f"Signal cooldown active for {signal.symbol}, skipping")
+                        if (
+                            now_ts - _signal_cooldown.get(signal.symbol, 0)
+                            < SIGNAL_COOLDOWN_SECONDS
+                        ):
+                            logger.debug(
+                                f"Signal cooldown active for {signal.symbol}, skipping"
+                            )
                             continue
                         _signal_cooldown[signal.symbol] = now_ts
                         signal._generated_at = now_ts
@@ -558,7 +676,9 @@ async def alpha_bridge_task(
                             )
                             break
                     else:
-                        metrics.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
+                        metrics.signals_skipped.labels(
+                            symbol=symbol, reason="low_confidence"
+                        ).inc()
             except Exception as e:
                 logger.error(f"Alpha Bridge error {symbol}: {e}")
                 logger.debug(f"alpha_bridge_task: error={e}")
@@ -591,7 +711,9 @@ async def risk_gate_task(
 
         # Signal TTL — drop expired signals (micro-structure alpha decays fast)
         if signal.expires_at is not None and time.time() > signal.expires_at:
-            logger.warning(f"Signal expired for {signal.symbol} — dropping stale signal")
+            logger.warning(
+                f"Signal expired for {signal.symbol} — dropping stale signal"
+            )
             metrics.signals_skipped.labels(symbol=signal.symbol, reason="expired").inc()
             continue
 
@@ -615,7 +737,9 @@ async def risk_gate_task(
                     logger.warning(
                         f"Signal price {signal.price} deviates {deviation:.4f} from mark {mark_price} for {signal.symbol} — rejecting"
                     )
-                    metrics.signals_skipped.labels(symbol=signal.symbol, reason="price_deviation").inc()
+                    metrics.signals_skipped.labels(
+                        symbol=signal.symbol, reason="price_deviation"
+                    ).inc()
                     continue
         except Exception:
             logger.debug(f"Price deviation check failed for {signal.symbol}, allowing")
@@ -628,18 +752,28 @@ async def risk_gate_task(
                 continue
 
         decision = risk_gate.evaluate(
-            volume_24h=(Decimal(state["total_volume"]) if state.get("total_volume") else Decimal("0")),
+            volume_24h=(
+                Decimal(state["total_volume"])
+                if state.get("total_volume")
+                else Decimal("0")
+            ),
             bid_price=Decimal(state["best_bid"]),
             ask_price=Decimal(state["best_ask"]),
         )
 
         if decision["passed"]:
             metrics.risk_gate_pass.labels(symbol=signal.symbol).inc()
-            metrics.signals_completed_pipeline.labels(symbol=signal.symbol, outcome="passed").inc()
+            metrics.signals_completed_pipeline.labels(
+                symbol=signal.symbol, outcome="passed"
+            ).inc()
             await risk_queue.put(signal)
         else:
-            metrics.risk_gate_reject.labels(symbol=signal.symbol, reason=decision["failed_gate"]).inc()
-            metrics.signals_completed_pipeline.labels(symbol=signal.symbol, outcome="rejected").inc()
+            metrics.risk_gate_reject.labels(
+                symbol=signal.symbol, reason=decision["failed_gate"]
+            ).inc()
+            metrics.signals_completed_pipeline.labels(
+                symbol=signal.symbol, outcome="rejected"
+            ).inc()
             logger.warning(f"Signal rejected: {decision['failed_gate']}")
     logger.debug("risk_gate_task: returning None")
 
@@ -661,7 +795,9 @@ async def regime_engine_task(
         """Fetch 1H candles + classify single symbol."""
         try:
             async with _fetch_sem:
-                candles_raw = await ohlcv_fetcher.fetch(symbol, "1h", 200, ttl_seconds=900)
+                candles_raw = await ohlcv_fetcher.fetch(
+                    symbol, "1h", 200, ttl_seconds=900
+                )
             if not candles_raw or len(candles_raw) < 50:
                 logger.debug(
                     f"RegimeClassifier: {symbol} insufficient candles ({len(candles_raw) if candles_raw else 0})"
@@ -679,10 +815,16 @@ async def regime_engine_task(
     while not kill_switch.is_set():
         try:
             # 1. BTC global regime (legacy engine — keeps Prometheus metrics)
-            candles_1h = await ohlcv_fetcher.fetch("BTC/USDT", "1h", 200, ttl_seconds=900)
-            candles_4h = await ohlcv_fetcher.fetch("BTC/USDT", "4h", 60, ttl_seconds=3600)
+            candles_1h = await ohlcv_fetcher.fetch(
+                "BTC/USDT", "1h", 200, ttl_seconds=900
+            )
+            candles_4h = await ohlcv_fetcher.fetch(
+                "BTC/USDT", "4h", 60, ttl_seconds=3600
+            )
             if candles_1h and len(candles_1h) >= 200:
-                regime, hurst, adx = await asyncio.to_thread(regime_engine.classify_multi, candles_1h, candles_4h or [])
+                regime, hurst, adx = await asyncio.to_thread(
+                    regime_engine.classify_multi, candles_1h, candles_4h or []
+                )
                 await redis_client.set_session_config(regime)
 
                 regime_map = {
@@ -696,11 +838,17 @@ async def regime_engine_task(
                 metrics.regime_adx.set(adx)
                 adx_4h = 0.0
                 if candles_4h and len(candles_4h) >= 50:
-                    _, _, adx_4h = await asyncio.to_thread(regime_engine.classify, candles_4h, 50)
+                    _, _, adx_4h = await asyncio.to_thread(
+                        regime_engine.classify, candles_4h, 50
+                    )
                     metrics.regime_adx_4h.set(adx_4h)
-                logger.info(f"BTC regime: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})")
+                logger.info(
+                    f"BTC regime: {regime} (hurst={hurst:.4f} adx={adx:.2f} adx_4h={adx_4h:.2f})"
+                )
             else:
-                logger.warning(f"Insufficient BTC candles: {len(candles_1h) if candles_1h else 0}")
+                logger.warning(
+                    f"Insufficient BTC candles: {len(candles_1h) if candles_1h else 0}"
+                )
 
             # 2. Per-symbol regime (Phase 6.1 — classify each universe symbol)
             raw_universe = await redis_client.redis.get("system:universe:symbols")  # type: ignore[union-attr]
@@ -709,7 +857,11 @@ async def regime_engine_task(
 
                 try:
                     universe_data = _json.loads(raw_universe)
-                    symbols = universe_data.get("symbols", []) if isinstance(universe_data, dict) else []
+                    symbols = (
+                        universe_data.get("symbols", [])
+                        if isinstance(universe_data, dict)
+                        else []
+                    )
                 except (_json.JSONDecodeError, AttributeError):
                     symbols = []
                 if symbols:
@@ -779,7 +931,9 @@ async def executor_task(
                     try:
                         regime_data = _json.loads(raw_regime)
                         regime_val = (
-                            regime_data.get("regime", "CHOP") if isinstance(regime_data, dict) else str(regime_data)
+                            regime_data.get("regime", "CHOP")
+                            if isinstance(regime_data, dict)
+                            else str(regime_data)
                         )
                     except (_json.JSONDecodeError, AttributeError):
                         regime_val = str(raw_regime)
@@ -789,7 +943,9 @@ async def executor_task(
                         regime_enum = MarketRegime.CHOP
                     risk_profile = dynamic_risk_gate.get_profile(regime_enum)
             except Exception as e:
-                logger.warning(f"DynamicRiskGate failed for {signal.symbol}: {e}, using flat sizing")
+                logger.warning(
+                    f"DynamicRiskGate failed for {signal.symbol}: {e}, using flat sizing"
+                )
 
         # Record execution latency
         generated_at = getattr(signal, "_generated_at", None)
@@ -808,20 +964,28 @@ async def executor_task(
             max_pos = 5
         open_positions = await position_store.list_all()
         if len(open_positions) >= max_pos:
-            logger.warning(f"Max positions ({max_pos}) reached, skipping {signal.symbol}")
-            metrics.signals_skipped.labels(symbol=signal.symbol, reason="max_positions").inc()
+            logger.warning(
+                f"Max positions ({max_pos}) reached, skipping {signal.symbol}"
+            )
+            metrics.signals_skipped.labels(
+                symbol=signal.symbol, reason="max_positions"
+            ).inc()
             continue
 
         # Check duplicate position
         side_str = "buy" if signal.direction == "LONG" else "sell"
         if await position_store.has_position(signal.symbol, side_str):
-            logger.info(f"Already have {signal.direction} position in {signal.symbol}, skipping")
+            logger.info(
+                f"Already have {signal.direction} position in {signal.symbol}, skipping"
+            )
             continue
 
         # Sector diversity cap
         if not await sector_cap.check(signal.symbol):
             logger.warning(f"Sector cap reached for {signal.symbol}, skipping")
-            metrics.risk_gate_reject.labels(symbol=signal.symbol, reason="sector_cap").inc()
+            metrics.risk_gate_reject.labels(
+                symbol=signal.symbol, reason="sector_cap"
+            ).inc()
             continue
 
         # Get live price
@@ -843,20 +1007,30 @@ async def executor_task(
                 amount = amount * risk_profile.size_multiplier
             # Validate qty not zero after regime multiplier
             if amount <= 0:
-                logger.warning(f"Computed qty {amount} <= 0 for {signal.symbol}, skipping")
-                metrics.signals_skipped.labels(symbol=signal.symbol, reason="qty_zero").inc()
+                logger.warning(
+                    f"Computed qty {amount} <= 0 for {signal.symbol}, skipping"
+                )
+                metrics.signals_skipped.labels(
+                    symbol=signal.symbol, reason="qty_zero"
+                ).inc()
                 continue
             # Enforce Bybit's $5 USDT minimum order value
             order_value = amount * price
             if order_value < Decimal("5"):
-                logger.warning(f"Order value {order_value:.2f} USDT below $5 min for {signal.symbol}, skipping")
-                metrics.signals_skipped.labels(symbol=signal.symbol, reason="below_min_order").inc()
+                logger.warning(
+                    f"Order value {order_value:.2f} USDT below $5 min for {signal.symbol}, skipping"
+                )
+                metrics.signals_skipped.labels(
+                    symbol=signal.symbol, reason="below_min_order"
+                ).inc()
                 continue
         except Exception as e:
             logger.error(f"Balance lookup failed: {e}, skipping {signal.symbol}")
             continue
 
-        logger.info(f"Executing {signal.direction} {signal.symbol} @ {price}, amount={amount}")
+        logger.info(
+            f"Executing {signal.direction} {signal.symbol} @ {price}, amount={amount}"
+        )
 
         try:
             exec_start = time.time()
@@ -865,12 +1039,16 @@ async def executor_task(
                 side=side_str,
                 amount=amount,
                 price=price,
-                price_tick=bybit_client._price_ticks.get(signal.symbol, Decimal("0.01")),
+                price_tick=bybit_client._price_ticks.get(
+                    signal.symbol, Decimal("0.01")
+                ),
             )
             exec_latency_ms = int((time.time() - exec_start) * 1000)
 
             if result:
-                logger.info(f"SOR fill: {signal.symbol} {signal.direction} latency={exec_latency_ms}ms")
+                logger.info(
+                    f"SOR fill: {signal.symbol} {signal.direction} latency={exec_latency_ms}ms"
+                )
                 # Register position in store for trailing stop + checkpoint management
                 # Record trade entry in Postgres first to get regime
                 raw_regime_data = await redis_client.get_symbol_regime(signal.symbol)
@@ -894,7 +1072,9 @@ async def executor_task(
                 initial_risk_per_unit = None
                 risk_profile_json = None
                 if risk_profile is not None and atr_val is not None:
-                    initial_risk_per_unit = Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
+                    initial_risk_per_unit = (
+                        Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
+                    )
                     risk_profile_json = risk_profile.to_json()
                 elif risk_profile is not None:
                     # No ATR — fall back to 1% of entry price as risk estimate
@@ -911,7 +1091,9 @@ async def executor_task(
                     entry_confidence=signal.confidence,
                     regime=regime,
                     entry_regime=regime,
-                    initial_risk_per_unit=str(initial_risk_per_unit) if initial_risk_per_unit is not None else None,
+                    initial_risk_per_unit=str(initial_risk_per_unit)
+                    if initial_risk_per_unit is not None
+                    else None,
                     risk_profile_json=risk_profile_json,
                 )
                 await trade_store.record_entry(
@@ -1000,7 +1182,9 @@ async def trade_history_reconciler_task(
     logger.debug("trade_history_reconciler_task: returning")
 
 
-async def universe_refresh_task(scorer: UniverseScorer, config_symbols: list[str], interval_hours: int = 4) -> None:
+async def universe_refresh_task(
+    scorer: UniverseScorer, config_symbols: list[str], interval_hours: int = 4
+) -> None:
     """Periodic universe scorer refresh. Falls back to static config on failure."""
     logger.debug("universe_refresh_task: entering")
     while not kill_switch.is_set():
@@ -1014,7 +1198,9 @@ async def universe_refresh_task(scorer: UniverseScorer, config_symbols: list[str
     logger.debug("universe_refresh_task: returning None")
 
 
-async def kill_switch_sequence(bybit_client: BybitClient, state_manager: StateManager, sor: SmartOrderRouter) -> None:
+async def kill_switch_sequence(
+    bybit_client: BybitClient, state_manager: StateManager, sor: SmartOrderRouter
+) -> None:
     """Execute graceful shutdown: cancel orders + market-close all positions."""
     logger.critical("kill_switch_sequence: starting emergency flatten")
     try:
@@ -1039,7 +1225,9 @@ async def _get_price(redis_client: RedisClient, symbol: str) -> Decimal | None:
     return None
 
 
-def _on_task_done(task: asyncio.Task, kill_switch: asyncio.Event, critical: set) -> None:
+def _on_task_done(
+    task: asyncio.Task, kill_switch: asyncio.Event, critical: set
+) -> None:
     """Kill switch on critical task crash."""
     if task.cancelled():
         return
@@ -1066,7 +1254,9 @@ async def metrics_publisher_task(
         try:
             # 1. Update max positions
             try:
-                max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
+                max_pos = int(
+                    await redis_client.get("karsa:settings:max_positions") or 5
+                )
             except Exception:
                 max_pos = 5
 
@@ -1110,7 +1300,9 @@ async def main() -> None:
 
     ccxt_manager = CCXTManager()
     await ccxt_manager.start(testnet=settings.bybit_testnet)
-    metrics.vpn_status.set(1)  # VPN up if ccxt_manager.start() succeeded (Bybit goes through WARP)
+    metrics.vpn_status.set(
+        1
+    )  # VPN up if ccxt_manager.start() succeeded (Bybit goes through WARP)
     normalizer = Normalizer()
     bad_tick_filter = BadTickFilter()
     alpha_metrics = AlphaMetrics()
@@ -1129,14 +1321,18 @@ async def main() -> None:
     metrics.bybit_status.set(1)  # Bybit connected
     alert_service = AlertService(settings.telegram_chat_id)
     sor = SmartOrderRouter(bybit_client, alert_service=alert_service)
-    circuit_breaker = CircuitBreaker(alert_service=alert_service, redis_client=redis_client)
+    circuit_breaker = CircuitBreaker(
+        alert_service=alert_service, redis_client=redis_client
+    )
     await circuit_breaker.restore()  # Persisted halt state survives restarts
     risk_gate = RiskGate(
         min_liquidity_usd=Decimal(settings.min_liquidity_usd),
         circuit_breaker=circuit_breaker,
     )
     state_manager = StateManager(redis_client, bybit_client)
-    watchdog = Watchdog(redis_client, alpha_paused=alpha_paused, sor=sor, kill_switch=kill_switch)
+    watchdog = Watchdog(
+        redis_client, alpha_paused=alpha_paused, sor=sor, kill_switch=kill_switch
+    )
     dead_mans_switch = DeadMansSwitch()
     session_manager = AutonomousSessionManager(redis_client, kill_switch)
     ohlcv_fetcher = OHLCVFetcher(ccxt_manager.exchanges["bybit"])
@@ -1219,7 +1415,9 @@ async def main() -> None:
             logger.info(f"Backfilled {backfilled} trades from Bybit closed PnL")
     except Exception as e:
         logger.warning(f"Trade backfill failed (non-fatal): {e}")
-    trailing_stop = TrailingStopManager(position_store, bybit_client, max_loss_usd=Decimal("1.00"))
+    trailing_stop = TrailingStopManager(
+        position_store, bybit_client, max_loss_usd=Decimal("1.00")
+    )
     checkpoint_mgr = CheckpointManager(
         position_store,
         bybit_client,
@@ -1241,10 +1439,14 @@ async def main() -> None:
         try:
             reconciled = await state_manager.reconcile()
             if not reconciled:
-                logger.critical("Reconciliation failed — cannot start. Check Bybit connection.")
+                logger.critical(
+                    "Reconciliation failed — cannot start. Check Bybit connection."
+                )
                 sys.exit(1)
         except Exception as e:
-            logger.critical(f"Reconciliation failed — cannot start. Check Bybit connection. {e}")
+            logger.critical(
+                f"Reconciliation failed — cannot start. Check Bybit connection. {e}"
+            )
             sys.exit(1)
 
     # Sync positions with Bybit truth — clean orphans + create missing (skip in shadow mode)
@@ -1274,7 +1476,9 @@ async def main() -> None:
                             entry_price=entry_price,
                             amount=amount,
                         )
-                        logger.info(f"Synced missing position to Redis: {ccxt_sym} {side}")
+                        logger.info(
+                            f"Synced missing position to Redis: {ccxt_sym} {side}"
+                        )
                         # Record in Postgres so trade_store stays in sync
                         try:
                             await trade_store.record_entry(
@@ -1284,7 +1488,9 @@ async def main() -> None:
                                 entry_price=entry_price,
                             )
                         except Exception as te:
-                            logger.warning(f"Trade store record_entry failed for synced {ccxt_sym}: {te}")
+                            logger.warning(
+                                f"Trade store record_entry failed for synced {ccxt_sym}: {te}"
+                            )
         except Exception as e:
             logger.warning(f"Position sync failed (non-fatal): {e}")
 
@@ -1294,10 +1500,14 @@ async def main() -> None:
     # Dynamic symbol discovery — fetch top Bybit USDT perps by 24h volume
     # Falls back to static config list if Bybit API unavailable
     dropped = 0
-    dynamic_symbols = await ccxt_manager.fetch_bybit_perps(min_volume_usd=250_000, top_n=150)
+    dynamic_symbols = await ccxt_manager.fetch_bybit_perps(
+        min_volume_usd=250_000, top_n=150
+    )
     if dynamic_symbols:
         valid_symbols = dynamic_symbols
-        logger.info(f"Dynamic universe: {len(valid_symbols)} Bybit USDT perps (>$250k vol)")
+        logger.info(
+            f"Dynamic universe: {len(valid_symbols)} Bybit USDT perps (>$250k vol)"
+        )
     else:
         # Fallback: static config validated against Bybit
         validated = ccxt_manager.get_bybit_universe(settings.symbols)
@@ -1305,9 +1515,13 @@ async def main() -> None:
             valid_symbols = validated
             dropped = len(settings.symbols) - len(valid_symbols)
             if dropped:
-                logger.warning(f"Dropped {dropped} symbols not available on Bybit. {len(valid_symbols)} remaining.")
+                logger.warning(
+                    f"Dropped {dropped} symbols not available on Bybit. {len(valid_symbols)} remaining."
+                )
             else:
-                logger.info(f"All {len(valid_symbols)} config symbols validated on Bybit.")
+                logger.info(
+                    f"All {len(valid_symbols)} config symbols validated on Bybit."
+                )
         else:
             valid_symbols = settings.symbols
             dropped = 0
@@ -1320,7 +1534,9 @@ async def main() -> None:
             valid_symbols = [s for s in valid_symbols if s in bybit_client._symbol_map]
             bybit_dropped = bybit_before - len(valid_symbols)
             if bybit_dropped:
-                logger.warning(f"Dropped {bybit_dropped} symbols not on Bybit. {len(valid_symbols)} remaining.")
+                logger.warning(
+                    f"Dropped {bybit_dropped} symbols not on Bybit. {len(valid_symbols)} remaining."
+                )
             dropped += bybit_dropped
 
     metrics.symbol_universe_total.set(len(valid_symbols))
@@ -1405,16 +1621,28 @@ async def main() -> None:
                 trade_reconciler=trade_reconciler,
             )
         ),
-        asyncio.create_task(regime_engine_task(regime_engine, regime_classifier, ohlcv_fetcher, redis_client)),
+        asyncio.create_task(
+            regime_engine_task(
+                regime_engine, regime_classifier, ohlcv_fetcher, redis_client
+            )
+        ),
         # Phase 6.5: APM_ENABLED=True disables legacy lifecycle managers
         # Set APM_ENABLED=1 in env to activate ActivePositionManager
         *(
             []
             if APM_ENABLED
             else [
-                asyncio.create_task(trailing_stop.run(kill_switch, lambda s: _get_price(redis_client, s))),
                 asyncio.create_task(
-                    checkpoint_mgr.run(kill_switch, lambda s: _get_price(redis_client, s), state_manager)
+                    trailing_stop.run(
+                        kill_switch, lambda s: _get_price(redis_client, s)
+                    )
+                ),
+                asyncio.create_task(
+                    checkpoint_mgr.run(
+                        kill_switch,
+                        lambda s: _get_price(redis_client, s),
+                        state_manager,
+                    )
                 ),
             ]
         ),
@@ -1422,11 +1650,21 @@ async def main() -> None:
             []
             if settings.shadow_mode_enabled
             else [
-                asyncio.create_task(position_reconciler_task(bybit_client, position_store, interval_seconds=300)),
+                asyncio.create_task(
+                    position_reconciler_task(
+                        bybit_client, position_store, interval_seconds=300
+                    )
+                ),
             ]
         ),
-        asyncio.create_task(trade_history_reconciler_task(trade_reconciler, interval_seconds=900)),
-        asyncio.create_task(metrics_publisher_task(bybit_client, redis_client, position_store, kill_switch)),
+        asyncio.create_task(
+            trade_history_reconciler_task(trade_reconciler, interval_seconds=900)
+        ),
+        asyncio.create_task(
+            metrics_publisher_task(
+                bybit_client, redis_client, position_store, kill_switch
+            )
+        ),
         # Phase 6 tasks
         asyncio.create_task(
             regime_classifier.run_classification_loop(
@@ -1435,7 +1673,11 @@ async def main() -> None:
         ),
         asyncio.create_task(portfolio_risk_manager.reset_daily_state_loop()),
         asyncio.create_task(portfolio_risk_manager.monitor_circuit_breakers()),
-        asyncio.create_task(shadow_apm.run() if shadow_apm else active_position_manager.start_monitoring()),
+        asyncio.create_task(
+            shadow_apm.run()
+            if shadow_apm
+            else active_position_manager.start_monitoring()
+        ),
     ]
 
     task_names = [
@@ -1476,7 +1718,9 @@ async def main() -> None:
 
     # Kill switch on critical task death
     for t in tasks:
-        t.add_done_callback(lambda task: _on_task_done(task, kill_switch, CRITICAL_TASKS))
+        t.add_done_callback(
+            lambda task: _on_task_done(task, kill_switch, CRITICAL_TASKS)
+        )
 
     logger.info(f"All components started. Monitoring {len(valid_symbols)} symbols.")
 

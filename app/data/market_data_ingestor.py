@@ -127,27 +127,39 @@ class MarketDataIngestor:
 
         try:
             await self._fetch_orderbook(symbol, ccxt_sym)
-            metrics.data_fetch_total.labels(symbol=symbol, field="orderbook", result="success").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="orderbook", result="success"
+            ).inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "orderbook", e)
-            metrics.data_fetch_total.labels(symbol=symbol, field="orderbook", result="failure").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="orderbook", result="failure"
+            ).inc()
 
         try:
             await self._fetch_funding_rate(symbol, ccxt_sym)
-            metrics.data_fetch_total.labels(symbol=symbol, field="funding", result="success").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="funding", result="success"
+            ).inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "funding", e)
-            metrics.data_fetch_total.labels(symbol=symbol, field="funding", result="failure").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="funding", result="failure"
+            ).inc()
 
         try:
             await self._fetch_oi(symbol, ccxt_sym)
-            metrics.data_fetch_total.labels(symbol=symbol, field="oi", result="success").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="oi", result="success"
+            ).inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "OI", e)
-            metrics.data_fetch_total.labels(symbol=symbol, field="oi", result="failure").inc()
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="oi", result="failure"
+            ).inc()
 
         if cycle_failures == 0:
             self._failure_counts[symbol] = 0
@@ -156,7 +168,9 @@ class MarketDataIngestor:
         else:
             last_ts = self._last_fetch_ts.get(symbol)
             if last_ts is not None:
-                metrics.data_age_seconds.labels(symbol=symbol).set(time.time() - last_ts)
+                metrics.data_age_seconds.labels(symbol=symbol).set(
+                    time.time() - last_ts
+                )
 
     def _log_fetch_failure(self, symbol: str, field: str, error: Exception) -> None:
         """Log fetch failure with escalation after threshold consecutive misses."""
@@ -171,7 +185,9 @@ class MarketDataIngestor:
                 error,
             )
         else:
-            logger.debug("MarketDataIngestor: %s fetch failed %s — %s", field, symbol, error)
+            logger.debug(
+                "MarketDataIngestor: %s fetch failed %s — %s", field, symbol, error
+            )
 
     async def _fetch_orderbook(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch L2 orderbook and compute bid/ask volume imbalance.
@@ -220,7 +236,9 @@ class MarketDataIngestor:
         """
         try:
             oi_data = await self._session.fetch_open_interest(ccxt_sym)  # type: ignore[union-attr]
-            current_oi = float(oi_data.get("openInterestAmount") or oi_data.get("openInterest") or 0)
+            current_oi = float(
+                oi_data.get("openInterestAmount") or oi_data.get("openInterest") or 0
+            )
         except (AttributeError, TypeError):
             current_oi = 0.0
 
@@ -238,7 +256,9 @@ class MarketDataIngestor:
         try:
             await self._redis.set(f"{REDIS_KEY_PREFIX}:{symbol}:{field}", value)
         except Exception:
-            logger.debug("MarketDataIngestor: redis publish %s failed %s", field, symbol)
+            logger.debug(
+                "MarketDataIngestor: redis publish %s failed %s", field, symbol
+            )
 
     def update_consumer(self, consumer: Any) -> None:
         """Push latest values into a MarketConsumer's dicts.

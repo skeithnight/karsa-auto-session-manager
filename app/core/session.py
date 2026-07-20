@@ -33,7 +33,9 @@ class AutonomousSessionManager:
         interval_min: int = 15,
     ) -> None:
         """Start autonomous session — write config to Redis."""
-        logger.debug(f"start_session: entering duration_min={duration_min} risk_pct={risk_pct}")
+        logger.debug(
+            f"start_session: entering duration_min={duration_min} risk_pct={risk_pct}"
+        )
         config = {
             "risk_pct": risk_pct,
             "max_pos": max_pos,
@@ -101,9 +103,13 @@ class AutonomousSessionManager:
                                 await self.stop_session()
                             else:
                                 remaining = config["duration_min"] - (elapsed / 60)
-                                logger.debug(f"ASM run_loop: active — {remaining:.1f}min remaining")
+                                logger.debug(
+                                    f"ASM run_loop: active — {remaining:.1f}min remaining"
+                                )
                         else:
-                            logger.debug(f"ASM run_loop: active — no duration limit, config={config}")
+                            logger.debug(
+                                f"ASM run_loop: active — no duration limit, config={config}"
+                            )
                     else:
                         logger.warning("ASM run_loop: active but no config found")
                 else:

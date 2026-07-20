@@ -12,6 +12,7 @@ Checks:
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -88,7 +89,9 @@ class PortfolioRiskManager:
 
         except Exception:
             logger.exception("PortfolioRiskManager: exception in check() — BLOCKING")
-            return PRMResult(approved=False, reason="PRM internal error (fail-safe BLOCK)")
+            return PRMResult(
+                approved=False, reason="PRM internal error (fail-safe BLOCK)"
+            )
 
     # ------------------------------------------------------------------
     # Check 1: Correlation trap
@@ -105,11 +108,11 @@ class PortfolioRiskManager:
 
         try:
             sector = await self._sector_mapping.get_sector(symbol)  # type: ignore[attr-defined]
-            
+
             # If the sector is unknown (e.g. micro-caps), they are idiosyncratic. Don't block.
             if sector == "UNKNOWN":
                 return CheckResult(passed=True)
-                
+
             positions = await self._position_store.list_all()  # type: ignore[attr-defined]
             sector_count = 0
             for p in positions:
@@ -171,23 +174,25 @@ class PortfolioRiskManager:
             signal_entry = getattr(signal, "entry_price", None)
             signal_amount = getattr(signal, "amount", None)
             if signal_entry and signal_amount:
-                signal_notional = Decimal(str(signal_entry)) * Decimal(str(signal_amount))
+                signal_notional = Decimal(str(signal_entry)) * Decimal(
+                    str(signal_amount)
+                )
                 max_single = equity * PRM_MAX_SINGLE_POSITION_PCT
                 if signal_notional > max_single:
                     return CheckResult(
                         passed=False,
-                        reason=f"position notional {signal_notional:.2f} > {PRM_MAX_SINGLE_POSITION_PCT*100}% of equity {equity:.2f}",
+                        reason=f"position notional {signal_notional:.2f} > {PRM_MAX_SINGLE_POSITION_PCT * 100}% of equity {equity:.2f}",
                     )
 
             if gross_notional > equity * PRM_MAX_GROSS_EXPOSURE_PCT:
                 return CheckResult(
                     passed=False,
-                    reason=f"gross exposure {gross_notional:.0f} > {PRM_MAX_GROSS_EXPOSURE_PCT*100}% of equity {equity:.0f}",
+                    reason=f"gross exposure {gross_notional:.0f} > {PRM_MAX_GROSS_EXPOSURE_PCT * 100}% of equity {equity:.0f}",
                 )
             if abs(net_notional) > equity * PRM_MAX_NET_EXPOSURE_PCT:
                 return CheckResult(
                     passed=False,
-                    reason=f"net exposure {abs(net_notional):.0f} > {PRM_MAX_NET_EXPOSURE_PCT*100}% of equity {equity:.0f}",
+                    reason=f"net exposure {abs(net_notional):.0f} > {PRM_MAX_NET_EXPOSURE_PCT * 100}% of equity {equity:.0f}",
                 )
             return CheckResult(passed=True)
 
@@ -215,9 +220,13 @@ class PortfolioRiskManager:
             import json
 
             state = json.loads(raw)
-            if state.get("status") == "TRIGGERED" and state.get("reason", "").startswith("daily"):
+            if state.get("status") == "TRIGGERED" and state.get(
+                "reason", ""
+            ).startswith("daily"):
                 logger.warning("PRM: daily loss circuit breaker TRIGGERED")
-                return CheckResult(passed=False, reason=f"daily loss CB: {state.get('reason', '')}")
+                return CheckResult(
+                    passed=False, reason=f"daily loss CB: {state.get('reason', '')}"
+                )
             return CheckResult(passed=True)
 
         except Exception:
@@ -240,14 +249,22 @@ class PortfolioRiskManager:
             import json
 
             state = json.loads(raw)
-            if state.get("status") == "TRIGGERED" and "consecutive" in state.get("reason", "").lower():
+            if (
+                state.get("status") == "TRIGGERED"
+                and "consecutive" in state.get("reason", "").lower()
+            ):
                 logger.warning("PRM: consecutive loss circuit breaker TRIGGERED")
-                return CheckResult(passed=False, reason=f"consecutive loss CB: {state.get('reason', '')}")
+                return CheckResult(
+                    passed=False,
+                    reason=f"consecutive loss CB: {state.get('reason', '')}",
+                )
             return CheckResult(passed=True)
 
         except Exception:
             logger.exception("PRM: consecutive loss CB check failed — BLOCKING")
-            return CheckResult(passed=False, reason="consecutive loss CB check unavailable")
+            return CheckResult(
+                passed=False, reason="consecutive loss CB check unavailable"
+            )
 
     # ------------------------------------------------------------------
     # Daily reset loop
@@ -270,18 +287,18 @@ class PortfolioRiskManager:
                 await asyncio.sleep(300)  # Check every 5 minutes
                 if not self._redis or not self._trade_store:
                     continue
-                
+
                 # Simple logic for daily loss: check total realized PnL today
                 now = datetime.now(UTC)
                 start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
-                
+
                 # Pseudocode logic: in reality we would query TradeStore for today's trades.
                 # Assuming `get_recent_trades` exists:
-                trades = await self._trade_store.get_recent_trades(limit=100) # type: ignore
-                
+                trades = await self._trade_store.get_recent_trades(limit=100)  # type: ignore
+
                 daily_pnl = Decimal("0")
                 consecutive_losses = 0
-                
+
                 for t in trades:
                     # Filter for today
                     t_time = datetime.fromisoformat(t.get("exit_time", now.isoformat()))
@@ -292,39 +309,45 @@ class PortfolioRiskManager:
                             consecutive_losses += 1
                         else:
                             consecutive_losses = 0
-                
+
                 # Fetch equity
-                wallet = await self._bybit_client.get_wallet_balance() # type: ignore
-                equity = Decimal(str(wallet.get("balance", wallet.get("available", "0"))))
-                
+                wallet = await self._bybit_client.get_wallet_balance()  # type: ignore
+                equity = Decimal(
+                    str(wallet.get("balance", wallet.get("available", "0")))
+                )
+
                 cb_triggered = False
                 reason = ""
-                
+
                 if equity > 0 and daily_pnl < -(equity * Decimal("0.025")):
                     cb_triggered = True
                     reason = "Daily loss exceeded -2.5%"
                 elif consecutive_losses >= 3:
                     cb_triggered = True
                     reason = "3 consecutive losses detected"
-                
+
                 if cb_triggered:
                     raw = await self._redis.get("system:circuit_breaker")
                     state = _json.loads(raw) if raw else {}
-                    
+
                     if state.get("status") != "TRIGGERED":
                         # Flip to triggered
                         payload = {
-                            "status": "TRIGGERED", 
-                            "reason": reason, 
-                            "triggered_at": now.isoformat()
+                            "status": "TRIGGERED",
+                            "reason": reason,
+                            "triggered_at": now.isoformat(),
                         }
-                        await self._redis.set("system:circuit_breaker", _json.dumps(payload))
-                        logger.critical(f"PortfolioRiskManager: CIRCUIT BREAKER TRIGGERED: {reason}")
-                        
+                        await self._redis.set(
+                            "system:circuit_breaker", _json.dumps(payload)
+                        )
+                        logger.critical(
+                            f"PortfolioRiskManager: CIRCUIT BREAKER TRIGGERED: {reason}"
+                        )
+
                         if doctor:
                             # Run SystemDoctor asynchronously so it doesn't block the loop
                             asyncio.create_task(doctor.diagnose_and_treat(reason))
-                            
+
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -357,7 +380,9 @@ class PortfolioRiskManager:
                     )
                     # Clear legacy key if present
                     await self._redis.delete("circuit_breaker:HALTED")
-                    logger.info("PortfolioRiskManager: daily CB state reset at UTC midnight")
+                    logger.info(
+                        "PortfolioRiskManager: daily CB state reset at UTC midnight"
+                    )
 
             except asyncio.CancelledError:
                 raise
@@ -385,7 +410,12 @@ class PortfolioRiskManager:
                 if age_hours > 4:
                     await self._redis.set(
                         "system:circuit_breaker",
-                        _json.dumps({"status": "RESET", "reason": f"4-hour cooldown complete (Triggered {age_hours:.1f}h ago)"}),
+                        _json.dumps(
+                            {
+                                "status": "RESET",
+                                "reason": f"4-hour cooldown complete (Triggered {age_hours:.1f}h ago)",
+                            }
+                        ),
                     )
                     logger.warning("PRM: 4-hour cooldown complete, CB cleared.")
         except Exception:

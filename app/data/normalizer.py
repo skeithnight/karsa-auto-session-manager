@@ -41,7 +41,9 @@ class Normalizer:
         self, raw_data: dict, exchange_id: str, symbol: str
     ) -> ExchangeData:
         """Convert raw orderbook from any exchange to ExchangeData."""
-        logger.debug(f"normalize_orderbook: entering exchange_id={exchange_id} symbol={symbol}")
+        logger.debug(
+            f"normalize_orderbook: entering exchange_id={exchange_id} symbol={symbol}"
+        )
         try:
             bids = [
                 (Decimal(str(price)), Decimal(str(size)))
@@ -66,9 +68,13 @@ class Normalizer:
             logger.debug(f"normalize_orderbook: error={e}")
             raise
 
-    def normalize_trade(self, raw_trade: dict, exchange_id: str, symbol: str) -> ExchangeData:
+    def normalize_trade(
+        self, raw_trade: dict, exchange_id: str, symbol: str
+    ) -> ExchangeData:
         """Convert raw trade from any exchange to ExchangeData."""
-        logger.debug(f"normalize_trade: entering exchange_id={exchange_id} symbol={symbol}")
+        logger.debug(
+            f"normalize_trade: entering exchange_id={exchange_id} symbol={symbol}"
+        )
         try:
             price = Decimal(str(raw_trade.get("price", 0)))
             result = ExchangeData(
@@ -84,7 +90,9 @@ class Normalizer:
             logger.debug(f"normalize_trade: error={e}")
             raise
 
-    def build_global_state(self, symbol: str, exchanges: list[ExchangeData]) -> GlobalState:
+    def build_global_state(
+        self, symbol: str, exchanges: list[ExchangeData]
+    ) -> GlobalState:
         """Aggregate exchange data into a single GlobalState."""
         logger.debug(f"build_global_state: entering symbol={symbol}")
         active_exchanges = [e for e in exchanges if not e.is_stale]
@@ -121,7 +129,9 @@ class Normalizer:
 
             # Skew: bid vs ask volume ratio
             if total_bid_vol + total_ask_vol > 0:
-                aggregate_skew = (total_bid_vol - total_ask_vol) / (total_bid_vol + total_ask_vol)
+                aggregate_skew = (total_bid_vol - total_ask_vol) / (
+                    total_bid_vol + total_ask_vol
+                )
 
             # Best bid/ask across all active exchanges
             if all_bids:

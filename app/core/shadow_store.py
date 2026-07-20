@@ -60,8 +60,11 @@ class ShadowPositionStore(PositionStore):
 
             async with trade_store.db.engine.connect() as conn:
                 from sqlalchemy import text
+
                 result = await conn.execute(
-                    text("SELECT id, symbol, side FROM shadow_trades WHERE exit_time IS NULL")
+                    text(
+                        "SELECT id, symbol, side FROM shadow_trades WHERE exit_time IS NULL"
+                    )
                 )
                 rows = result.fetchall()
                 for row in rows:
@@ -122,7 +125,9 @@ class ShadowTradeStore(TradeStore):
                         "entry_time": now,
                         "ai_confidence": ai_confidence,
                         "entry_regime": entry_regime,
-                        "initial_risk_per_unit": str(initial_risk_per_unit) if initial_risk_per_unit is not None else None,
+                        "initial_risk_per_unit": str(initial_risk_per_unit)
+                        if initial_risk_per_unit is not None
+                        else None,
                         "risk_profile_json": risk_profile_json,
                     },
                 )

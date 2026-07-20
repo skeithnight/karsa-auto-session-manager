@@ -16,7 +16,9 @@ from app.execution.bybit_client import BybitClient
 class Position:
     """In-memory position tracker."""
 
-    def __init__(self, symbol: str, side: str, size: Decimal, entry_price: Decimal) -> None:
+    def __init__(
+        self, symbol: str, side: str, size: Decimal, entry_price: Decimal
+    ) -> None:
         logger.debug(f"Position.__init__: entering symbol={symbol}")
         self.symbol = symbol
         self.side = side
@@ -70,7 +72,9 @@ class StateManager:
         except Exception as e:
             logger.warning(f"Reconciliation degraded — Bybit unreachable: {e}")
             logger.debug(f"reconcile: error={e}")
-            logger.warning("Continuing startup — position verification deferred. Data engine and alpha bridge will run.")
+            logger.warning(
+                "Continuing startup — position verification deferred. Data engine and alpha bridge will run."
+            )
             return False  # Cannot verify positions — refuse to start to prevent duplicate risk
 
         # Build exchange state maps
@@ -89,7 +93,9 @@ class StateManager:
         # Scenario C: Ghost positions — local says position, exchange says flat
         for symbol in list(self.positions.keys()):
             if symbol not in exchange_pos_map:
-                logger.critical(f"Ghost position: {symbol} — local exists, exchange FLAT. Removing.")
+                logger.critical(
+                    f"Ghost position: {symbol} — local exists, exchange FLAT. Removing."
+                )
                 del self.positions[symbol]
 
         # Sync from exchange truth
@@ -109,18 +115,24 @@ class StateManager:
             await self.redis.set_global_state(symbol, pos.to_dict())
 
         self.reconciled = True
-        logger.info(f"Reconciliation complete — {len(self.positions)} positions, {len(self.open_orders)} orders")
+        logger.info(
+            f"Reconciliation complete — {len(self.positions)} positions, {len(self.open_orders)} orders"
+        )
         logger.debug("reconcile: returning True")
         return True
 
-    def update_position(self, symbol: str, side: str, size: Decimal, price: Decimal) -> None:
+    def update_position(
+        self, symbol: str, side: str, size: Decimal, price: Decimal
+    ) -> None:
         """Update or create position from fill."""
         logger.debug(f"update_position: entering symbol={symbol} side={side}")
         if symbol in self.positions:
             pos = self.positions[symbol]
             total_size = pos.size + size
             if total_size > 0:
-                pos.entry_price = (pos.entry_price * pos.size + price * size) / total_size
+                pos.entry_price = (
+                    pos.entry_price * pos.size + price * size
+                ) / total_size
             pos.size = total_size
             pos.side = side
             pos.updated_at = datetime.now(UTC)

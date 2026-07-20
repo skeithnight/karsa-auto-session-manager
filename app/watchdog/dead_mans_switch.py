@@ -50,14 +50,18 @@ class DeadMansSwitch:
         for attempt in range(1, max_retries + 1):
             try:
                 async with aiohttp.ClientSession() as session:
-                    async with session.get(self.url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    async with session.get(
+                        self.url, timeout=aiohttp.ClientTimeout(total=5)
+                    ) as resp:
                         if resp.status == 200:
                             metrics.dms_ping_success.inc()
                             logger.debug("Dead Man's Switch ping OK")
                             return
                         else:
                             metrics.dms_ping_failure.inc()
-                            logger.warning(f"Dead Man's Switch ping failed: {resp.status}")
+                            logger.warning(
+                                f"Dead Man's Switch ping failed: {resp.status}"
+                            )
             except Exception as e:
                 metrics.dms_ping_failure.inc()
                 logger.error(f"Dead Man's Switch ping error: {e}")

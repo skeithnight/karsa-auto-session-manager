@@ -35,7 +35,9 @@ class LeadLagBuffer:
         while buf and buf[0][0] < now - self.window_seconds:
             buf.popleft()
 
-    def get_lead_lag_delta(self, symbol: str, lead: str = "binance", lag: str = "bybit") -> float | None:
+    def get_lead_lag_delta(
+        self, symbol: str, lead: str = "binance", lag: str = "bybit"
+    ) -> float | None:
         """Return lead 15m return minus lag 15m return.
 
         Positive = lead outperforming → lag likely to catch up.

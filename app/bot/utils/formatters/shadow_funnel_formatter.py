@@ -25,19 +25,15 @@ def format_shadow_funnel(metrics: dict, performance_report: str) -> str:
         f"📡 UNIVERSE\n"
         f"  ↳ Attempted: {universe_att:,}\n"
         f"  ↳ Processed: {universe_proc:,}\n\n"
-
         f"🧠 ALPHA BRIDGE\n"
         f"  ↳ Signals Gen: {alpha_gen:,}\n"
         f"  ↳ Conf. Passed: {alpha_pass:,}\n\n"
-
         f"🤖 AI ANALYST\n"
         f"  ↳ Calls: {ai_calls:,}\n"
         f"  ↳ Approvals: {ai_appr:,}\n\n"
-
         f"🛡️ RISK GATE\n"
         f"  ↳ Passed: {risk_pass:,}\n"
         f"  ↳ Rejected: {risk_rej:,}\n\n"
-
         f"⚡ TRADE & SOR\n"
         f"  ↳ Virtual Exec: {trade_ord:,}\n"
         f"  ↳ SL Hits: {trade_sl:,}\n"
@@ -45,10 +41,15 @@ def format_shadow_funnel(metrics: dict, performance_report: str) -> str:
     )
 
     return fmt(
-        bold("👥 SHADOW FUNNEL"), "\n",
-        _dash, "\n\n",
-        pre(funnel_ui), "\n",
-        _dash, "\n\n",
-        pre(performance_report), "\n\n",
-        italic("Virtual trades executed in Shadow Mode.")
+        bold("👥 SHADOW FUNNEL"),
+        "\n",
+        _dash,
+        "\n\n",
+        pre(funnel_ui),
+        "\n",
+        _dash,
+        "\n\n",
+        pre(performance_report),
+        "\n\n",
+        italic("Virtual trades executed in Shadow Mode."),
     )

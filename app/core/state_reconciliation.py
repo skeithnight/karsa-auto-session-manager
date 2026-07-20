@@ -17,6 +17,8 @@ from decimal import Decimal
 from typing import Any
 
 from loguru import logger
+
+
 class StateReconciler:
     """Reconcile exchange state with internal stores on startup."""
 
@@ -50,7 +52,8 @@ class StateReconciler:
 
         # 3. Diff positions
         orphaned, missing, updated = self._diff_positions(
-            exchange_positions, internal_positions,
+            exchange_positions,
+            internal_positions,
         )
 
         # 4. Update internal store for any drift
@@ -195,7 +198,8 @@ class StateReconciler:
                 )
             logger.info(
                 "StateReconciler: recorded orphaned position %s %s",
-                pos["symbol"], pos["side"],
+                pos["symbol"],
+                pos["side"],
             )
         except Exception:
             logger.exception("StateReconciler: failed to record orphaned position")

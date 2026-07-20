@@ -108,6 +108,7 @@ class DecisionEngine:
             return Decimal("0.10")
         try:
             import json as _json
+
             raw = await self._redis.get("karsa:auto:config")
             if raw:
                 cfg = _json.loads(raw)
@@ -144,7 +145,12 @@ class DecisionEngine:
         metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
 
         if len(candles) < _MIN_CANDLES:
-            logger.debug("evaluate: %s — only %d candles (need %d)", symbol, len(candles), _MIN_CANDLES)
+            logger.debug(
+                "evaluate: %s — only %d candles (need %d)",
+                symbol,
+                len(candles),
+                _MIN_CANDLES,
+            )
             return None
 
         metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
@@ -173,19 +179,31 @@ class DecisionEngine:
             # Extreme Funding Rate Block
             if funding_rate is not None:
                 if direction == "LONG" and funding_rate > 0.0005:
-                    logger.info("evaluate: %s LONG blocked due to extreme positive funding %.5f", symbol, funding_rate)
+                    logger.info(
+                        "evaluate: %s LONG blocked due to extreme positive funding %.5f",
+                        symbol,
+                        funding_rate,
+                    )
                     continue
                 if direction == "SHORT" and funding_rate < -0.0005:
-                    logger.info("evaluate: %s SHORT blocked due to extreme negative funding %.5f", symbol, funding_rate)
+                    logger.info(
+                        "evaluate: %s SHORT blocked due to extreme negative funding %.5f",
+                        symbol,
+                        funding_rate,
+                    )
                     continue
 
             # Multi-Timeframe Trend Alignment Block
             if self._multi_tf:
                 mtf_res = await self._multi_tf.check(symbol, direction)
                 if mtf_res.get("blocked"):
-                    logger.info("evaluate: %s %s blocked by 4H Multi-Timeframe filter", symbol, direction)
+                    logger.info(
+                        "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
+                        symbol,
+                        direction,
+                    )
                     continue
-                    
+
                 # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
                 momentum_exemption = False
                 if len(arr) >= 24:
@@ -200,7 +218,9 @@ class DecisionEngine:
                 # Macro Anchor (Lead-Lag) Penalty
                 macro_penalty = 1.0
                 if symbol not in ["BTC/USDT", "ETH/USDT"] and not momentum_exemption:
-                    macro_penalty = await self._multi_tf.get_macro_anchor_penalty(direction)
+                    macro_penalty = await self._multi_tf.get_macro_anchor_penalty(
+                        direction
+                    )
 
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
@@ -213,27 +233,45 @@ class DecisionEngine:
                 funding_rate=funding_rate,
                 oi_change=oi_change,
             )
-            
+
             # Momentum Exemption: Do not penalize explosive gainers for their volatility
             if momentum_exemption:
-                logger.info("evaluate: %s %s has momentum exemption, bypassing volatility gate (vol_factor %.2f -> 1.0)", symbol, direction, vol_factor)
+                logger.info(
+                    "evaluate: %s %s has momentum exemption, bypassing volatility gate (vol_factor %.2f -> 1.0)",
+                    symbol,
+                    direction,
+                    vol_factor,
+                )
                 vol_factor = 1.0
-                
+
                 # If StrategyRouter scored it low (e.g. 0) because the explosive move happened a few hours ago,
                 # we force the score up to the base gate so it reaches the AI Analyst.
                 if score < float(self._gate):
-                    logger.info("evaluate: %s %s momentum exemption forcing score %.1f -> %.1f for AI Analyst review", symbol, direction, score, float(self._gate))
+                    logger.info(
+                        "evaluate: %s %s momentum exemption forcing score %.1f -> %.1f for AI Analyst review",
+                        symbol,
+                        direction,
+                        score,
+                        float(self._gate),
+                    )
                     score = float(self._gate)
-            
+
             # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
             score = score * macro_penalty
             effective_gate = float(self._gate) * vol_factor
-            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)", symbol, direction, score, effective_gate, vol_factor)
+            logger.debug(
+                "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)",
+                symbol,
+                direction,
+                score,
+                effective_gate,
+                vol_factor,
+            )
 
             if score >= effective_gate:
                 if await self.check_consecutive_losses(symbol, regime):
                     return None
-                    
+
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
                 return await self._build_signal(symbol, direction, regime, score, arr)
 
@@ -264,9 +302,11 @@ class DecisionEngine:
             if consecutive >= self._CONSECUTIVE_LOSS_THRESHOLD:
                 logger.warning(
                     "consecutive_loss_block: %s %d consecutive losses — REJECTING (cooldown)",
-                    symbol, consecutive
+                    symbol,
+                    consecutive,
                 )
                 from app.core import metrics
+
                 metrics.signal_confidence_passed_total.labels(regime=regime_str)
                 return True
             return False
@@ -335,8 +375,13 @@ class DecisionEngine:
             # Kelly Scaling: Multiply risk_pct by (score/100)
             base_risk_pct = await self._get_risk_pct()
             scaled_risk_pct = base_risk_pct * Decimal(str(score / 100.0))
-            
-            amount = self._wallet_balance * scaled_risk_pct * profile.size_multiplier / risk_distance
+
+            amount = (
+                self._wallet_balance
+                * scaled_risk_pct
+                * profile.size_multiplier
+                / risk_distance
+            )
             # Cap notional to 40% of equity (PRM single position limit)
             max_notional = self._wallet_balance * Decimal("0.40")
             if entry_price > 0:
@@ -345,7 +390,12 @@ class DecisionEngine:
                     amount = max_amount
         else:
             # Fallback: fixed base_size when balance unknown
-            amount = self._base_size * Decimal("100") * profile.size_multiplier / risk_distance
+            amount = (
+                self._base_size
+                * Decimal("100")
+                * profile.size_multiplier
+                / risk_distance
+            )
 
         # Entry fee rate (maker for post_only, taker otherwise)
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee

@@ -58,12 +58,18 @@ class AlphaBridge:
             TradeSignal if score meets threshold, else None.
         """
         # Data freshness gate — reject stale micro-structure data
-        if ingestor is not None and hasattr(ingestor, "is_stale") and ingestor.is_stale(symbol):
+        if (
+            ingestor is not None
+            and hasattr(ingestor, "is_stale")
+            and ingestor.is_stale(symbol)
+        ):
             logger.warning("AlphaBridge: %s data stale — scoring blocked", symbol)
             return None
 
         if len(candles) < self._MIN_CANDLES:
-            logger.debug("AlphaBridge: %s insufficient candles (%d/50)", symbol, len(candles))
+            logger.debug(
+                "AlphaBridge: %s insufficient candles (%d/50)", symbol, len(candles)
+            )
             return None
 
         generated_at = time.time()

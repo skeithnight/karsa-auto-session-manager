@@ -60,7 +60,7 @@ def calculate_bollinger_bands(
     window = [float(c) for c in closes[-period:]]
     middle = sum(window) / period
     variance = sum((x - middle) ** 2 for x in window) / period
-    std_dev = variance ** 0.5
+    std_dev = variance**0.5
 
     mult = float(std_dev_mult)
     upper = middle + std_dev * mult

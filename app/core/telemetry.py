@@ -23,10 +23,10 @@ from datetime import UTC, datetime
 logger = logging.getLogger("karsa.telemetry")
 
 
-SERVICE_HEARTBEAT_TTL: int = 120       # key expires 120 s after last write
+SERVICE_HEARTBEAT_TTL: int = 120  # key expires 120 s after last write
 SERVICE_HEARTBEAT_INTERVAL: float = 30  # background task writes every 30 s
-STALE_AFTER_SECONDS: float = 80        # considered stale if last_update > 80 s ago
-DEAD_AFTER_SECONDS: float = 180        # considered dead if > 180 s
+STALE_AFTER_SECONDS: float = 80  # considered stale if last_update > 80 s ago
+DEAD_AFTER_SECONDS: float = 180  # considered dead if > 180 s
 
 
 @dataclass
@@ -61,6 +61,7 @@ def _read_rss_mb() -> float:
         pass
     try:
         import resource
+
         return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (1024.0 * 1024.0)
     except (ImportError, AttributeError):
         return 0.0
@@ -210,17 +211,23 @@ async def get_all_services_health(redis_client: object) -> dict[str, ServiceHeal
         try:
             raw = await redis_client.get(key)
         except Exception:
-            result[service_name] = ServiceHealth(service_name=service_name, status="unknown")
+            result[service_name] = ServiceHealth(
+                service_name=service_name, status="unknown"
+            )
             continue
 
         if not raw:
-            result[service_name] = ServiceHealth(service_name=service_name, status="dead")
+            result[service_name] = ServiceHealth(
+                service_name=service_name, status="dead"
+            )
             continue
 
         try:
             data = json.loads(raw)
         except (json.JSONDecodeError, TypeError):
-            result[service_name] = ServiceHealth(service_name=service_name, status="dead")
+            result[service_name] = ServiceHealth(
+                service_name=service_name, status="dead"
+            )
             continue
 
         h = ServiceHealth(
@@ -263,7 +270,9 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
 
     lines: list[str] = []
     for name, h in sorted(services.items()):
-        icon = {"fresh": "✅", "stale": "⚠️", "dead": "❌", "unknown": "❓"}.get(h.status, "❓")
+        icon = {"fresh": "✅", "stale": "⚠️", "dead": "❌", "unknown": "❓"}.get(
+            h.status, "❓"
+        )
         mem = f"{h.memory_mb:.0f} MB" if h.memory_mb else "N/A"
         lines.append(
             f"{icon} <b>{name}</b>\n"

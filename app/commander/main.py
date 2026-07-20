@@ -91,7 +91,10 @@ async def scheduled_bulk_backtest_task(
             if not symbols:
                 logger.warning("scheduled_bulk_backtest_task: No symbols in universe")
             else:
-                logger.info("scheduled_bulk_backtest_task: Starting bulk backtest for %d symbols", len(symbols))
+                logger.info(
+                    "scheduled_bulk_backtest_task: Starting bulk backtest for %d symbols",
+                    len(symbols),
+                )
 
                 # 2. Submit Bulk Job
                 bulk_id = await orch.submit_bulk_job(symbols, candle_limit=500)
@@ -167,7 +170,7 @@ async def shadow_feedback_task(
         try:
             logger.info("shadow_feedback_task: running Auto-Adjustment check")
             cutoff_date = datetime.now(timezone.utc) - timedelta(days=7)
-            
+
             regime_stats = {}
             async with db_engine.engine.connect() as conn:
                 rows = await conn.execute(
@@ -182,7 +185,7 @@ async def shadow_feedback_task(
                           AND exit_reason != 'orphan_cleanup'
                         GROUP BY regime
                     """),
-                    {"cutoff": cutoff_date}
+                    {"cutoff": cutoff_date},
                 )
                 for row in rows:
                     regime = row[0]
@@ -196,7 +199,7 @@ async def shadow_feedback_task(
                         "total": total,
                         "wins": wins,
                         "net_pnl": net_pnl,
-                        "win_rate": win_rate
+                        "win_rate": win_rate,
                     }
 
             # Fetch current config
@@ -210,7 +213,9 @@ async def shadow_feedback_task(
                 if stats["total"] >= 5:
                     current_status = overrides.get(regime, "ENABLE")
                     # Disable logic
-                    if (stats["win_rate"] < 40.0 or stats["net_pnl"] < -5.0) and current_status != "DISABLE":
+                    if (
+                        stats["win_rate"] < 40.0 or stats["net_pnl"] < -5.0
+                    ) and current_status != "DISABLE":
                         overrides[regime] = "DISABLE"
                         changed = True
                         alerts.append(
@@ -221,7 +226,11 @@ async def shadow_feedback_task(
                             f"🔴 Live trading for {regime} is now <b>DISABLED</b> to protect capital."
                         )
                     # Re-enable logic
-                    elif stats["win_rate"] >= 50.0 and stats["net_pnl"] > 0 and current_status == "DISABLE":
+                    elif (
+                        stats["win_rate"] >= 50.0
+                        and stats["net_pnl"] > 0
+                        and current_status == "DISABLE"
+                    ):
                         overrides[regime] = "ENABLE"
                         changed = True
                         alerts.append(
@@ -235,7 +244,9 @@ async def shadow_feedback_task(
             if changed:
                 cfg["regime_overrides"] = overrides
                 await redis_client.redis.set("karsa:auto:config", json.dumps(cfg))
-                logger.info("shadow_feedback_task: updated regime_overrides: %s", overrides)
+                logger.info(
+                    "shadow_feedback_task: updated regime_overrides: %s", overrides
+                )
                 for alert in alerts:
                     await alert_service.send(alert, parse_mode="HTML")
 
@@ -259,6 +270,7 @@ async def main() -> None:
 
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
+
         start_http_server(int(prom_port))
     shutdown_event = asyncio.Event()
 
@@ -284,6 +296,7 @@ async def main() -> None:
     # Lazy connect — only used for wallet queries, not for trading
     try:
         from app.execution.bybit_client import BybitClient
+
         bybit_client = BybitClient()
         await bybit_client.connect()
         logger.info("bybit connected (wallet display only)")
@@ -300,6 +313,7 @@ async def main() -> None:
 
     # Session manager (reads/writes Redis config)
     from app.core.session import AutonomousSessionManager
+
     session_manager = AutonomousSessionManager(
         redis_client=redis_client,
         kill_switch=shutdown_event,
@@ -307,7 +321,11 @@ async def main() -> None:
 
     # Trade Reconciler
     trade_store = TradeStore(db_engine)
-    trade_reconciler = TradeReconciler(bybit_client, trade_store, alert_service) if bybit_client else None
+    trade_reconciler = (
+        TradeReconciler(bybit_client, trade_store, alert_service)
+        if bybit_client
+        else None
+    )
 
     # Register alert service with PTB bot after run_bot wires it
     # (AlertService lazily grabs bot from application.bot_data["bot_instance"])
@@ -371,7 +389,13 @@ async def main() -> None:
         listener_task.cancel()
         feedback_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(bot_task, bulk_task, listener_task, feedback_task, return_exceptions=True)
+            await asyncio.gather(
+                bot_task,
+                bulk_task,
+                listener_task,
+                feedback_task,
+                return_exceptions=True,
+            )
 
         # Cleanup
         await emitter.stop()

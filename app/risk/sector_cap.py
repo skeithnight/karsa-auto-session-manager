@@ -42,13 +42,20 @@ class SectorCap:
         current = counts.get(sector, 0)
 
         if current >= self.max_per_sector:
-            logger.warning(f"Sector cap: {sector} at {current}/{self.max_per_sector}, rejecting {symbol}")
+            logger.warning(
+                f"Sector cap: {sector} at {current}/{self.max_per_sector}, rejecting {symbol}"
+            )
             return False
 
-        logger.debug(f"Sector cap: {sector} at {current}/{self.max_per_sector}, allowing {symbol}")
+        logger.debug(
+            f"Sector cap: {sector} at {current}/{self.max_per_sector}, allowing {symbol}"
+        )
         return True
 
     async def get_status(self) -> dict[str, dict[str, int]]:
         """Get current sector allocation for status display."""
         counts = await self._count_by_sector()
-        return {sector: {"current": count, "max": self.max_per_sector} for sector, count in counts.items()}
+        return {
+            sector: {"current": count, "max": self.max_per_sector}
+            for sector, count in counts.items()
+        }

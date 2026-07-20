@@ -94,7 +94,9 @@ class BacktestEngine:
         Returns list of BacktestReport — one per direction tested.
         """
         if len(candles) < 50:
-            logger.debug(f"BacktestEngine: {symbol} — only {len(candles)} candles, need 50")
+            logger.debug(
+                f"BacktestEngine: {symbol} — only {len(candles)} candles, need 50"
+            )
             return []
 
         arr = np.array(candles, dtype=float)
@@ -102,10 +104,18 @@ class BacktestEngine:
 
         # Lower gate when microstructure data is missing — candle-only scoring
         # cannot reach the normal 65 threshold (CHOP max=20, TREND max=60).
-        has_microstructure = orderbook_delta is not None or funding_rate is not None or oi_change is not None
-        effective_gate = self._gate if has_microstructure else self._gate * 0.45  # 65 → 29.25
+        has_microstructure = (
+            orderbook_delta is not None
+            or funding_rate is not None
+            or oi_change is not None
+        )
+        effective_gate = (
+            self._gate if has_microstructure else self._gate * 0.45
+        )  # 65 → 29.25
         if not has_microstructure:
-            logger.debug(f"BacktestEngine: {symbol} — no microstructure data, lowered gate to {effective_gate:.1f}")
+            logger.debug(
+                f"BacktestEngine: {symbol} — no microstructure data, lowered gate to {effective_gate:.1f}"
+            )
 
         idx = 50  # minimum candles for RegimeClassifier
 
@@ -116,7 +126,9 @@ class BacktestEngine:
 
             for direction in directions:
                 score, vol_factor = self._router.evaluate_signal(
-                    context, regime, direction,
+                    context,
+                    regime,
+                    direction,
                     global_prices=global_prices,
                     orderbook_delta=orderbook_delta,
                     funding_rate=funding_rate,
@@ -164,10 +176,11 @@ class BacktestEngine:
             # If no trade was taken, advance 1 bar
             # "not scored" means zero directions were tested (empty directions list)
             # "no trade" means directions were tested but all scored below gate
-            trade_taken = any(
-                r.trade_taken
-                for r in reports[-len(directions):]
-            ) if directions else False
+            trade_taken = (
+                any(r.trade_taken for r in reports[-len(directions) :])
+                if directions
+                else False
+            )
             if not trade_taken:
                 idx += 1
 
@@ -193,8 +206,16 @@ class BacktestEngine:
         entry_price = self._compute_entry_price(entry_candle, direction)
 
         atr = self._calculate_atr(candles[: entry_candle_idx + 1])
-        sl_price = self._compute_sl_price(entry_price, direction, atr, profile.sl_atr_buffer)
-        tp_price = self._compute_tp_price(entry_price, direction, atr, profile.trail_atr_mult, profile.take_profit_type)
+        sl_price = self._compute_sl_price(
+            entry_price, direction, atr, profile.sl_atr_buffer
+        )
+        tp_price = self._compute_tp_price(
+            entry_price,
+            direction,
+            atr,
+            profile.trail_atr_mult,
+            profile.take_profit_type,
+        )
 
         worst_price = entry_price
         peak_price = entry_price
@@ -207,7 +228,16 @@ class BacktestEngine:
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
         risk_distance = abs(entry_price - sl_price)
-        amount = self._base_size if risk_distance <= 0 else (self._base_size * Decimal("100") * profile.size_multiplier / risk_distance)
+        amount = (
+            self._base_size
+            if risk_distance <= 0
+            else (
+                self._base_size
+                * Decimal("100")
+                * profile.size_multiplier
+                / risk_distance
+            )
+        )
 
         for j in range(entry_candle_idx + 1, len(candles)):
             bars_held += 1
@@ -233,10 +263,20 @@ class BacktestEngine:
             )
             if sl_hit:
                 return self._build_report(
-                    symbol, direction, regime, score,
-                    entry_price, sl_price, "sl_hit", sl_price,
-                    amount, profile, entry_fee_rate,
-                    entry_time, candles[j, 0], bars_held,
+                    symbol,
+                    direction,
+                    regime,
+                    score,
+                    entry_price,
+                    sl_price,
+                    "sl_hit",
+                    sl_price,
+                    amount,
+                    profile,
+                    entry_fee_rate,
+                    entry_time,
+                    candles[j, 0],
+                    bars_held,
                     accumulated_funding,
                 )
 
@@ -248,15 +288,28 @@ class BacktestEngine:
                 )
                 if tp_hit:
                     return self._build_report(
-                        symbol, direction, regime, score,
-                        entry_price, current_tp, "tp_hit", sl_price,
-                        amount, profile, entry_fee_rate,
-                        entry_time, candles[j, 0], bars_held,
+                        symbol,
+                        direction,
+                        regime,
+                        score,
+                        entry_price,
+                        current_tp,
+                        "tp_hit",
+                        sl_price,
+                        amount,
+                        profile,
+                        entry_fee_rate,
+                        entry_time,
+                        candles[j, 0],
+                        bars_held,
                         accumulated_funding,
                     )
 
             # Funding (every 8 bars)
-            if j - last_funding_bar >= self._funding_interval and self._funding_rate > 0:
+            if (
+                j - last_funding_bar >= self._funding_interval
+                and self._funding_rate > 0
+            ):
                 funding_fee = entry_price * amount * abs(self._funding_rate)
                 accumulated_funding += funding_fee
                 last_funding_bar = j
@@ -265,28 +318,58 @@ class BacktestEngine:
             max_hold_bars = profile.max_hold_time_mins // 60
             if max_hold_bars > 0 and bars_held >= max_hold_bars:
                 return self._build_report(
-                    symbol, direction, regime, score,
-                    entry_price, candle_close, "time_exit", sl_price,
-                    amount, profile, entry_fee_rate,
-                    entry_time, candles[j, 0], bars_held,
+                    symbol,
+                    direction,
+                    regime,
+                    score,
+                    entry_price,
+                    candle_close,
+                    "time_exit",
+                    sl_price,
+                    amount,
+                    profile,
+                    entry_fee_rate,
+                    entry_time,
+                    candles[j, 0],
+                    bars_held,
                     accumulated_funding,
                 )
 
             # End of data
             if j == len(candles) - 1:
                 return self._build_report(
-                    symbol, direction, regime, score,
-                    entry_price, candle_close, "end_of_data", sl_price,
-                    amount, profile, entry_fee_rate,
-                    entry_time, candles[j, 0], bars_held,
+                    symbol,
+                    direction,
+                    regime,
+                    score,
+                    entry_price,
+                    candle_close,
+                    "end_of_data",
+                    sl_price,
+                    amount,
+                    profile,
+                    entry_fee_rate,
+                    entry_time,
+                    candles[j, 0],
+                    bars_held,
                     accumulated_funding,
                 )
 
         return self._build_report(
-            symbol, direction, regime, score,
-            entry_price, Decimal("0"), "end_of_data", sl_price,
-            amount, profile, entry_fee_rate,
-            entry_time, ts_ms, 0,
+            symbol,
+            direction,
+            regime,
+            score,
+            entry_price,
+            Decimal("0"),
+            "end_of_data",
+            sl_price,
+            amount,
+            profile,
+            entry_fee_rate,
+            entry_time,
+            ts_ms,
+            0,
             accumulated_funding,
         )
 
@@ -304,8 +387,12 @@ class BacktestEngine:
         return entry_price + (atr * sl_buffer)
 
     def _compute_tp_price(
-        self, entry_price: Decimal, direction: str, atr: Decimal,
-        trail_mult: Decimal, tp_type: str,
+        self,
+        entry_price: Decimal,
+        direction: str,
+        atr: Decimal,
+        trail_mult: Decimal,
+        tp_type: str,
     ) -> Decimal | None:
         if tp_type == "TRAILING":
             return None
@@ -315,10 +402,21 @@ class BacktestEngine:
         return entry_price - offset
 
     def _build_report(
-        self, symbol, direction, regime, score,
-        entry_price, exit_price, exit_reason, sl_price,
-        amount, profile, entry_fee_rate,
-        entry_time, exit_ts_ms, bars_held,
+        self,
+        symbol,
+        direction,
+        regime,
+        score,
+        entry_price,
+        exit_price,
+        exit_reason,
+        sl_price,
+        amount,
+        profile,
+        entry_fee_rate,
+        entry_time,
+        exit_ts_ms,
+        bars_held,
         accumulated_funding,
     ) -> BacktestReport:
         exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=UTC)
@@ -334,14 +432,26 @@ class BacktestEngine:
         pnl_net = pnl_gross - total_fees - accumulated_funding
 
         return BacktestReport(
-            symbol=symbol, direction=direction, regime=regime, score=score,
-            entry_price=entry_price, exit_price=exit_price, exit_reason=exit_reason,
-            sl_price=sl_price, tp_price=None, amount=amount,
+            symbol=symbol,
+            direction=direction,
+            regime=regime,
+            score=score,
+            entry_price=entry_price,
+            exit_price=exit_price,
+            exit_reason=exit_reason,
+            sl_price=sl_price,
+            tp_price=None,
+            amount=amount,
             size_multiplier=profile.size_multiplier,
-            pnl_gross=pnl_gross, pnl_net=pnl_net,
-            total_fees=total_fees, total_funding=accumulated_funding,
-            bars_held=bars_held, entry_time=entry_time, exit_time=exit_time,
-            risk_profile=profile, trade_taken=True,
+            pnl_gross=pnl_gross,
+            pnl_net=pnl_net,
+            total_fees=total_fees,
+            total_funding=accumulated_funding,
+            bars_held=bars_held,
+            entry_time=entry_time,
+            exit_time=exit_time,
+            risk_profile=profile,
+            trade_taken=True,
         )
 
     @staticmethod
@@ -352,7 +462,11 @@ class BacktestEngine:
         highs, lows, closes = candles[:, 2], candles[:, 3], candles[:, 4]
         trs = []
         for i in range(1, n):
-            tr = max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1]))
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
             trs.append(tr)
         if len(trs) < period:
             return Decimal("0")

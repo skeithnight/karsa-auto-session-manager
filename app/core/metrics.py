@@ -641,8 +641,11 @@ def get_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": max(0, int(get_metric_sum("karsa_ai_analyst_calls"))
-        - int(get_metric_sum("karsa_ai_analyst_rejections"))),
+        "ai_approvals": max(
+            0,
+            int(get_metric_sum("karsa_ai_analyst_calls"))
+            - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        ),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
@@ -659,8 +662,11 @@ def get_live_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": max(0, int(get_metric_sum("karsa_ai_analyst_calls"))
-        - int(get_metric_sum("karsa_ai_analyst_rejections"))),
+        "ai_approvals": max(
+            0,
+            int(get_metric_sum("karsa_ai_analyst_calls"))
+            - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        ),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_orders_placed")),

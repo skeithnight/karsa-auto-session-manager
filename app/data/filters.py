@@ -22,7 +22,9 @@ class BadTickFilter:
 
     def is_bad_tick(self, data: ExchangeData) -> bool:
         """Check if a tick is a bad tick (price spike >5% in <1s)."""
-        logger.debug(f"is_bad_tick: entering exchange={data.exchange} symbol={data.symbol}")
+        logger.debug(
+            f"is_bad_tick: entering exchange={data.exchange} symbol={data.symbol}"
+        )
         if data.last_price is None:
             logger.debug("is_bad_tick: returning False (no last_price)")
             return False

@@ -69,7 +69,12 @@ def calculate_lead_lag(
 class AlphaMetrics:
     """Aggregates market data into alpha signals."""
 
-    def __init__(self, lead_exchange: str = "binance", lag_exchange: str = "bybit", exchange: Any = None) -> None:
+    def __init__(
+        self,
+        lead_exchange: str = "binance",
+        lag_exchange: str = "bybit",
+        exchange: Any = None,
+    ) -> None:
         logger.debug("AlphaMetrics.__init__: entering")
         self.lead_exchange = lead_exchange
         self.lag_exchange = lag_exchange

@@ -47,7 +47,9 @@ def _make_exchange(
     """
     supported = ("bybit", "binance", "okx")
     if exchange_id not in supported:
-        raise ValueError(f"Unsupported exchange: {exchange_id!r}. Must be one of {supported}")
+        raise ValueError(
+            f"Unsupported exchange: {exchange_id!r}. Must be one of {supported}"
+        )
 
     exchange_class = getattr(ccxt_pro, exchange_id)
     config: dict[str, Any] = {"enableRateLimit": True}
@@ -81,7 +83,9 @@ class ExchangeConnector:
         sandbox: bool = False,
     ) -> None:
         self.exchange_id = exchange_id
-        self.exchange = _make_exchange(exchange_id, api_key, api_secret, sandbox=sandbox)
+        self.exchange = _make_exchange(
+            exchange_id, api_key, api_secret, sandbox=sandbox
+        )
         self._markets_loaded = False
 
     async def _ensure_markets(self) -> None:
@@ -89,7 +93,11 @@ class ExchangeConnector:
         if not self._markets_loaded:
             await self.exchange.load_markets()
             self._markets_loaded = True
-            logger.info("ExchangeConnector: loaded %d markets for %s", len(self.exchange.markets), self.exchange_id)
+            logger.info(
+                "ExchangeConnector: loaded %d markets for %s",
+                len(self.exchange.markets),
+                self.exchange_id,
+            )
 
     def _resolve_symbol(self, symbol: str) -> str:
         """Resolve short symbol (e.g. 'BTC/USDT') to full perpetual form ('BTC/USDT:USDT').
@@ -149,17 +157,31 @@ class ExchangeConnector:
                     backoff = _RATE_LIMIT_BACKOFF_S
                     logger.warning(
                         "rate limited on %s %s (attempt %d/%d), backing off %.1fs",
-                        self.exchange_id, symbol, attempt + 1, _MAX_RETRIES, backoff,
+                        self.exchange_id,
+                        symbol,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        backoff,
                     )
                 else:
-                    backoff = _BASE_BACKOFF_S * (2 ** attempt)
+                    backoff = _BASE_BACKOFF_S * (2**attempt)
                     logger.warning(
                         "fetch_ohlcv error on %s %s (attempt %d/%d): %s — retrying in %.1fs",
-                        self.exchange_id, resolved, attempt + 1, _MAX_RETRIES, exc, backoff,
+                        self.exchange_id,
+                        resolved,
+                        attempt + 1,
+                        _MAX_RETRIES,
+                        exc,
+                        backoff,
                     )
                 await asyncio.sleep(backoff)
 
-        logger.error("fetch_ohlcv failed after %d retries for %s %s", _MAX_RETRIES, self.exchange_id, resolved)
+        logger.error(
+            "fetch_ohlcv failed after %d retries for %s %s",
+            _MAX_RETRIES,
+            self.exchange_id,
+            resolved,
+        )
         return []
 
     async def fetch_all_candles(
@@ -213,7 +235,10 @@ class ExchangeConnector:
         result = sorted(all_candles.values(), key=lambda c: c[0])
         logger.info(
             "fetched %d candles for %s %s (%d days)",
-            len(result), symbol, timeframe, days,
+            len(result),
+            symbol,
+            timeframe,
+            days,
         )
         return result
 
@@ -239,7 +264,9 @@ class ExchangeConnector:
         while True:
             try:
                 candles = await self.fetch_ohlcv(symbol, timeframe, limit=10)
-                new_candles = [c for c in candles if last_ts is None or int(c[0]) > last_ts]
+                new_candles = [
+                    c for c in candles if last_ts is None or int(c[0]) > last_ts
+                ]
 
                 if new_candles and callback is not None:
                     await callback(self.exchange_id, symbol, timeframe, new_candles)
@@ -272,5 +299,7 @@ class ExchangeConnector:
             "1w": 604_800_000,
         }
         if timeframe not in mapping:
-            raise ValueError(f"Unsupported timeframe: {timeframe!r}. Must be one of {list(mapping)}")
+            raise ValueError(
+                f"Unsupported timeframe: {timeframe!r}. Must be one of {list(mapping)}"
+            )
         return mapping[timeframe]

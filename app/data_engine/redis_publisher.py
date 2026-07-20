@@ -100,9 +100,14 @@ class RedisPublisher:
         json_str = json.dumps(payload, cls=DecimalEncoder)
 
         await self._redis.publish(channel, json_str)
-        logger.debug("published %s %s %s candle: ts=%s close=%s",
-                     exchange_id, symbol, timeframe,
-                     payload["ts"], payload["close"])
+        logger.debug(
+            "published %s %s %s candle: ts=%s close=%s",
+            exchange_id,
+            symbol,
+            timeframe,
+            payload["ts"],
+            payload["close"],
+        )
 
     async def publish_candles(
         self,
@@ -125,5 +130,8 @@ class RedisPublisher:
         for candle in candles:
             await self.publish_candle(exchange_id, symbol, timeframe, candle)
         import logging
-        logging.getLogger(__name__).info(f"published {len(candles)} candles to {exchange_id}:{symbol}:{timeframe}")
+
+        logging.getLogger(__name__).info(
+            f"published {len(candles)} candles to {exchange_id}:{symbol}:{timeframe}"
+        )
         return len(candles)

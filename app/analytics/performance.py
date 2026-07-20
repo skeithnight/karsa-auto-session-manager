@@ -69,7 +69,9 @@ class PerformanceReport:
     pnl_series: list[Decimal] = field(default_factory=list)
 
 
-def _compute_drawdown(trades: Sequence[TradeRecord]) -> tuple[list[Decimal], Decimal, Decimal, float]:
+def _compute_drawdown(
+    trades: Sequence[TradeRecord],
+) -> tuple[list[Decimal], Decimal, Decimal, float]:
     """Compute equity curve and max drawdown from trade PnL series.
 
     Returns:
@@ -111,12 +113,16 @@ def _risk_ratios(
     sharpe = (excess / std_pnl) * math.sqrt(252) if std_pnl > 0 else 0.0
     downside = [float(p) for p in pnl_decimals if float(p) < mean_pnl]
     down_var = sum((r - mean_pnl) ** 2 for r in downside)
-    down_std = math.sqrt(down_var / len(downside)) if len(downside) and down_var > 0 else 0.0
+    down_std = (
+        math.sqrt(down_var / len(downside)) if len(downside) and down_var > 0 else 0.0
+    )
     sortino = (excess / down_std) * math.sqrt(252) if down_std > 0 else 0.0
     return sharpe, sortino
 
 
-def compute_performance(trades: Sequence[TradeRecord], risk_free_rate: float = 0.02) -> PerformanceReport:
+def compute_performance(
+    trades: Sequence[TradeRecord], risk_free_rate: float = 0.02
+) -> PerformanceReport:
     """Compute full performance report from a list of TradeRecord.
 
     Args:
@@ -136,34 +142,58 @@ def compute_performance(trades: Sequence[TradeRecord], risk_free_rate: float = 0
     report.total_trades = len(trades)
     report.winning_trades = len(winners)
     report.losing_trades = len(losers)
-    report.win_rate = (report.winning_trades / report.total_trades) * 100 if report.total_trades else 0.0
+    report.win_rate = (
+        (report.winning_trades / report.total_trades) * 100
+        if report.total_trades
+        else 0.0
+    )
 
     # Gross profit / loss
     report.gross_profit = sum((t.pnl for t in winners), Decimal("0"))
     report.gross_loss = abs(sum((t.pnl for t in losers), Decimal("0")))
     report.profit_factor = (
-        float(report.gross_profit / report.gross_loss) if report.gross_loss else float("inf")
-        if report.gross_profit > 0 else 0.0
+        float(report.gross_profit / report.gross_loss)
+        if report.gross_loss
+        else float("inf")
+        if report.gross_profit > 0
+        else 0.0
     )
     report.net_pnl = report.gross_profit - report.gross_loss
 
     # Averages
-    report.avg_win = report.gross_profit / report.winning_trades if report.winning_trades else Decimal("0")
-    report.avg_loss = report.gross_loss / report.losing_trades if report.losing_trades else Decimal("0")
-    report.avg_pnl = report.net_pnl / report.total_trades if report.total_trades else Decimal("0")
+    report.avg_win = (
+        report.gross_profit / report.winning_trades
+        if report.winning_trades
+        else Decimal("0")
+    )
+    report.avg_loss = (
+        report.gross_loss / report.losing_trades
+        if report.losing_trades
+        else Decimal("0")
+    )
+    report.avg_pnl = (
+        report.net_pnl / report.total_trades if report.total_trades else Decimal("0")
+    )
 
     report.total_fees = sum((t.fees for t in trades), Decimal("0"))
     report.total_slippage = sum((t.slippage for t in trades), Decimal("0"))
 
     # Equity curve & drawdown via helper
-    report.pnl_series, report.equity_peak, report.max_drawdown, report.max_drawdown_pct = _compute_drawdown(trades)
+    (
+        report.pnl_series,
+        report.equity_peak,
+        report.max_drawdown,
+        report.max_drawdown_pct,
+    ) = _compute_drawdown(trades)
 
     # Risk-adjusted metrics via helper
     pnl_decimals = [t.pnl for t in trades]
     std_pnl_float = _std(pnl_decimals)
     report.std_pnl = Decimal(str(std_pnl_float))
     excess = float(report.avg_pnl) - (risk_free_rate / 252)
-    report.sharpe_ratio, report.sortino_ratio = _risk_ratios(pnl_decimals, float(report.avg_pnl), std_pnl_float, excess)
+    report.sharpe_ratio, report.sortino_ratio = _risk_ratios(
+        pnl_decimals, float(report.avg_pnl), std_pnl_float, excess
+    )
     if report.max_drawdown_pct > 0:
         report.calmar_ratio = float(report.net_pnl) / (report.max_drawdown_pct / 100)
 
@@ -178,7 +208,11 @@ def format_performance_report(report: PerformanceReport) -> str:
     sharpe_str = f"{report.sharpe_ratio:.2f}" if report.sharpe_ratio else "N/A"
     sortino_str = f"{report.sortino_ratio:.2f}" if report.sortino_ratio else "N/A"
     calmar_str = f"{report.calmar_ratio:.2f}" if report.calmar_ratio else "N/A"
-    pf_str = f"{report.profit_factor:.2f}" if report.profit_factor and report.profit_factor != float("inf") else "∞"
+    pf_str = (
+        f"{report.profit_factor:.2f}"
+        if report.profit_factor and report.profit_factor != float("inf")
+        else "∞"
+    )
 
     lines = [
         "Performance Summary",
@@ -232,12 +266,16 @@ async def fetch_all_closed_trades(trade_store: object) -> list[TradeRecord]:
                     TradeRecord(
                         symbol=row[0],
                         side=row[1],
-                        pnl=Decimal(str(row[5])) if row[5] is not None else Decimal("0"),
+                        pnl=Decimal(str(row[5]))
+                        if row[5] is not None
+                        else Decimal("0"),
                         entry_time=row[7],
                         exit_time=row[8],
                         regime=row[6] or "",
                         exit_reason=row[9] or "",
-                        amount=Decimal(str(row[2])) if row[2] is not None else Decimal("0"),
+                        amount=Decimal(str(row[2]))
+                        if row[2] is not None
+                        else Decimal("0"),
                     )
                 )
     except Exception as exc:
@@ -245,7 +283,9 @@ async def fetch_all_closed_trades(trade_store: object) -> list[TradeRecord]:
     return trades
 
 
-async def fetch_all_closed_shadow_trades(shadow_trade_store: object) -> list[TradeRecord]:
+async def fetch_all_closed_shadow_trades(
+    shadow_trade_store: object,
+) -> list[TradeRecord]:
     """Pull all closed shadow trades into normalized TradeRecords.
 
     Args:
@@ -274,14 +314,22 @@ async def fetch_all_closed_shadow_trades(shadow_trade_store: object) -> list[Tra
                     TradeRecord(
                         symbol=row[0],
                         side=row[1],
-                        pnl=Decimal(str(row[5])) if row[5] is not None else Decimal("0"),
+                        pnl=Decimal(str(row[5]))
+                        if row[5] is not None
+                        else Decimal("0"),
                         entry_time=row[8],
                         exit_time=row[9],
                         regime=row[10] or "",
                         exit_reason=row[11] or "",
-                        fees=Decimal(str(row[6])) if row[6] is not None else Decimal("0"),
-                        slippage=Decimal(str(row[7])) if row[7] is not None else Decimal("0"),
-                        amount=Decimal(str(row[2])) if row[2] is not None else Decimal("0"),
+                        fees=Decimal(str(row[6]))
+                        if row[6] is not None
+                        else Decimal("0"),
+                        slippage=Decimal(str(row[7]))
+                        if row[7] is not None
+                        else Decimal("0"),
+                        amount=Decimal(str(row[2]))
+                        if row[2] is not None
+                        else Decimal("0"),
                     )
                 )
     except Exception as exc:

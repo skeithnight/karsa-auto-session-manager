@@ -60,11 +60,7 @@ async def run_bot(  # noqa: PLR0913
         logger.debug("run_bot: returning (no token)")
         return
 
-    application = (
-        ApplicationBuilder()
-        .token(settings.telegram_bot_token)
-        .build()
-    )
+    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
 
     # ── Wire shared dependencies ────────────────────────────────────────
     application.bot_data["redis_client"] = redis_client
@@ -74,7 +70,9 @@ async def run_bot(  # noqa: PLR0913
     application.bot_data["db_engine"] = db_engine
     application.bot_data["emitter"] = emitter
     application.bot_data["trade_reconciler"] = trade_reconciler
-    logger.info(f"bot_data wired: redis={'ok' if redis_client else 'None'} bybit={'ok' if bybit_client else 'None'} session_manager={'ok' if session_manager else 'None'} db={'ok' if db_engine else 'None'} emitter={'ok' if emitter else 'None'} reconciler={'ok' if trade_reconciler else 'None'}")
+    logger.info(
+        f"bot_data wired: redis={'ok' if redis_client else 'None'} bybit={'ok' if bybit_client else 'None'} session_manager={'ok' if session_manager else 'None'} db={'ok' if db_engine else 'None'} emitter={'ok' if emitter else 'None'} reconciler={'ok' if trade_reconciler else 'None'}"
+    )
 
     # ── Register command handlers ───────────────────────────────────────
     application.add_handler(CommandHandler("start", start_cmd))

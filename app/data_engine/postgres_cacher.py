@@ -115,6 +115,10 @@ async def bulk_upsert(
 
     logger.info(
         "upserted %d / %d candles for %s %s %s",
-        total, len(candles), symbol, timeframe, exchange_id,
+        total,
+        len(candles),
+        symbol,
+        timeframe,
+        exchange_id,
     )
     return total

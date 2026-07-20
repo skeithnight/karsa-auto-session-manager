@@ -78,7 +78,9 @@ class PositionStore:
             "sl_order_id": sl_order_id or "",
             # BUG-2 fix: guard must not erase Decimal("0") as falsy
             "atr": str(atr) if (atr is not None and atr > Decimal("0")) else "",
-            "entry_confidence": str(entry_confidence) if entry_confidence is not None else "",
+            "entry_confidence": str(entry_confidence)
+            if entry_confidence is not None
+            else "",
             "regime": regime or "",
             "checkpoint": "OPEN",
             "entered_at": datetime.now(UTC).isoformat(),
@@ -208,14 +210,18 @@ class PositionStore:
                 bybit_sym = sym.replace("/", "")
                 if bybit_sym not in exchange_symbols:
                     await self.redis.delete(key_str)
-                    logger.info(f"Cleaned orphaned position: {sym} {pos.get('side', '')}")
+                    logger.info(
+                        f"Cleaned orphaned position: {sym} {pos.get('side', '')}"
+                    )
                     removed += 1
             except Exception:
                 await self.redis.delete(key_str)
                 removed += 1
         return removed
 
-    async def update_fields(self, symbol: str, side: str, updates: dict[str, Any]) -> None:
+    async def update_fields(
+        self, symbol: str, side: str, updates: dict[str, Any]
+    ) -> None:
         """Atomically patch arbitrary fields on a position.
 
         Used by the position health-check scheduler to fill missing fields
@@ -228,7 +234,9 @@ class PositionStore:
         pos.update(updates)
         pos["last_check_at"] = datetime.now(UTC).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
-        logger.debug("update_fields: patched %s %s fields=%s", symbol, side, list(updates.keys()))
+        logger.debug(
+            "update_fields: patched %s %s fields=%s", symbol, side, list(updates.keys())
+        )
 
     async def get_missing_fields(
         self, symbol: str, side: str, required: list[str]

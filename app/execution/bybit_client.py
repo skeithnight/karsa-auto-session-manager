@@ -62,7 +62,12 @@ class BybitClient:
         try:
             cursor = None
             while True:
-                resp = await asyncio.to_thread(self.session.get_instruments_info, category="linear", limit=1000, cursor=cursor)
+                resp = await asyncio.to_thread(
+                    self.session.get_instruments_info,
+                    category="linear",
+                    limit=1000,
+                    cursor=cursor,
+                )
                 if resp.get("retCode") == 0:
                     for inst in resp["result"]["list"]:
                         bybit_sym = inst["symbol"]
@@ -88,14 +93,16 @@ class BybitClient:
                         price_filter = inst.get("priceFilter", {})
                         ts = price_filter.get("tickSize", "0.01")
                         self._price_ticks[ccxt_sym] = Decimal(str(ts))
-                    
+
                     cursor = resp["result"].get("nextPageCursor")
                     if not cursor:
                         break
                 else:
                     logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
                     break
-            logger.info(f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped")
+            logger.info(
+                f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped"
+            )
         except Exception as e:
             logger.warning(f"Symbol map fetch failed: {e}, using naive mapping")
         logger.debug("connect: returning None")
@@ -211,7 +218,9 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(side.upper(), side.capitalize()),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
+                side.upper(), side.capitalize()
+            ),
             "orderType": "Limit",
             "qty": str(self._round_qty(symbol, amount)),
             "price": str(self._round_price(symbol, price)),
@@ -220,7 +229,9 @@ class BybitClient:
         if params:
             order_params.update(params)
         result = await self._execute(self.session.place_order, **order_params)
-        logger.info(f"Limit order placed: {result.get('orderId')} {side} {amount} @ {price}")
+        logger.info(
+            f"Limit order placed: {result.get('orderId')} {side} {amount} @ {price}"
+        )
         return result
 
     async def create_market_order(
@@ -237,7 +248,9 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(side.upper(), side.capitalize()),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
+                side.upper(), side.capitalize()
+            ),
             "orderType": "Market",
             "qty": str(self._round_qty(symbol, amount)),
         }
@@ -317,7 +330,9 @@ class BybitClient:
                 "balance": balance_data.get("total", Decimal("0")),
                 "available": balance_data.get("free", Decimal("0")),
             }
-            logger.info(f"get_wallet_balance: balance={result['balance']} available={result['available']}")
+            logger.info(
+                f"get_wallet_balance: balance={result['balance']} available={result['available']}"
+            )
             return result
         except Exception as e:
             logger.error(f"get_wallet_balance: error={e}")
@@ -391,12 +406,14 @@ class BybitClient:
                 sym = sym[:-4] + "/USDT"
             elif sym.endswith("USDC"):
                 sym = sym[:-4] + "/USDC"
-            tickers.append({
-                "symbol": sym,
-                "last": _safe_decimal(t.get("lastPrice")),
-                "bid": _safe_decimal(t.get("bid1Price")),
-                "ask": _safe_decimal(t.get("ask1Price")),
-            })
+            tickers.append(
+                {
+                    "symbol": sym,
+                    "last": _safe_decimal(t.get("lastPrice")),
+                    "bid": _safe_decimal(t.get("bid1Price")),
+                    "ask": _safe_decimal(t.get("ask1Price")),
+                }
+            )
         logger.debug(f"fetch_tickers: returning {len(tickers)} tickers")
         return tickers
 
@@ -506,7 +523,9 @@ class BybitClient:
 
         CLAUDE.md Rule 5: Every position MUST get an exchange-side SL immediately on fill.
         """
-        logger.debug(f"place_stop_loss: entering symbol={symbol} side={side} stop_price={stop_price}")
+        logger.debug(
+            f"place_stop_loss: entering symbol={symbol} side={side} stop_price={stop_price}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         close_side = "Sell" if side == "buy" else "Buy"
@@ -537,7 +556,9 @@ class BybitClient:
 
         triggerDirection reversed vs SL: Buy-side TP fires on price >= trigger.
         """
-        logger.debug(f"place_take_profit: entering symbol={symbol} side={side} tp_price={tp_price}")
+        logger.debug(
+            f"place_take_profit: entering symbol={symbol} side={side} tp_price={tp_price}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         close_side = "Sell" if side == "buy" else "Buy"
@@ -564,7 +585,9 @@ class BybitClient:
         amount: Decimal,
     ) -> dict[str, Any] | None:
         """Partial close — reduceOnly market order for scale-out."""
-        logger.debug(f"reduce_position: entering symbol={symbol} side={side} amount={amount}")
+        logger.debug(
+            f"reduce_position: entering symbol={symbol} side={side} amount={amount}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         close_side = "Sell" if side == "buy" else "Buy"
@@ -593,7 +616,9 @@ class BybitClient:
         attaches SL/TP directly to the position — no separate order object,
         no race window between fill and SL placement.
         """
-        logger.debug(f"set_trading_stop: symbol={symbol} sl={stop_loss} tp={take_profit}")
+        logger.debug(
+            f"set_trading_stop: symbol={symbol} sl={stop_loss} tp={take_profit}"
+        )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
         if stop_loss is None and take_profit is None:
@@ -613,7 +638,9 @@ class BybitClient:
             params["takeProfit"] = str(self._round_price(symbol, take_profit))
 
         result = await self._execute(self.session.set_trading_stop, **params)
-        logger.info(f"set_trading_stop: OK for {symbol} sl={stop_loss} tp={take_profit}")
+        logger.info(
+            f"set_trading_stop: OK for {symbol} sl={stop_loss} tp={take_profit}"
+        )
         return result
 
     async def amend_stop_loss(

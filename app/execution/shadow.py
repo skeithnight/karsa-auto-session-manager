@@ -25,7 +25,6 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from app.alpha.regime_classifier import RegimeClassifier, MarketRegime
 from app.execution.position_manager import (
     APM_BREAKEVEN_FEE_PCT,
     APM_TREND_TRAIL_ATR_MULT,
@@ -50,6 +49,7 @@ SHADOW_FUNDING_INTERVAL_HOURS: int = 8
 # ---------------------------------------------------------------------------
 # ShadowExecutor — drop-in for SmartOrderRouter
 # ---------------------------------------------------------------------------
+
 
 class ShadowExecutor:
     """Simulated order routing. Same execute/execute_exit interface as SOR.
@@ -82,7 +82,9 @@ class ShadowExecutor:
         """Fee asymmetry: maker (post-only) vs taker (market/IOC)."""
         return self._maker_fee if is_post_only else self._taker_fee
 
-    async def _get_mid_price(self, symbol: str, fallback_price: Decimal | None = None) -> Decimal:
+    async def _get_mid_price(
+        self, symbol: str, fallback_price: Decimal | None = None
+    ) -> Decimal:
         """Read live mid price. Checks cached shadow price first, then system keys."""
         # Check shadow-cached price (written on execute)
         cached = await self._redis.get(f"shadow:price:{symbol}")
@@ -169,9 +171,7 @@ class ShadowExecutor:
             f"status={status})"
         )
 
-        metrics.karsa_shadow_orders_placed_total.labels(
-            symbol=symbol, side=side
-        ).inc()
+        metrics.karsa_shadow_orders_placed_total.labels(symbol=symbol, side=side).inc()
 
         result: dict[str, Any] = {
             "id": order_id,
@@ -243,6 +243,7 @@ class ShadowExecutor:
 # ShadowExchangeClient — wraps Redis for APM
 # ---------------------------------------------------------------------------
 
+
 class ShadowExchangeClient:
     """Same interface as BybitClient for APM, reads live prices from Redis."""
 
@@ -312,6 +313,7 @@ class ShadowExchangeClient:
 # ShadowAPM — monitors shadow positions, detects SL hits + wicks + funding
 # ---------------------------------------------------------------------------
 
+
 class ShadowAPM:
     """Shadow ActivePositionManager.
 
@@ -363,7 +365,9 @@ class ShadowAPM:
             await self._manage_open_position(pos)
 
     @staticmethod
-    def _calculate_r_multiple(side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal) -> Decimal:
+    def _calculate_r_multiple(
+        side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal
+    ) -> Decimal:
         try:
             if initial_risk <= 0:
                 return Decimal("0")
@@ -410,7 +414,12 @@ class ShadowAPM:
 
         # Long fills when price dips to entry; short fills when price rises
         filled = False
-        if side == "LONG" and mid <= entry_price or side == "SHORT" and mid >= entry_price:
+        if (
+            side == "LONG"
+            and mid <= entry_price
+            or side == "SHORT"
+            and mid >= entry_price
+        ):
             filled = True
 
         if filled:
@@ -467,12 +476,16 @@ class ShadowAPM:
         # --- Regime Shift Kill Switch ---
         current_regime = await self._get_current_regime(symbol)
         if current_regime and entry_regime and current_regime != entry_regime:
-            self._regime_shift_counts[symbol] = self._regime_shift_counts.get(symbol, 0) + 1
+            self._regime_shift_counts[symbol] = (
+                self._regime_shift_counts.get(symbol, 0) + 1
+            )
             if self._regime_shift_counts[symbol] >= REGIME_SHIFT_CONFIRM_COUNT:
                 logger.warning(
                     f"SHADOW KILL SWITCH: {symbol} regime shift {entry_regime} -> {current_regime}"
                 )
-                await self._close_shadow_position(pos, mid, f"regime_shift_{entry_regime}_to_{current_regime}")
+                await self._close_shadow_position(
+                    pos, mid, f"regime_shift_{entry_regime}_to_{current_regime}"
+                )
                 self._regime_shift_counts.pop(symbol, None)
                 return
         else:
@@ -497,10 +510,15 @@ class ShadowAPM:
             pos["virtual_sl"] = str(new_sl)
             pos["moved_to_breakeven"] = True
             virtual_sl = new_sl
-            logger.info(f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})")
+            logger.info(
+                f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})"
+            )
 
         # --- Trend Trailing Stop (Chandelier ATR) ---
-        if entry_regime in ("TREND_BULL", "TREND_BEAR") and r_multiple >= APM_TREND_TRAIL_ACTIVATE_R:
+        if (
+            entry_regime in ("TREND_BULL", "TREND_BEAR")
+            and r_multiple >= APM_TREND_TRAIL_ACTIVATE_R
+        ):
             atr = Decimal(str(pos.get("atr", "0")))
             if atr > 0:
                 trail_distance = atr * APM_TREND_TRAIL_ATR_MULT
@@ -509,13 +527,17 @@ class ShadowAPM:
                     if new_sl > virtual_sl:
                         pos["virtual_sl"] = str(new_sl)
                         virtual_sl = new_sl
-                        logger.info(f"SHADOW TRAILING STOP: {symbol} {side} SL raised to {new_sl} (Peak={peak})")
+                        logger.info(
+                            f"SHADOW TRAILING STOP: {symbol} {side} SL raised to {new_sl} (Peak={peak})"
+                        )
                 else:
                     new_sl = peak + trail_distance
                     if new_sl < virtual_sl or virtual_sl == 0:
                         pos["virtual_sl"] = str(new_sl)
                         virtual_sl = new_sl
-                        logger.info(f"SHADOW TRAILING STOP: {symbol} {side} SL lowered to {new_sl} (Peak={peak})")
+                        logger.info(
+                            f"SHADOW TRAILING STOP: {symbol} {side} SL lowered to {new_sl} (Peak={peak})"
+                        )
 
         # Persist state back to Redis
         await self._redis.set(key, _json.dumps(pos))
@@ -546,6 +568,7 @@ class ShadowAPM:
                 entered_at = pos.get("entered_at", "")
                 if entered_at:
                     from datetime import UTC, datetime
+
                     entered = datetime.fromisoformat(entered_at)
                     if entered.tzinfo is None:
                         entered = entered.replace(tzinfo=UTC)
@@ -553,9 +576,13 @@ class ShadowAPM:
                     if age_mins >= 240:
                         logger.warning(
                             "SHADOW STALE CLEANUP: %s %s held %.0fm with no SL",
-                            symbol, side, age_mins,
+                            symbol,
+                            side,
+                            age_mins,
                         )
-                        metrics.karsa_shadow_stale_cleanups_total.labels(symbol=symbol, side=side).inc()
+                        metrics.karsa_shadow_stale_cleanups_total.labels(
+                            symbol=symbol, side=side
+                        ).inc()
                         await self._close_shadow_position(pos, mid, "stale_cleanup")
                         return
             except Exception:
@@ -567,7 +594,12 @@ class ShadowAPM:
         # SL hit detection using worst_price_seen (catches wicks)
         if virtual_sl > 0:
             sl_hit = False
-            if side == "LONG" and worst <= virtual_sl or side == "SHORT" and worst >= virtual_sl:
+            if (
+                side == "LONG"
+                and worst <= virtual_sl
+                or side == "SHORT"
+                and worst >= virtual_sl
+            ):
                 sl_hit = True
 
             if sl_hit:
@@ -584,7 +616,12 @@ class ShadowAPM:
         virtual_tp = Decimal(pos.get("virtual_tp", "0"))
         if virtual_tp > 0:
             tp_hit = False
-            if side == "LONG" and mid >= virtual_tp or side == "SHORT" and mid <= virtual_tp:
+            if (
+                side == "LONG"
+                and mid >= virtual_tp
+                or side == "SHORT"
+                and mid <= virtual_tp
+            ):
                 tp_hit = True
             if tp_hit:
                 logger.info(
@@ -619,9 +656,7 @@ class ShadowAPM:
 
     # --- Refinement 3: Funding rate drag ---
 
-    async def _apply_funding_if_due(
-        self, pos: dict, symbol: str, side: str
-    ) -> None:
+    async def _apply_funding_if_due(self, pos: dict, symbol: str, side: str) -> None:
         """Deduct 8h funding fee from virtual PnL if funding interval elapsed."""
         last_funding_ts_str = pos.get("last_funding_ts", "")
         if not last_funding_ts_str:

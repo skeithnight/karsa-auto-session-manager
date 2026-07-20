@@ -121,30 +121,33 @@ class MultiTFFilter:
             "blocked": False,
         }
 
-    async def get_macro_anchor_penalty(self, direction: Literal["LONG", "SHORT"], anchors: list[str] | None = None) -> float:
+    async def get_macro_anchor_penalty(
+        self, direction: Literal["LONG", "SHORT"], anchors: list[str] | None = None
+    ) -> float:
         """Check if macro anchors (e.g. BTC, ETH) confirm the direction.
-        
+
         Returns a penalty factor (e.g. 0.8) if the macro trend contradicts the signal,
         meaning it's a headwind, but doesn't hard-block it if the individual setup is exceptionally strong.
         Returns 1.0 if approved or no data.
         """
         if anchors is None:
             anchors = ["BTC/USDT", "ETH/USDT"]
-            
+
         contradictions = 0
         valid_anchors = 0
-        
+
         for anchor in anchors:
             res = await self.check(anchor, direction)
             if res.get("data_available"):
                 valid_anchors += 1
                 if not res.get("direction_agrees"):
                     contradictions += 1
-                    
+
         # If >= 50% of anchors contradict, apply a 20% penalty to the score
         if valid_anchors > 0 and contradictions >= (valid_anchors / 2):
-            logger.info(f"Macro Anchor Penalty: {contradictions}/{valid_anchors} anchors contradict {direction}. Applying 0.8x penalty.")
+            logger.info(
+                f"Macro Anchor Penalty: {contradictions}/{valid_anchors} anchors contradict {direction}. Applying 0.8x penalty."
+            )
             return 0.80
-            
-        return 1.0
 
+        return 1.0

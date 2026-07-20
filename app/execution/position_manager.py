@@ -72,14 +72,22 @@ class ActivePositionManager:
     async def start_monitoring(self) -> None:
         """Main monitoring loop — runs forever with error backoff."""
         last_reconcile = 0.0
+        _cached_exchange_positions: list = []
+        _last_positions_fetch = 0.0
+        _POSITIONS_CACHE_TTL = 30.0  # seconds — REST rate limit protection
+
         while True:
             try:
                 now = datetime.now(UTC).timestamp()
 
                 positions = await self._store.list_all()  # type: ignore[attr-defined]
 
-                # Sync Bybit positions missing from Redis
-                exchange_positions = await self._client.fetch_positions()  # type: ignore[attr-defined]
+                # Sync Bybit positions missing from Redis — refresh every 30s, not every 2s
+                if now - _last_positions_fetch >= _POSITIONS_CACHE_TTL:
+                    _cached_exchange_positions = await self._client.fetch_positions()  # type: ignore[attr-defined]
+                    _last_positions_fetch = now
+
+                exchange_positions = _cached_exchange_positions
                 existing_syms = {(p.get("symbol", ""), p.get("side", "")) for p in positions}
                 for ep in exchange_positions:
                     ep_sym = ep.get("symbol", "")
@@ -531,48 +539,9 @@ class ActivePositionManager:
         if peak_updated:
             pos["peak_price"] = str(peak_price)
 
-        # --- $1 hard cap: if current SL would lose > $1, tighten SL to exactly -$1 ---
-        # Rule: if already in loss beyond $1 — let it be (don't widen SL).
-        # Only tighten when the SL *would* cause a loss exceeding $1 on fill.
-        amount = Decimal(str(pos.get("amount", "0")))
-        if amount > 0 and entry_price > 0 and sl_price > 0:
-            if side == "LONG":
-                # Loss = (sl_price - entry_price) * amount  — negative = loss
-                sl_loss = (sl_price - entry_price) * amount
-            else:
-                # Loss = (entry_price - sl_price) * amount  — negative = loss
-                sl_loss = (entry_price - sl_price) * amount
-
-            if sl_loss < Decimal("-1"):
-                # SL is too loose — tighten to exactly -$1 max loss
-                if side == "LONG":
-                    new_sl = entry_price - (Decimal("1") / amount)
-                else:
-                    new_sl = entry_price + (Decimal("1") / amount)
-
-                # Safety: new_sl must be beyond entry in the right direction
-                sl_valid = (side == "LONG" and new_sl < entry_price) or (side == "SHORT" and new_sl > entry_price)
-                # Tick-size tolerance: skip amend if new SL rounds to same value
-                tick = Decimal("0.0001")
-                if sl_valid and new_sl > 0 and abs(new_sl - sl_price) >= tick:
-                    try:
-                        api_side = "buy" if side == "LONG" else "sell"
-                        await self._client.set_trading_stop(  # type: ignore[attr-defined]
-                            symbol, api_side, stop_loss=new_sl
-                        )
-                        pos["current_sl"] = str(new_sl)
-                        pos["stop_loss"] = str(new_sl)
-                        sl_price = new_sl  # update local var so trailing uses new SL
-                        self._log.warning(
-                            "APM: $1 CAP %s %s SL tightened from %s to %s (was $%.4f loss)",
-                            symbol,
-                            side,
-                            pos.get("current_sl"),
-                            new_sl,
-                            float(sl_loss),
-                        )
-                    except Exception:
-                        self._log.exception(f"APM: $1 cap SL amend failed for {symbol}")
+        # NOTE: $1 hard cap removed — ATR-based SL (via max_loss_usd) is the correct stop.
+        # A $1 cap on a position sized by available_balance * risk_pct conflicts with
+        # risk-proportional sizing and causes premature SL hits. See walkthrough_max_loss.md.
 
         # Exchange-side TP for RANGE/CHOP — place once on first loop
         if not pos.get("tp_placed") and entry_regime in ("RANGE", "CHOP"):
@@ -612,37 +581,49 @@ class ActivePositionManager:
             pos["moved_to_breakeven"] = True
             moved_to_be = True
 
-        # HFT Step-Trailing Stop (0.2R increments)
-        if moved_to_be and initial_risk > 0 and r_mult >= Decimal("1.2"):
-            step_r = Decimal("0.2")
-            # Calculate highest 0.2R step achieved below current r_mult
-            floored_r = (r_mult // step_r) * step_r
-            trail_r = floored_r - Decimal("1.0")
-            if trail_r > 0:
-                if side == "LONG":
-                    new_step_sl = entry_price + (initial_risk * trail_r)
-                else:
-                    new_step_sl = entry_price - (initial_risk * trail_r)
-                
-                # Only amend if the new step SL is tighter (more protective)
-                sl_tighter = (side == "LONG" and new_step_sl > sl_price) or (side == "SHORT" and new_step_sl < sl_price)
-                if sl_tighter:
-                    try:
-                        api_side = "buy" if side == "LONG" else "sell"
-                        sl_order_id = pos.get("sl_order_id", "")
-                        await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_step_sl, amount)  # type: ignore[attr-defined]
-                        pos["current_sl"] = str(new_step_sl)
-                        pos["stop_loss"] = str(new_step_sl)
-                        sl_price = new_step_sl
-                        self._log.info(f"APM: Step-Trailing SL amended for {symbol} to {new_step_sl} (+{trail_r}R)")
-                    except Exception as e:
-                        self._log.debug(f"APM: Step-Trailing amend failed for {symbol}: {e}")
+        # ─── AGGRESSIVE PROFIT-PROTECT TRAILING ─────────────────────────────────
+        # User request: "secure when position already in profit and then goes down then immedietly close profit"
+        # We replace the loose 1.0R-gap trailing with a tight 0.3R-gap trailing once in profit.
+        peak_r_mult = self._calculate_r_multiple(side, entry_price, peak_price, initial_risk)
+        
+        if initial_risk > 0 and peak_r_mult >= Decimal("0.5"):
+            # Trail tight: lock in peak R minus 0.3R (tight pullback allowance)
+            trail_r = peak_r_mult - Decimal("0.3")
+            
+            # Ensure we don't go below breakeven (fee buffer is approx 0.1R)
+            if trail_r < Decimal("0.1"):
+                trail_r = Decimal("0.1")
+
+            if side == "LONG":
+                new_step_sl = entry_price + (initial_risk * trail_r)
+            else:
+                new_step_sl = entry_price - (initial_risk * trail_r)
+            
+            # Only amend if the new SL is tighter (more protective)
+            sl_tighter = (side == "LONG" and new_step_sl > sl_price) or (side == "SHORT" and new_step_sl < sl_price)
+            
+            # Anti-spam: Only amend if the new SL is at least 0.15R better than current SL
+            current_sl_r = self._calculate_r_multiple(side, entry_price, sl_price, initial_risk)
+            significant_move = (trail_r - current_sl_r) >= Decimal("0.15")
+
+            if sl_tighter and significant_move:
+                try:
+                    api_side = "buy" if side == "LONG" else "sell"
+                    sl_order_id = pos.get("sl_order_id", "")
+                    await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_step_sl, amount)  # type: ignore[attr-defined]
+                    pos["current_sl"] = str(new_step_sl)
+                    pos["stop_loss"] = str(new_step_sl)
+                    sl_price = new_step_sl
+                    self._log.info(f"APM: Profit-Protect SL amended for {symbol} to {new_step_sl} (Peak R: {peak_r_mult:.2f}, Locked: +{trail_r:.2f}R)")
+                except Exception as e:
+                    self._log.debug(f"APM: Profit-Protect amend failed for {symbol}: {e}")
+        # ────────────────────────────────────────────────────────────────────────
 
         if "TREND" in entry_regime:
             await self._manage_trend_trailing_stop(pos, live_price, r_mult, side, sl_price)
 
         if entry_time is not None:
-            await self._manage_time_exit(pos, entry_time, max_hold_mins, live_price, entry_price, side)
+            await self._manage_time_exit(pos, entry_time, max_hold_mins, live_price, entry_price, side, r_mult)
 
         await self._check_regime_shift(pos, symbol, entry_regime)
 
@@ -725,15 +706,22 @@ class ActivePositionManager:
         """Place exchange-side TP once for RANGE/CHOP regimes via atomic set_trading_stop."""
         symbol = pos.get("symbol", "")
         api_side = "buy" if side == "LONG" else "sell"
+        # TP multiplier: RANGE=1.5:1, CHOP=2.0:1 to cover fees (0.11% round-trip) + slippage
+        entry_regime_inner = pos.get("entry_regime", "RANGE")
+        if "CHOP" in entry_regime_inner:
+            tp_mult = Decimal("2.0")
+        else:
+            tp_mult = Decimal("1.5")  # RANGE default
+
         try:
             if side == "LONG":
-                tp_price = entry_price + initial_risk  # 1:1 R/R
+                tp_price = entry_price + (initial_risk * tp_mult)
             else:
-                tp_price = entry_price - initial_risk
+                tp_price = entry_price - (initial_risk * tp_mult)
 
             await self._client.set_trading_stop(symbol, api_side, take_profit=tp_price)  # type: ignore[attr-defined]
             pos["tp_placed"] = True
-            self._log.info(f"APM: atomic TP placed for {symbol} @ {tp_price}")
+            self._log.info(f"APM: atomic TP placed for {symbol} @ {tp_price} ({tp_mult}:1 R/R)")
         except Exception:
             self._log.exception(f"APM: TP placement failed for {symbol}")
 
@@ -771,10 +759,12 @@ class ActivePositionManager:
         api_side = "buy" if side == "LONG" else "sell"
         try:
             if side == "LONG":
+                # LONG: SL moves to just above entry to cover fees (price must rise to profit)
                 new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
             else:
-                # SHORT: SL must be BELOW entry to lock in breakeven
-                new_sl = entry_price - entry_price * APM_BREAKEVEN_FEE_PCT
+                # SHORT: SL must be ABOVE entry (stop out if price rises back through entry)
+                # Entry at 100 → SL at 100.25 (fee buffer above entry)
+                new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
 
             new_sl_str = str(new_sl)
             try:
@@ -870,7 +860,8 @@ class ActivePositionManager:
         max_minutes: int,
         live_price: Decimal,
         entry_price: Decimal,
-        side: str
+        side: str,
+        r_mult: Decimal = Decimal("0"),
     ) -> None:
         """Force close if position held beyond max_hold_time_mins or if it is stale underwater.
 
@@ -899,8 +890,22 @@ class ActivePositionManager:
             await self._force_close_position(pos, f"time_exit_{held_mins:.0f}min")
             return
             
-        # Underwater Stale Exit (45 mins)
-        if held_mins >= 45:
+        # Quick Profit Exit (Take Profit if R > 2.0 in < 5 mins)
+        if held_mins <= 5 and r_mult >= Decimal("2.0"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"APM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._force_close_position(pos, f"quick_profit_exit_R{r_mult:.1f}")
+            return
+
+        # Stagnation Exit (Cut if R < 0.2 after 10 mins)
+        if held_mins >= 10 and r_mult < Decimal("0.2"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"APM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._force_close_position(pos, f"stagnation_exit_{held_mins:.0f}min")
+            return
+
+        # Underwater Stale Exit (15 mins)
+        if held_mins >= 15:
             is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
             if is_underwater:
                 symbol = pos.get("symbol", "")
@@ -1051,13 +1056,15 @@ class ActivePositionManager:
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
                     continue
 
-                # Verify SL is attached to the position
+                # Verify SL is attached to the position — ONLY re-place if missing
+                # NEVER overwrite an existing SL (breakeven/trailing would be lost)
                 entry_price = Decimal(str(pos.get("entry_price", "0")))
                 raw_side = pos.get("side", "buy")
                 api_side = "buy" if raw_side in ("buy", "LONG") else "sell"
-                if entry_price > 0:
+                current_sl = Decimal(str(pos.get("current_sl", pos.get("stop_loss", "0")) or "0"))
+                if entry_price > 0 and current_sl <= 0:
+                    # SL is missing — re-place it from initial_risk_per_unit
                     try:
-                        # Re-attach SL atomically via set_trading_stop
                         sl_distance = Decimal(str(pos.get("initial_risk_per_unit", "0")))
                         if sl_distance > 0:
                             sl_price = entry_price - sl_distance if api_side == "buy" else entry_price + sl_distance
@@ -1069,9 +1076,11 @@ class ActivePositionManager:
                         await self._client.set_trading_stop(  # type: ignore[attr-defined]
                             symbol, api_side, stop_loss=sl_price
                         )
-                        self._log.info(f"APM: SL reconciled for {symbol} at {sl_price}")
+                        self._log.info(f"APM: SL missing — re-placed for {symbol} at {sl_price}")
                     except Exception:
                         self._log.warning(f"APM: SL reconciliation failed for {symbol}")
+                elif current_sl > 0:
+                    self._log.debug(f"APM: SL exists for {symbol} at {current_sl} — skipping reconciliation re-place")
 
         except Exception:
             self._log.exception("APM: reconciliation failed")

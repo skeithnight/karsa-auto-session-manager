@@ -118,7 +118,7 @@ class MultiTFFilter:
             "ema_4h": None,
             "penalty_applied": Decimal("1.0"),
             "data_available": False,
-            "blocked": False,
+            "blocked": self.block_contradictions,
         }
 
     async def get_macro_anchor_penalty(

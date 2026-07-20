@@ -1445,6 +1445,18 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
         ]
     )
 
+    # Add Reset Cooldowns button if any exist
+    from app.alpha.trade_memory import TradeMemory
+    trade_memory = TradeMemory(redis_cache)
+    active_cooldowns = await trade_memory.get_active_cooldowns(cooldown_mins=45)
+    if active_cooldowns:
+        cooldown_list = ", ".join(active_cooldowns)
+        keyboard.insert(len(keyboard) - 2, [
+            InlineKeyboardButton(
+                f"❄️ Reset Cooldowns ({len(active_cooldowns)}): {cooldown_list}", callback_data="cmd_reset_cooldowns"
+            )
+        ])
+
     await send_or_edit_message(
         update, str(fmt(*lines, sep="\n")), reply_markup=InlineKeyboardMarkup(keyboard)
     )

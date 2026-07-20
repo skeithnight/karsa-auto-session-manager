@@ -18,7 +18,7 @@ from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 logger = logging.getLogger(__name__)
 
-_GATE_THRESHOLD = 65.0  # restored from 40.0 for higher win rate
+_GATE_THRESHOLD = 75.0  # Increased for higher confidence entries
 _MIN_CANDLES = 50
 _SLIPPAGE_PCT = Decimal("0.0005")
 _TAKER_FEE = Decimal("0.00055")

@@ -337,6 +337,7 @@ class ShadowAPM:
         self._pos_store = position_store
         self._trade_store = trade_store
         self._regime_shift_counts: dict[str, int] = {}
+        self._log = logger
 
     async def run(self) -> None:
         """Main monitoring loop — 2s interval."""
@@ -352,6 +353,45 @@ class ShadowAPM:
             except Exception:
                 logger.exception("ShadowAPM: error in monitoring loop")
                 await asyncio.sleep(5)
+
+    async def _manage_time_exit(
+        self, 
+        pos: dict[str, Any], 
+        entry_time: datetime, 
+        max_minutes: int,
+        live_price: Decimal,
+        entry_price: Decimal,
+        side: str,
+        r_mult: Decimal = Decimal("0"),
+    ) -> None:
+        held_mins = (datetime.now(UTC) - entry_time).total_seconds() / 60
+        if max_minutes > 0 and held_mins > max_minutes:
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: time exit {symbol} after {held_mins:.0f}min")
+            await self._close_shadow_position(pos, live_price, f"time_exit_{held_mins:.0f}min")
+            return
+            
+        # Quick Profit Exit (Take Profit if R > 2.0 in < 5 mins)
+        if held_mins <= 5 and r_mult >= Decimal("2.0"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._close_shadow_position(pos, live_price, f"quick_profit_exit_R{r_mult:.1f}")
+            return
+
+        # Stagnation Exit (Cut if R < 0.2 after 10 mins)
+        if held_mins >= 10 and r_mult < Decimal("0.2"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._close_shadow_position(pos, live_price, f"stagnation_exit_{held_mins:.0f}min")
+            return
+
+        # Underwater Stale Exit (15 mins)
+        if held_mins >= 15:
+            is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
+            if is_underwater:
+                symbol = pos.get("symbol", "")
+                self._log.warning(f"ShadowAPM: stale underwater exit {symbol} after {held_mins:.0f}min")
+                await self._close_shadow_position(pos, live_price, f"stale_exit_{held_mins:.0f}min")
 
     async def _manage_shadow_position(self, pos: dict) -> None:
         """Dispatch: pending fills first, then open position management."""
@@ -501,6 +541,24 @@ class ShadowAPM:
 
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
 
+        # Time management
+        try:
+            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
+            max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
+            entered_at = pos.get("entered_at", "")
+            if entered_at:
+                await self._manage_time_exit(
+                    pos, 
+                    datetime.fromisoformat(entered_at), 
+                    max_hold_mins, 
+                    mid, 
+                    entry_price, 
+                    side, 
+                    r_multiple
+                )
+        except Exception:
+            pass
+
         # Flash-Crash Micro-Circuit Breaker (Wick Guard)
         _raw_last_tick = pos.get("last_tick_price", pos.get("worst_price_seen", "0")) or "0"
         last_tick_price = Decimal(str(_raw_last_tick))
@@ -576,8 +634,6 @@ class ShadowAPM:
         await self._redis.set(key, _json.dumps(pos))
 
         # --- $5 hard cap: if current SL would lose > $5, tighten SL to -$5 level ---
-        # Raised from $1 to $5 — small-cap tokens with large position sizes
-        # were getting SL tightened too aggressively, causing instant exits.
         amount = Decimal(pos.get("amount", "0"))
         if amount > 0 and virtual_sl > 0:
             if side == "LONG":
@@ -667,46 +723,6 @@ class ShadowAPM:
                 ).inc()
                 await self._close_shadow_position(pos, virtual_tp, "tp_hit")
                 return
-
-        # Time exit & Stale Underwater Exit
-        try:
-            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
-            max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
-            
-            entered_at = pos.get("entered_at", "")
-            if entered_at:
-                entered = datetime.fromisoformat(entered_at)
-                elapsed_mins = (datetime.now(UTC) - entered).total_seconds() / 60
-                
-                # 1. Normal risk_profile time exit
-                if max_hold_mins > 0 and elapsed_mins >= max_hold_mins:
-                    logger.info(
-                        f"SHADOW TIME EXIT: {symbol} {side} held {elapsed_mins:.0f}m >= {max_hold_mins}m"
-                    )
-                    metrics.karsa_shadow_time_exits_total.labels(
-                        symbol=symbol, side=side
-                    ).inc()
-                    await self._close_shadow_position(pos, mid, "time_exit")
-                    return
-                
-                # 2. Stale Underwater Exit (45 mins) - matching Live engine
-                is_underwater = False
-                if side == "LONG" and mid < entry_price:
-                    is_underwater = True
-                elif side == "SHORT" and mid > entry_price:
-                    is_underwater = True
-                    
-                if elapsed_mins >= 45 and is_underwater:
-                    logger.info(
-                        f"SHADOW STALE EXIT: {symbol} {side} underwater after {elapsed_mins:.0f}m"
-                    )
-                    metrics.karsa_shadow_time_exits_total.labels(
-                        symbol=symbol, side=side
-                    ).inc()
-                    await self._close_shadow_position(pos, mid, "stale_exit")
-                    return
-        except Exception:
-            pass
 
     # --- Refinement 3: Funding rate drag ---
 

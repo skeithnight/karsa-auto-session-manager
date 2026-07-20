@@ -487,7 +487,13 @@ async def alpha_bridge_task(
                                 STRATEGY_GATE_THRESHOLD,
                             )
 
-                            effective_gate = STRATEGY_GATE_THRESHOLD * vol_factor
+                            # CHOP regime requires higher confluence (85) because the OI
+                            # component fires on noise. Require near-perfect 3/4 components.
+                            regime_gate = (
+                                85.0 if regime == "CHOP"
+                                else float(STRATEGY_GATE_THRESHOLD)
+                            )
+                            effective_gate = regime_gate * vol_factor
                             if strategy_score < effective_gate:
                                 metrics.signals_skipped.labels(
                                     symbol=symbol,
@@ -568,8 +574,8 @@ async def alpha_bridge_task(
                                     ).inc()
                                     continue
 
-                        # AI analyst — ambiguous confidence zone (0.40-0.85)
-                        if crypto_analyst and signal.confidence >= 0.40:
+                        # AI analyst — ambiguous confidence zone (0.55-0.85)
+                        if crypto_analyst and signal.confidence >= 0.55:
                             logger.info(f"AI Analyst validating {signal.symbol} signal")
                             trade_ctx = (
                                 await trade_memory.get_prompt_context(
@@ -1038,6 +1044,26 @@ async def executor_task(
         )
 
         try:
+            atr_val = getattr(signal, "atr", None)
+            
+            # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
+            initial_risk_per_unit = None
+            risk_profile_json = None
+            if risk_profile is not None and atr_val is not None:
+                initial_risk_per_unit = (
+                    Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
+                )
+                risk_profile_json = risk_profile.to_json()
+            elif risk_profile is not None:
+                # No ATR — fall back to 1% of entry price as risk estimate
+                initial_risk_per_unit = price * Decimal("0.01")
+                risk_profile_json = risk_profile.to_json()
+
+            # Calculate total dollar risk for Bybit stop loss placement
+            max_loss_usd = Decimal("1.00")
+            if initial_risk_per_unit is not None:
+                max_loss_usd = initial_risk_per_unit * amount
+
             exec_start = time.time()
             result = await sor.execute(
                 symbol=signal.symbol,
@@ -1047,6 +1073,7 @@ async def executor_task(
                 price_tick=bybit_client._price_ticks.get(
                     signal.symbol, Decimal("0.01")
                 ),
+                max_loss_usd=max_loss_usd,
             )
             exec_latency_ms = int((time.time() - exec_start) * 1000)
 
@@ -1072,19 +1099,6 @@ async def executor_task(
                         regime = str(raw_regime_data)
 
                 # Save position to Redis
-                atr_val = getattr(signal, "atr", None)
-                # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
-                initial_risk_per_unit = None
-                risk_profile_json = None
-                if risk_profile is not None and atr_val is not None:
-                    initial_risk_per_unit = (
-                        Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
-                    )
-                    risk_profile_json = risk_profile.to_json()
-                elif risk_profile is not None:
-                    # No ATR — fall back to 1% of entry price as risk estimate
-                    initial_risk_per_unit = price * Decimal("0.01")
-                    risk_profile_json = risk_profile.to_json()
 
                 await position_store.save(
                     symbol=signal.symbol,

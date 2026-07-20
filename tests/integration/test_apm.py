@@ -50,6 +50,8 @@ def _make_apm() -> tuple:
     store = AsyncMock()
     regime = AsyncMock()
     alert = AsyncMock()
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
     store.list_all = AsyncMock(return_value=[])
     store.remove = AsyncMock()
     store.update_sl = AsyncMock()
@@ -63,7 +65,7 @@ def _make_apm() -> tuple:
     client.place_take_profit = AsyncMock(return_value={"orderId": "TP-001"})
     client.set_trading_stop = AsyncMock()
     client.reduce_position = AsyncMock(return_value={"orderId": "RED-001"})
-    apm = ActivePositionManager(client, store, regime, alert)
+    apm = ActivePositionManager(client, store, redis, regime, alert)
     return apm, client, store, regime, alert
 
 

@@ -285,7 +285,7 @@ class PortfolioRiskManager:
 
         while True:
             try:
-                await asyncio.sleep(300)  # Check every 5 minutes
+                await asyncio.sleep(15)  # Check every 15 seconds
                 if not self._redis or not self._trade_store:
                     continue
 
@@ -297,10 +297,20 @@ class PortfolioRiskManager:
                 # Assuming `get_recent_trades` exists:
                 trades = await self._trade_store.get_recent_trades(limit=100)  # type: ignore
 
+                # Sort by exit_time ascending so consecutive loss streak is counted correctly
+                # (newest last — so the counter reflects the most recent sequence of trades)
+                def _parse_time(t: dict) -> datetime:
+                    try:
+                        return datetime.fromisoformat(t.get("exit_time", "2000-01-01T00:00:00"))
+                    except Exception:
+                        return datetime.min
+
+                trades_sorted = sorted(trades, key=_parse_time)
+
                 daily_pnl = Decimal("0")
                 consecutive_losses = 0
 
-                for t in trades:
+                for t in trades_sorted:
                     # Filter for today
                     t_time = datetime.fromisoformat(t.get("exit_time", now.isoformat()))
                     if t_time >= start_of_day:

@@ -373,6 +373,8 @@ async def _position_exit_loop(
     trade_store: TradeStore | None,
     alert_service: AlertService | None,
     interval_s: int = 15,
+    trade_memory: Any = None,
+    redis: Any = None,
 ) -> None:
     """Poll Bybit positions, detect closures, send TP/SL alerts."""
     if not bybit or not alert_service:
@@ -496,6 +498,33 @@ async def _position_exit_loop(
                 else:
                     exit_reason = "breakeven"
                     msg = format_breakeven_alert(symbol, side, entry_price, exit_price, pnl, pnl_pct)
+
+                # ─── DEDUP GUARD ─────────────────────────────────────────────────
+                # The exit loop polls every 15s. Without this guard, the same
+                # closed position fires the alert on every cycle until remove() finishes.
+                dedup_key = f"karsa:exit_alerted:{symbol}:{side}"
+                already_sent = False
+                if redis:
+                    try:
+                        already_sent = await redis.get(dedup_key) is not None
+                    except Exception:
+                        pass
+
+                if already_sent:
+                    # Alert already sent for this exit — just clean up Redis position
+                    try:
+                        await position_store.remove(symbol, side)
+                    except Exception:
+                        pass
+                    continue
+
+                if redis:
+                    try:
+                        # Mark as sent for 60 seconds — gives position_store.remove() time to fire
+                        await redis.setex(dedup_key, 60, "1")
+                    except Exception:
+                        pass
+                # ─── END DEDUP GUARD ──────────────────────────────────────────────
 
                 try:
                     await alert_service.send(msg)
@@ -1132,7 +1161,7 @@ async def main() -> None:  # noqa: PLR0915
 
     # Position exit monitor + 15-min status update + APM
     exit_task = asyncio.create_task(
-        _position_exit_loop(bybit, position_store, trade_store, alert_service),
+        _position_exit_loop(bybit, position_store, trade_store, alert_service, trade_memory=trade_memory, redis=redis),
         name="live-exit-monitor",
     )
     status_task = asyncio.create_task(

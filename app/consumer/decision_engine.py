@@ -18,7 +18,7 @@ from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 logger = logging.getLogger(__name__)
 
-_GATE_THRESHOLD = 65.0
+_GATE_THRESHOLD = 65.0  # restored from 40.0 for higher win rate
 _MIN_CANDLES = 50
 _SLIPPAGE_PCT = Decimal("0.0005")
 _TAKER_FEE = Decimal("0.00055")
@@ -43,6 +43,7 @@ class TradeSignal:
         amount: Position size in base currency.
         entry_fee_rate: Maker or taker rate for entry.
         candles: Candle context used for evaluation (for position tracking).
+        expires_at: Absolute timestamp (time.time()) after which signal is stale.
     """
 
     symbol: str
@@ -58,6 +59,7 @@ class TradeSignal:
     atr: Decimal
     timestamp_ms: int
     candles: list[list] = field(repr=False)
+    expires_at: float | None = None
 
 
 class DecisionEngine:
@@ -66,6 +68,8 @@ class DecisionEngine:
     Composes RegimeClassifier, StrategyRouter, and DynamicRiskGate.
     Modes (live/shadow) use identical pipeline; execution layer handles divergence.
     """
+
+    _CONSECUTIVE_LOSS_THRESHOLD: int = 3
 
     def __init__(
         self,
@@ -77,6 +81,9 @@ class DecisionEngine:
         slippage_pct: Decimal = _SLIPPAGE_PCT,
         taker_fee: Decimal = _TAKER_FEE,
         maker_fee: Decimal = _MAKER_FEE,
+        trade_memory: object | None = None,
+        redis_client: object | None = None,
+        multi_tf: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._router = router
@@ -86,8 +93,32 @@ class DecisionEngine:
         self._slippage = slippage_pct
         self._taker_fee = taker_fee
         self._maker_fee = maker_fee
+        self._wallet_balance: Decimal = Decimal("0")
+        self._trade_memory = trade_memory
+        self._redis = redis_client
+        self._multi_tf = multi_tf
 
-    def evaluate(
+    def set_wallet_balance(self, balance: Decimal) -> None:
+        """Update wallet balance for position sizing."""
+        self._wallet_balance = balance
+
+    async def _get_risk_pct(self) -> Decimal:
+        """Read risk_pct from Redis karsa:auto:config. Default10%."""
+        if self._redis is None:
+            return Decimal("0.10")
+        try:
+            import json as _json
+
+            raw = await self._redis.get("karsa:auto:config")
+            if raw:
+                cfg = _json.loads(raw)
+                pct = cfg.get("risk_pct", 10)
+                return Decimal(str(pct)) / Decimal("100")
+        except Exception:
+            pass
+        return Decimal("0.10")
+
+    async def evaluate(
         self,
         symbol: str,
         candles: list[list] | np.ndarray,
@@ -110,11 +141,16 @@ class DecisionEngine:
             TradeSignal if score >= gate threshold, else None.
         """
         from app.core import metrics
+
         metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
 
         if len(candles) < _MIN_CANDLES:
-            logger.debug("evaluate: %s — only %d candles (need %d)",
-                         symbol, len(candles), _MIN_CANDLES)
+            logger.debug(
+                "evaluate: %s — only %d candles (need %d)",
+                symbol,
+                len(candles),
+                _MIN_CANDLES,
+            )
             return None
 
         metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
@@ -128,29 +164,154 @@ class DecisionEngine:
         # Step 1: Regime classification
         regime = self._classifier.classify(arr)
         logger.debug("evaluate: %s regime=%s", symbol, regime.value)
+        if self._redis:
+            try:
+                key = f"system:regime:{symbol.replace('/', ':')}"
+                await self._redis.set(key, regime.value)
+            except Exception as e:
+                logger.warning("Failed to save regime to redis for %s: %s", symbol, e)
 
         # Step 2: Determine directions (regime-dependent)
         directions = self._determine_directions(regime)
 
         # Step 3: Score each direction, take first pass
         for direction in directions:
+            # Extreme Funding Rate Block
+            if funding_rate is not None:
+                if direction == "LONG" and funding_rate > 0.0005:
+                    logger.info(
+                        "evaluate: %s LONG blocked due to extreme positive funding %.5f",
+                        symbol,
+                        funding_rate,
+                    )
+                    continue
+                if direction == "SHORT" and funding_rate < -0.0005:
+                    logger.info(
+                        "evaluate: %s SHORT blocked due to extreme negative funding %.5f",
+                        symbol,
+                        funding_rate,
+                    )
+                    continue
+            momentum_exemption = False
+            macro_penalty = 1.0
+
+            # Multi-Timeframe Trend Alignment Block
+            if self._multi_tf:
+                mtf_res = await self._multi_tf.check(symbol, direction)
+                if mtf_res.get("blocked"):
+                    logger.info(
+                        "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
+                        symbol,
+                        direction,
+                    )
+                    continue
+
+                # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
+                if len(arr) >= 24:
+                    close_now = arr[-1][4]
+                    close_24h_ago = arr[-24][4]
+                    pct_change = (close_now - close_24h_ago) / close_24h_ago
+                    if direction == "LONG" and pct_change > 0.15 or direction == "SHORT" and pct_change < -0.15:
+                        momentum_exemption = True
+
+                # Macro Anchor (Lead-Lag) Penalty
+                if symbol not in ["BTC/USDT", "ETH/USDT"] and not momentum_exemption:
+                    macro_penalty = await self._multi_tf.get_macro_anchor_penalty(
+                        direction
+                    )
+
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
-            score = self._router.evaluate_signal(
-                arr, regime, direction,
+            score, vol_factor = self._router.evaluate_signal(
+                arr,
+                regime,
+                direction,
                 global_prices=global_prices,
                 orderbook_delta=orderbook_delta,
                 funding_rate=funding_rate,
                 oi_change=oi_change,
             )
-            logger.debug("evaluate: %s %s score=%.1f (gate=%.1f)",
-                         symbol, direction, score, self._gate)
 
-            if score >= self._gate:
+            # Momentum Exemption: Do not penalize explosive gainers for their volatility
+            if momentum_exemption:
+                logger.info(
+                    "evaluate: %s %s has momentum exemption, bypassing volatility gate (vol_factor %.2f -> 1.0)",
+                    symbol,
+                    direction,
+                    vol_factor,
+                )
+                vol_factor = 1.0
+
+                # If StrategyRouter scored it low (e.g. 0) because the explosive move happened a few hours ago,
+                # we force the score up to the base gate so it reaches the AI Analyst.
+                if score < float(self._gate):
+                    logger.info(
+                        "evaluate: %s %s momentum exemption forcing score %.1f -> %.1f for AI Analyst review",
+                        symbol,
+                        direction,
+                        score,
+                        float(self._gate),
+                    )
+                    score = float(self._gate)
+
+            # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
+            score = score * macro_penalty
+            effective_gate = float(self._gate) * vol_factor
+            logger.debug(
+                "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)",
+                symbol,
+                direction,
+                score,
+                effective_gate,
+                vol_factor,
+            )
+
+            if score >= effective_gate:
+                if await self.check_consecutive_losses(symbol, regime):
+                    return None
+
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
-                return self._build_signal(symbol, direction, regime, score, arr)
+                return await self._build_signal(symbol, direction, regime, score, arr)
 
         return None
+
+    async def check_consecutive_losses(self, symbol: str, regime: MarketRegime) -> bool:
+        """Check if symbol has 3+ consecutive losses in the same regime.
+
+        Returns True if signal should be REJECTED (too many consecutive losses).
+        """
+        if self._trade_memory is None:
+            return False
+
+        try:
+            trades = await self._trade_memory.get_recent(symbol, count=5)
+            if not trades:
+                return False
+
+            regime_str = regime.value
+            consecutive = 0
+            for t in trades:
+                pnl = t.get("pnl_pct", 0)
+                if pnl < 0:
+                    consecutive += 1
+                else:
+                    break
+
+            if consecutive >= self._CONSECUTIVE_LOSS_THRESHOLD:
+                logger.warning(
+                    "consecutive_loss_block: %s %d consecutive losses — REJECTING (cooldown)",
+                    symbol,
+                    consecutive,
+                )
+                from app.core import metrics
+
+                metrics.signal_confidence_passed_total.labels(regime=regime_str)
+                return True
+            return False
+
+        except Exception:
+            logger.exception("consecutive_loss_check failed for %s", symbol)
+            return False
 
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
         """Determine which directions to evaluate based on regime."""
@@ -160,7 +321,7 @@ class DecisionEngine:
             return ["SHORT"]
         return ["LONG", "SHORT"]
 
-    def _build_signal(
+    async def _build_signal(
         self,
         symbol: str,
         direction: str,
@@ -204,12 +365,34 @@ class DecisionEngine:
             else:
                 tp_price = entry_price - offset
 
-        # Position size (risk-distance based)
+        # Position size (balance-based risk allocation)
         risk_distance = abs(entry_price - sl_price)
         if risk_distance <= Decimal("0"):
             amount = self._base_size
+        elif self._wallet_balance > 0:
+            # Kelly Scaling: Multiply risk_pct by (score/100)
+            base_risk_pct = await self._get_risk_pct()
+            scaled_risk_pct = base_risk_pct * Decimal(str(score / 100.0))
+
+            amount = (
+                self._wallet_balance
+                * scaled_risk_pct
+                * profile.size_multiplier
+                / risk_distance
+            )
+            # Cap notional to 40% of equity (PRM single position limit)
+            max_notional = self._wallet_balance * Decimal("0.40")
+            if entry_price > 0:
+                max_amount = max_notional / entry_price
+                amount = min(amount, max_amount)
         else:
-            amount = self._base_size * Decimal("100") * profile.size_multiplier / risk_distance
+            # Fallback: fixed base_size when balance unknown
+            amount = (
+                self._base_size
+                * Decimal("100")
+                * profile.size_multiplier
+                / risk_distance
+            )
 
         # Entry fee rate (maker for post_only, taker otherwise)
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee

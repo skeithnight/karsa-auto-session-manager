@@ -43,11 +43,20 @@ CHOP_SCORE_WICK_SNAPBACK: int = 20
 CHOP_SCORE_FUNDING_CONF: int = 30
 CHOP_SCORE_OI_DROP: int = 30
 
-STRATEGY_GATE_THRESHOLD: int = 65
+STRATEGY_GATE_THRESHOLD: int = (
+    40  # ponytail: raised from 25, restore to 65 when confident
+)
+# Cross-asset volatility normalization: ATR as % of price reference point
+VOLATILITY_REFERENCE_ATR_PCT: float = 2.0  # typical BTC ATR_pct
+VOLATILITY_FACTOR_MIN: float = 0.7  # low-vol bonus (lower gate)
+VOLATILITY_FACTOR_MAX: float = 1.5  # high-vol penalty (higher gate)
 
 
 class StrategyRouter:
     """Regime-aware signal scorer — no LLM, deterministic."""
+
+    def __init__(self, volatility_scaling: bool = True) -> None:
+        self.volatility_scaling = volatility_scaling
 
     def evaluate_signal(
         self,
@@ -80,7 +89,13 @@ class StrategyRouter:
             logger.warning(
                 f"StrategyRouter: only {candles.shape[0]} candles (< 20), returning 0"
             )
-            return 0.0
+            return 0.0, 1.0
+
+        # Cross-asset volatility normalization
+        atr_pct = self._calculate_atr_pct(candles)
+        vol_factor = (
+            self._volatility_factor(atr_pct) if self.volatility_scaling else 1.0
+        )
 
         if regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
             score = self._score_trend_strategy(candles, direction, global_prices)
@@ -92,10 +107,15 @@ class StrategyRouter:
             )
         else:
             logger.warning(f"StrategyRouter: unknown regime {regime}, returning 0")
-            return 0.0
+            return 0.0, 1.0
+
+        # Cross-asset normalization: vol_factor returned for gate threshold scaling
+        # High-vol assets (altcoins) get vol_factor > 1.0 → higher effective gate
+        # Low-vol assets get vol_factor < 1.0 → lower effective gate (easier pass)
 
         logger.info(
-            f"StrategyRouter: regime={regime.value} dir={direction} score={score}"
+            f"StrategyRouter: regime={regime.value} dir={direction} "
+            f"score={score} atr_pct={atr_pct:.2f} vol_factor={vol_factor:.2f}"
         )
 
         from app.core import metrics as m
@@ -109,11 +129,9 @@ class StrategyRouter:
         else:
             bucket = "85-100"
 
-        m.strategy_scored_total.labels(
-            regime=regime.value, score_bucket=bucket
-        ).inc()
+        m.strategy_scored_total.labels(regime=regime.value, score_bucket=bucket).inc()
 
-        return float(score)
+        return float(score), float(vol_factor)
 
     # ------------------------------------------------------------------
     # TREND scoring
@@ -137,7 +155,12 @@ class StrategyRouter:
         rolling_high = float(np.max(highs[-21:-1]))  # exclude current bar
         rolling_low = float(np.min(lows[-21:-1]))
 
-        if direction == "LONG" and last_close > rolling_high or direction == "SHORT" and last_close < rolling_low:
+        if (
+            direction == "LONG"
+            and last_close > rolling_high
+            or direction == "SHORT"
+            and last_close < rolling_low
+        ):
             score += TREND_SCORE_BREAKOUT
 
         # Volume surge: current > 1.5x 20-bar SMA
@@ -187,11 +210,23 @@ class StrategyRouter:
         lower_band = sma - 2.5 * std
 
         # BB edge: price pierced band
-        if direction == "SHORT" and last_high > upper_band or direction == "LONG" and last_low < lower_band:
+        if (
+            direction == "SHORT"
+            and last_high > upper_band
+            or direction == "LONG"
+            and last_low < lower_band
+        ):
             score += RANGE_SCORE_BB_EDGE
 
         # Wick rejection: closed back inside bands after piercing
-        if direction == "SHORT" and last_high > upper_band and last_close < upper_band or direction == "LONG" and last_low < lower_band and last_close > lower_band:
+        if (
+            direction == "SHORT"
+            and last_high > upper_band
+            and last_close < upper_band
+            or direction == "LONG"
+            and last_low < lower_band
+            and last_close > lower_band
+        ):
             score += RANGE_SCORE_WICK
 
         # RSI exhaustion (14-period, Wilder)
@@ -219,15 +254,32 @@ class StrategyRouter:
         Need 3/4 to pass gate (70+). One or two components = rejected.
         """
         score = 0
-        closes = candles[:, 4].astype(float) if candles.ndim == 2 else np.array([c[4] for c in candles], dtype=float)
-        highs = candles[:, 2].astype(float) if candles.ndim == 2 else np.array([c[2] for c in candles], dtype=float)
-        lows = candles[:, 3].astype(float) if candles.ndim == 2 else np.array([c[3] for c in candles], dtype=float)
+        closes = (
+            candles[:, 4].astype(float)
+            if candles.ndim == 2
+            else np.array([c[4] for c in candles], dtype=float)
+        )
+        highs = (
+            candles[:, 2].astype(float)
+            if candles.ndim == 2
+            else np.array([c[2] for c in candles], dtype=float)
+        )
+        lows = (
+            candles[:, 3].astype(float)
+            if candles.ndim == 2
+            else np.array([c[3] for c in candles], dtype=float)
+        )
 
         # 1. Orderbook absorption: contrarian delta vs price direction (+20)
         #    Price dropping but bids absorbing (delta < 0) = LONG signal
         #    Price rising but asks absorbing (delta > 0) = SHORT signal
         if orderbook_delta is not None:
-            if direction == "LONG" and orderbook_delta < 0 or direction == "SHORT" and orderbook_delta > 0:
+            if (
+                direction == "LONG"
+                and orderbook_delta < 0
+                or direction == "SHORT"
+                and orderbook_delta > 0
+            ):
                 score += CHOP_SCORE_ORDERBOOK_ABSORPTION
 
         # 2. Price wick snap-back: candle reversed back inside range (+20)
@@ -253,7 +305,12 @@ class StrategyRouter:
         #    Deeply negative funding but price won't drop = shorts trapped
         #    Deeply positive funding but price won't rise = longs trapped
         if funding_rate is not None:
-            if direction == "LONG" and funding_rate < -0.0005 or direction == "SHORT" and funding_rate > 0.0005:
+            if (
+                direction == "LONG"
+                and funding_rate < -0.0005
+                or direction == "SHORT"
+                and funding_rate > 0.0005
+            ):
                 score += CHOP_SCORE_FUNDING_CONF
 
         # 4. OI drop (capitulation): OI dropping during the move (+30)
@@ -289,3 +346,33 @@ class StrategyRouter:
 
         rs = avg_gain / avg_loss
         return 100.0 - 100.0 / (1.0 + rs)
+
+    @staticmethod
+    def _calculate_atr_pct(candles: np.ndarray[Any, Any]) -> float:
+        """ATR as % of close price. Returns 2.0 (reference) on insufficient data."""
+        if candles.shape[0] < 15:
+            return VOLATILITY_REFERENCE_ATR_PCT
+        highs = candles[:, 2].astype(float)
+        lows = candles[:, 3].astype(float)
+        closes = candles[:, 4].astype(float)
+        tr = np.maximum(
+            highs[1:] - lows[1:],
+            np.maximum(np.abs(highs[1:] - closes[:-1]), np.abs(lows[1:] - closes[:-1])),
+        )
+        atr = float(np.mean(tr[-14:]))
+        last_close = closes[-1]
+        if last_close <= 0:
+            return VOLATILITY_REFERENCE_ATR_PCT
+        return (atr / last_close) * 100.0
+
+    @staticmethod
+    def _volatility_factor(atr_pct: float) -> float:
+        """Scale factor based on asset volatility relative to reference.
+
+        High-vol assets (e.g. altcoins with ATR_pct=4%) get a factor > 1.0,
+        effectively raising the gate threshold. Low-vol assets get < 1.0.
+        """
+        if VOLATILITY_REFERENCE_ATR_PCT <= 0:
+            return 1.0
+        raw = atr_pct / VOLATILITY_REFERENCE_ATR_PCT
+        return max(VOLATILITY_FACTOR_MIN, min(VOLATILITY_FACTOR_MAX, raw))

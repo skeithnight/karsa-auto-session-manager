@@ -134,8 +134,12 @@ class PositionJudge:
         # Forced exit after consecutive HOLDs on loser
         if hold_count >= max_holds and pnl_pct < 0:
             metrics.ai_consecutive_hold_exits.inc()
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="EXIT", tier="forced").inc()
-            logger.warning(f"PositionJudge: forced EXIT {symbol} {side} after {hold_count} HOLDs, pnl={pnl_pct:.2f}%")
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict="EXIT", tier="forced"
+            ).inc()
+            logger.warning(
+                f"PositionJudge: forced EXIT {symbol} {side} after {hold_count} HOLDs, pnl={pnl_pct:.2f}%"
+            )
             self._hold_counters[hold_key] = 0
             return JudgeVerdict(
                 action="EXIT",
@@ -146,12 +150,19 @@ class PositionJudge:
 
         # Cheap pass
         verdict = await self._cheap_pass(
-            symbol, side, entry_price, current_price, atr, regime,
+            symbol,
+            side,
+            entry_price,
+            current_price,
+            atr,
+            regime,
             elapsed_seconds,
         )
 
         if verdict and verdict.action != "HOLD":
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="cheap").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict=verdict.action, tier="cheap"
+            ).inc()
             self._hold_counters[hold_key] = 0
             return verdict
 
@@ -162,12 +173,24 @@ class PositionJudge:
             return verdict
 
         escalated = await self._escalated_pass(
-            symbol, side, entry_price, current_price, peak_price, atr, regime,
-            elapsed_seconds, prev_action, prev_conf, hold_count, recent_trades,
+            symbol,
+            side,
+            entry_price,
+            current_price,
+            peak_price,
+            atr,
+            regime,
+            elapsed_seconds,
+            prev_action,
+            prev_conf,
+            hold_count,
+            recent_trades,
         )
 
         if escalated:
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=escalated.action, tier="escalated").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict=escalated.action, tier="escalated"
+            ).inc()
             if escalated.action == "HOLD" and pnl_pct < 0:
                 self._hold_counters[hold_key] = hold_count + 1
             else:
@@ -175,7 +198,9 @@ class PositionJudge:
             return escalated
 
         # Both tiers failed — conservative HOLD (fail-safe: never exit without AI)
-        metrics.ai_judge_verdict.labels(symbol=symbol, verdict="HOLD", tier="fallback").inc()
+        metrics.ai_judge_verdict.labels(
+            symbol=symbol, verdict="HOLD", tier="fallback"
+        ).inc()
         if pnl_pct < 0:
             self._hold_counters[hold_key] = hold_count + 1
         return JudgeVerdict(
@@ -186,7 +211,14 @@ class PositionJudge:
         )
 
     async def _cheap_pass(
-        self, symbol, side, entry_price, current_price, atr, regime, elapsed_seconds,
+        self,
+        symbol,
+        side,
+        entry_price,
+        current_price,
+        atr,
+        regime,
+        elapsed_seconds,
     ) -> JudgeVerdict | None:
         """Quick haiku pass, no TA tools."""
         pnl_pct = float((current_price - entry_price) / entry_price * 100)
@@ -206,17 +238,32 @@ class PositionJudge:
 
         response = await self.ai_client.complete(prompt, max_tokens=128)
         if not response:
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="unavailable", tier="cheap").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict="unavailable", tier="cheap"
+            ).inc()
             return None
 
         verdict = self._parse_response(response, "cheap")
         if verdict:
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="cheap").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict=verdict.action, tier="cheap"
+            ).inc()
         return verdict
 
     async def _escalated_pass(
-        self, symbol, side, entry_price, current_price, peak_price, atr, regime,
-        elapsed_seconds, prev_action, prev_conf, hold_count, recent_trades="",
+        self,
+        symbol,
+        side,
+        entry_price,
+        current_price,
+        peak_price,
+        atr,
+        regime,
+        elapsed_seconds,
+        prev_action,
+        prev_conf,
+        hold_count,
+        recent_trades="",
     ) -> JudgeVerdict | None:
         """Full TA pass with escalated model."""
         candles = await self.fetcher.fetch(symbol, "1h", 200)
@@ -253,7 +300,11 @@ class PositionJudge:
 
         def _bb(part: str) -> str:
             if f"{part}=" in bb:
-                return bb.split(f"{part}=")[1].split(",")[0] if "," in bb.split(f"{part}=")[1] else bb.split(f"{part}=")[1]
+                return (
+                    bb.split(f"{part}=")[1].split(",")[0]
+                    if "," in bb.split(f"{part}=")[1]
+                    else bb.split(f"{part}=")[1]
+                )
             return "N/A"
 
         def _macd(part: str) -> str:
@@ -290,12 +341,16 @@ class PositionJudge:
 
         response = await self.ai_client.complete(prompt, max_tokens=256)
         if not response:
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict="unavailable", tier="escalated").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict="unavailable", tier="escalated"
+            ).inc()
             return None
 
         verdict = self._parse_response(response, "escalated")
         if verdict:
-            metrics.ai_judge_verdict.labels(symbol=symbol, verdict=verdict.action, tier="escalated").inc()
+            metrics.ai_judge_verdict.labels(
+                symbol=symbol, verdict=verdict.action, tier="escalated"
+            ).inc()
         return verdict
 
     def _parse_response(self, response: str, tier: str) -> JudgeVerdict | None:

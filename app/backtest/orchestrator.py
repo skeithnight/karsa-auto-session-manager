@@ -202,17 +202,27 @@ class BacktestOrchestrator:
                             direction=row[2],
                             regime=row[3] or "",
                             score=float(row[4]) if row[4] else 0.0,
-                            entry_price=Decimal(str(row[5])) if row[5] else Decimal("0"),
+                            entry_price=Decimal(str(row[5]))
+                            if row[5]
+                            else Decimal("0"),
                             exit_price=Decimal(str(row[6])) if row[6] else None,
                             exit_reason=row[7],
                             sl_price=Decimal(str(row[8])) if row[8] else None,
                             tp_price=Decimal(str(row[9])) if row[9] else None,
                             amount=Decimal(str(row[10])) if row[10] else Decimal("0"),
-                            size_multiplier=Decimal(str(row[11])) if row[11] else Decimal("1"),
-                            pnl_gross=Decimal(str(row[12])) if row[12] else Decimal("0"),
+                            size_multiplier=Decimal(str(row[11]))
+                            if row[11]
+                            else Decimal("1"),
+                            pnl_gross=Decimal(str(row[12]))
+                            if row[12]
+                            else Decimal("0"),
                             pnl_net=Decimal(str(row[13])) if row[13] else Decimal("0"),
-                            total_fees=Decimal(str(row[14])) if row[14] else Decimal("0"),
-                            total_funding=Decimal(str(row[15])) if row[15] else Decimal("0"),
+                            total_fees=Decimal(str(row[14]))
+                            if row[14]
+                            else Decimal("0"),
+                            total_funding=Decimal(str(row[15]))
+                            if row[15]
+                            else Decimal("0"),
                             bars_held=row[16] or 0,
                             entry_time=row[17],
                             exit_time=row[18],
@@ -231,12 +241,16 @@ class BacktestOrchestrator:
         set_key = f"{TELEMETRY_PREFIX}bulk:{bulk_id}"
 
         for sym in symbols:
-            spec = BacktestJobSpec(symbol=sym, candle_limit=candle_limit, bulk_job_id=bulk_id)
+            spec = BacktestJobSpec(
+                symbol=sym, candle_limit=candle_limit, bulk_job_id=bulk_id
+            )
             job_id = await self.submit_job(spec)
             await self._redis.redis.sadd(set_key, job_id)
 
-        await self._redis.redis.expire(set_key, RESULTS_TTL_S * 24) # 24h TTL for bulk
-        logger.info("bulk_backtest_submitted bulk_id=%s count=%d", bulk_id, len(symbols))
+        await self._redis.redis.expire(set_key, RESULTS_TTL_S * 24)  # 24h TTL for bulk
+        logger.info(
+            "bulk_backtest_submitted bulk_id=%s count=%d", bulk_id, len(symbols)
+        )
         return bulk_id
 
     async def get_bulk_job_status(self, bulk_id: str) -> dict[str, Any]:
@@ -244,7 +258,13 @@ class BacktestOrchestrator:
         set_key = f"{TELEMETRY_PREFIX}bulk:{bulk_id}"
         job_ids = await self._redis.redis.smembers(set_key)
         if not job_ids:
-            return {"status": "unknown", "total": 0, "completed": 0, "failed": 0, "pending": 0}
+            return {
+                "status": "unknown",
+                "total": 0,
+                "completed": 0,
+                "failed": 0,
+                "pending": 0,
+            }
 
         total = len(job_ids)
         completed = 0
@@ -266,7 +286,7 @@ class BacktestOrchestrator:
             "total": total,
             "completed": completed,
             "failed": failed,
-            "pending": pending
+            "pending": pending,
         }
 
     async def list_active_bulk_jobs(self) -> list[dict[str, Any]]:
@@ -295,8 +315,10 @@ class BacktestOrchestrator:
         results: list[BacktestTradeResult] = []
         try:
             async with self._db.engine.connect() as conn:
-                for chunk_idx in range(0, len(job_ids), 50): # batch query to avoid massive IN clauses
-                    chunk = job_ids[chunk_idx:chunk_idx+50]
+                for chunk_idx in range(
+                    0, len(job_ids), 50
+                ):  # batch query to avoid massive IN clauses
+                    chunk = job_ids[chunk_idx : chunk_idx + 50]
                     rows = await conn.execute(
                         text(f"""
                             SELECT job_id, symbol, direction, regime, score,
@@ -305,38 +327,56 @@ class BacktestOrchestrator:
                                    pnl_gross, pnl_net, total_fees, total_funding,
                                    bars_held, entry_time, exit_time
                             FROM backtest_results
-                            WHERE job_id IN ({','.join([':j'+str(i) for i in range(len(chunk))])})
+                            WHERE job_id IN ({",".join([":j" + str(i) for i in range(len(chunk))])})
                             ORDER BY entry_time ASC
                         """),
                         {f"j{i}": jid for i, jid in enumerate(chunk)},
                     )
 
                     for row in rows:
-                        results.append(BacktestTradeResult(
-                            job_id=row[0],
-                            symbol=row[1],
-                            direction=row[2],
-                            regime=row[3] or "",
-                            score=float(row[4]) if row[4] else 0.0,
-                            entry_price=Decimal(str(row[5])) if row[5] else Decimal("0"),
-                            exit_price=Decimal(str(row[6])) if row[6] else None,
-                            exit_reason=row[7],
-                            sl_price=Decimal(str(row[8])) if row[8] else None,
-                            tp_price=Decimal(str(row[9])) if row[9] else None,
-                            amount=Decimal(str(row[10])) if row[10] else Decimal("0"),
-                            size_multiplier=Decimal(str(row[11])) if row[11] else Decimal("1"),
-                            pnl_gross=Decimal(str(row[12])) if row[12] else Decimal("0"),
-                            pnl_net=Decimal(str(row[13])) if row[13] else Decimal("0"),
-                            total_fees=Decimal(str(row[14])) if row[14] else Decimal("0"),
-                            total_funding=Decimal(str(row[15])) if row[15] else Decimal("0"),
-                            bars_held=row[16] or 0,
-                            entry_time=row[17],
-                            exit_time=row[18],
-                            trade_taken=True,
-                        ))
+                        results.append(
+                            BacktestTradeResult(
+                                job_id=row[0],
+                                symbol=row[1],
+                                direction=row[2],
+                                regime=row[3] or "",
+                                score=float(row[4]) if row[4] else 0.0,
+                                entry_price=Decimal(str(row[5]))
+                                if row[5]
+                                else Decimal("0"),
+                                exit_price=Decimal(str(row[6])) if row[6] else None,
+                                exit_reason=row[7],
+                                sl_price=Decimal(str(row[8])) if row[8] else None,
+                                tp_price=Decimal(str(row[9])) if row[9] else None,
+                                amount=Decimal(str(row[10]))
+                                if row[10]
+                                else Decimal("0"),
+                                size_multiplier=Decimal(str(row[11]))
+                                if row[11]
+                                else Decimal("1"),
+                                pnl_gross=Decimal(str(row[12]))
+                                if row[12]
+                                else Decimal("0"),
+                                pnl_net=Decimal(str(row[13]))
+                                if row[13]
+                                else Decimal("0"),
+                                total_fees=Decimal(str(row[14]))
+                                if row[14]
+                                else Decimal("0"),
+                                total_funding=Decimal(str(row[15]))
+                                if row[15]
+                                else Decimal("0"),
+                                bars_held=row[16] or 0,
+                                entry_time=row[17],
+                                exit_time=row[18],
+                                trade_taken=True,
+                            )
+                        )
                 return results
         except Exception as exc:
-            logger.error("get_bulk_job_results_failed bulk_id=%s error=%s", bulk_id, exc)
+            logger.error(
+                "get_bulk_job_results_failed bulk_id=%s error=%s", bulk_id, exc
+            )
 
         return results
 

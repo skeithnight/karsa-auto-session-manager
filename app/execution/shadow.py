@@ -30,6 +30,13 @@ from loguru import logger
 from app.core import metrics
 from app.core.config import get_settings
 from app.core.redis_client import RedisClient
+from app.execution.position_manager import (
+    APM_BREAKEVEN_FEE_PCT,
+    APM_BREAKEVEN_LOCK_R,
+    APM_TREND_TRAIL_ACTIVATE_R,
+    APM_TREND_TRAIL_ATR_MULT,
+    REGIME_SHIFT_CONFIRM_COUNT,
+)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,6 +48,7 @@ SHADOW_FUNDING_INTERVAL_HOURS: int = 8
 # ---------------------------------------------------------------------------
 # ShadowExecutor — drop-in for SmartOrderRouter
 # ---------------------------------------------------------------------------
+
 
 class ShadowExecutor:
     """Simulated order routing. Same execute/execute_exit interface as SOR.
@@ -73,9 +81,21 @@ class ShadowExecutor:
         """Fee asymmetry: maker (post-only) vs taker (market/IOC)."""
         return self._maker_fee if is_post_only else self._taker_fee
 
-    async def _get_mid_price(self, symbol: str) -> Decimal:
-        """Read live mid price from Redis system:state:{symbol}."""
-        raw = await self._redis.get(f"system:state:{symbol}")
+    async def _get_mid_price(
+        self, symbol: str, fallback_price: Decimal | None = None
+    ) -> Decimal:
+        """Read live mid price. Checks cached shadow price first, then system keys."""
+        # Check shadow-cached price (written on execute)
+        cached = await self._redis.get(f"shadow:price:{symbol}")
+        if cached:
+            try:
+                price = Decimal(cached)
+                if price > 0:
+                    return price
+            except Exception:
+                pass
+        # Check global:state keys (written by RedisClient.set_global_state)
+        raw = await self._redis.get(f"global:state:{symbol}")
         if raw:
             try:
                 data = _json.loads(raw)
@@ -97,11 +117,13 @@ class ShadowExecutor:
                     return last
             except Exception:
                 pass
+        if fallback_price is not None and fallback_price > 0:
+            return fallback_price
         raise ValueError(f"ShadowExecutor: no price for {symbol}")
 
     def _apply_slippage(self, price: Decimal, side: str) -> Decimal:
         """Apply slippage — worse fill for the trader."""
-        if side == "buy":
+        if side in ("buy", "LONG"):
             return (price * (1 + self._slippage)).quantize(
                 Decimal("0.00000001"), rounding=ROUND_DOWN
             )
@@ -127,8 +149,11 @@ class ShadowExecutor:
         if amount <= 0:
             return None
 
-        mid = await self._get_mid_price(symbol)
+        mid = await self._get_mid_price(symbol, fallback_price=price)
         fill_price = self._apply_slippage(mid, side)
+
+        # Cache mid price for APM monitoring (SL/TP checks)
+        await self._redis.set(f"shadow:price:{symbol}", str(mid), ex=300)
 
         fee_rate = self._pick_fee(is_post_only)
         fee = (fill_price * amount * fee_rate).quantize(Decimal("0.01"))
@@ -145,9 +170,7 @@ class ShadowExecutor:
             f"status={status})"
         )
 
-        metrics.karsa_shadow_orders_placed_total.labels(
-            symbol=symbol, side=side
-        ).inc()
+        metrics.karsa_shadow_orders_placed_total.labels(symbol=symbol, side=side).inc()
 
         result: dict[str, Any] = {
             "id": order_id,
@@ -180,7 +203,7 @@ class ShadowExecutor:
             return None
 
         mid = await self._get_mid_price(symbol)
-        exit_side = "sell" if side == "buy" else "buy"
+        exit_side = "sell" if side == "LONG" else "buy"
         fill_price = self._apply_slippage(mid, exit_side)
 
         fee = (fill_price * amount * self._taker_fee).quantize(Decimal("0.01"))
@@ -219,6 +242,7 @@ class ShadowExecutor:
 # ShadowExchangeClient — wraps Redis for APM
 # ---------------------------------------------------------------------------
 
+
 class ShadowExchangeClient:
     """Same interface as BybitClient for APM, reads live prices from Redis."""
 
@@ -232,12 +256,12 @@ class ShadowExchangeClient:
         pass
 
     async def fetch_tickers(self) -> dict:
-        """Read live prices from Redis system:state:* keys."""
+        """Read live prices from Redis global:state:* keys (written by RedisClient.set_global_state)."""
         result: dict[str, dict] = {}
         try:
             settings = get_settings()
             for symbol in settings.symbols[:10]:
-                raw = await self._redis.get(f"system:state:{symbol}")
+                raw = await self._redis.get(f"global:state:{symbol}")
                 if raw:
                     data = _json.loads(raw)
                     bid = Decimal(str(data.get("bid", "0")))
@@ -288,6 +312,7 @@ class ShadowExchangeClient:
 # ShadowAPM — monitors shadow positions, detects SL hits + wicks + funding
 # ---------------------------------------------------------------------------
 
+
 class ShadowAPM:
     """Shadow ActivePositionManager.
 
@@ -310,6 +335,7 @@ class ShadowAPM:
         self._redis = redis_client
         self._pos_store = position_store
         self._trade_store = trade_store
+        self._regime_shift_counts: dict[str, int] = {}
 
     async def run(self) -> None:
         """Main monitoring loop — 2s interval."""
@@ -336,6 +362,20 @@ class ShadowAPM:
 
         if status == "OPEN":
             await self._manage_open_position(pos)
+
+    @staticmethod
+    def _calculate_r_multiple(
+        side: str, entry_price: Decimal, live_price: Decimal, initial_risk: Decimal
+    ) -> Decimal:
+        try:
+            if initial_risk <= 0:
+                return Decimal("0")
+            if side == "LONG":
+                return (live_price - entry_price) / initial_risk
+            else:
+                return (entry_price - live_price) / initial_risk
+        except Exception:
+            return Decimal("0")
 
     # --- Refinement 4: Pending limit fill detection ---
 
@@ -373,7 +413,12 @@ class ShadowAPM:
 
         # Long fills when price dips to entry; short fills when price rises
         filled = False
-        if side == "buy" and mid <= entry_price or side == "sell" and mid >= entry_price:
+        if (
+            side == "LONG"
+            and mid <= entry_price
+            or side == "SHORT"
+            and mid >= entry_price
+        ):
             filled = True
 
         if filled:
@@ -388,12 +433,24 @@ class ShadowAPM:
 
     # --- Refinement 2: Wick miss prevention + SL detection ---
 
+    async def _get_current_regime(self, symbol: str) -> str:
+        """Fetch regime from Redis (written by RegimeEngine)."""
+        raw = await self._redis.get(f"global:regime:{symbol}")
+        if raw:
+            try:
+                data = _json.loads(raw)
+                return data.get("regime", "")
+            except Exception:
+                pass
+        return ""
+
     async def _manage_open_position(self, pos: dict) -> None:
         """Check live price against virtual SL, using worst_price_seen for wicks."""
         symbol = pos.get("symbol", "")
         side = pos.get("side", "")
         entry_price = Decimal(pos.get("entry_price", "0"))
         virtual_sl = Decimal(pos.get("virtual_sl", "0"))
+        entry_regime = pos.get("regime", "")
 
         if not symbol or not side or entry_price <= 0:
             return
@@ -405,16 +462,132 @@ class ShadowAPM:
 
         # Refinement 2: update worst_price_seen
         worst = Decimal(pos.get("worst_price_seen", str(mid)))
-        if side == "buy" and mid < worst or side == "sell" and mid > worst:
+        if side == "LONG" and mid < worst or side == "SHORT" and mid > worst:
             worst = mid
         pos["worst_price_seen"] = str(worst)
 
-        # Persist worst_price_seen back to Redis
-        key = self._pos_store._key(symbol, side)
-        await self._redis.set(key, _json.dumps(pos))
-
         # Update peak for trailing stop logic
         await self._pos_store.update_peak(symbol, side, mid)
+        peak = Decimal(str(pos.get("peak_price", mid)))
+
+        key = self._pos_store._key(symbol, side)
+
+        # --- Regime Shift Kill Switch ---
+        current_regime = await self._get_current_regime(symbol)
+        if current_regime and entry_regime and current_regime != entry_regime:
+            self._regime_shift_counts[symbol] = (
+                self._regime_shift_counts.get(symbol, 0) + 1
+            )
+            if self._regime_shift_counts[symbol] >= REGIME_SHIFT_CONFIRM_COUNT:
+                logger.warning(
+                    f"SHADOW KILL SWITCH: {symbol} regime shift {entry_regime} -> {current_regime}"
+                )
+                await self._close_shadow_position(
+                    pos, mid, f"regime_shift_{entry_regime}_to_{current_regime}"
+                )
+                self._regime_shift_counts.pop(symbol, None)
+                return
+        else:
+            self._regime_shift_counts.pop(symbol, None)
+
+        # Calculate R-Multiple
+        try:
+            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
+            initial_risk_pct = Decimal(str(risk_profile.get("sl_pct", "0")))
+            initial_risk = entry_price * initial_risk_pct
+        except Exception:
+            initial_risk = Decimal("0")
+
+        r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
+
+        # --- +1R Breakeven Lock ---
+        if not pos.get("moved_to_breakeven") and r_multiple >= APM_BREAKEVEN_LOCK_R:
+            if side == "LONG":
+                new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
+            else:
+                new_sl = entry_price - entry_price * APM_BREAKEVEN_FEE_PCT
+            pos["virtual_sl"] = str(new_sl)
+            pos["moved_to_breakeven"] = True
+            virtual_sl = new_sl
+            logger.info(
+                f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})"
+            )
+
+        # --- Trend Trailing Stop (Chandelier ATR) ---
+        if (
+            entry_regime in ("TREND_BULL", "TREND_BEAR")
+            and r_multiple >= APM_TREND_TRAIL_ACTIVATE_R
+        ):
+            atr = Decimal(str(pos.get("atr", "0")))
+            if atr > 0:
+                trail_distance = atr * APM_TREND_TRAIL_ATR_MULT
+                if side == "LONG":
+                    new_sl = peak - trail_distance
+                    if new_sl > virtual_sl:
+                        pos["virtual_sl"] = str(new_sl)
+                        virtual_sl = new_sl
+                        logger.info(
+                            f"SHADOW TRAILING STOP: {symbol} {side} SL raised to {new_sl} (Peak={peak})"
+                        )
+                else:
+                    new_sl = peak + trail_distance
+                    if new_sl < virtual_sl or virtual_sl == 0:
+                        pos["virtual_sl"] = str(new_sl)
+                        virtual_sl = new_sl
+                        logger.info(
+                            f"SHADOW TRAILING STOP: {symbol} {side} SL lowered to {new_sl} (Peak={peak})"
+                        )
+
+        # Persist state back to Redis
+        await self._redis.set(key, _json.dumps(pos))
+
+        # --- $5 hard cap: if current SL would lose > $5, tighten SL to -$5 level ---
+        # Raised from $1 to $5 — small-cap tokens with large position sizes
+        # were getting SL tightened too aggressively, causing instant exits.
+        amount = Decimal(pos.get("amount", "0"))
+        if amount > 0 and virtual_sl > 0:
+            if side == "LONG":
+                sl_loss = (virtual_sl - entry_price) * amount
+            else:
+                sl_loss = (entry_price - virtual_sl) * amount
+            if sl_loss < -5:
+                # Current SL too loose — tighten to exactly -$5 loss
+                if side == "LONG":
+                    new_sl = entry_price - Decimal("5") / amount
+                else:
+                    new_sl = entry_price + Decimal("5") / amount
+                pos["virtual_sl"] = str(new_sl)
+                await self._redis.set(key, _json.dumps(pos))
+                logger.warning(
+                    f"SHADOW $5 CAP: {symbol} {side} SL tightened "
+                    f"from {virtual_sl} to {new_sl} (was ${sl_loss:.4f} loss)"
+                )
+
+        # Stale position cleanup: no SL + older than 4h → auto-close
+        if virtual_sl <= 0:
+            try:
+                entered_at = pos.get("entered_at", "")
+                if entered_at:
+                    from datetime import UTC, datetime
+
+                    entered = datetime.fromisoformat(entered_at)
+                    if entered.tzinfo is None:
+                        entered = entered.replace(tzinfo=UTC)
+                    age_mins = (datetime.now(UTC) - entered).total_seconds() / 60
+                    if age_mins >= 240:
+                        logger.warning(
+                            "SHADOW STALE CLEANUP: %s %s held %.0fm with no SL",
+                            symbol,
+                            side,
+                            age_mins,
+                        )
+                        metrics.karsa_shadow_stale_cleanups_total.labels(
+                            symbol=symbol, side=side
+                        ).inc()
+                        await self._close_shadow_position(pos, mid, "stale_cleanup")
+                        return
+            except Exception:
+                pass
 
         # Refinement 3: funding rate drag
         await self._apply_funding_if_due(pos, symbol, side)
@@ -422,7 +595,12 @@ class ShadowAPM:
         # SL hit detection using worst_price_seen (catches wicks)
         if virtual_sl > 0:
             sl_hit = False
-            if side == "buy" and worst <= virtual_sl or side == "sell" and worst >= virtual_sl:
+            if (
+                side == "LONG"
+                and worst <= virtual_sl
+                or side == "SHORT"
+                and worst >= virtual_sl
+            ):
                 sl_hit = True
 
             if sl_hit:
@@ -433,12 +611,53 @@ class ShadowAPM:
                     symbol=symbol, side=side
                 ).inc()
                 await self._close_shadow_position(pos, virtual_sl, "sl_hit")
+                return
+
+        # TP hit detection
+        virtual_tp = Decimal(pos.get("virtual_tp", "0"))
+        if virtual_tp > 0:
+            tp_hit = False
+            if (
+                side == "LONG"
+                and mid >= virtual_tp
+                or side == "SHORT"
+                and mid <= virtual_tp
+            ):
+                tp_hit = True
+            if tp_hit:
+                logger.info(
+                    f"SHADOW TP HIT: {symbol} {side} mid={mid} >= tp={virtual_tp}"
+                )
+                metrics.karsa_shadow_tp_hits_total.labels(
+                    symbol=symbol, side=side
+                ).inc()
+                await self._close_shadow_position(pos, virtual_tp, "tp_hit")
+                return
+
+        # Time exit
+        try:
+            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
+            max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
+            if max_hold_mins > 0:
+                entered_at = pos.get("entered_at", "")
+                if entered_at:
+                    entered = datetime.fromisoformat(entered_at)
+                    elapsed_mins = (datetime.now(UTC) - entered).total_seconds() / 60
+                    if elapsed_mins >= max_hold_mins:
+                        logger.info(
+                            f"SHADOW TIME EXIT: {symbol} {side} held {elapsed_mins:.0f}m >= {max_hold_mins}m"
+                        )
+                        metrics.karsa_shadow_time_exits_total.labels(
+                            symbol=symbol, side=side
+                        ).inc()
+                        await self._close_shadow_position(pos, mid, "time_exit")
+                        return
+        except Exception:
+            pass
 
     # --- Refinement 3: Funding rate drag ---
 
-    async def _apply_funding_if_due(
-        self, pos: dict, symbol: str, side: str
-    ) -> None:
+    async def _apply_funding_if_due(self, pos: dict, symbol: str, side: str) -> None:
         """Deduct 8h funding fee from virtual PnL if funding interval elapsed."""
         last_funding_ts_str = pos.get("last_funding_ts", "")
         if not last_funding_ts_str:
@@ -466,10 +685,10 @@ class ShadowAPM:
         entry_price = Decimal(pos.get("entry_price", "0"))
         notional = entry_price * amount
 
-        if side == "buy":
+        if side == "LONG":
             funding_fee = notional * funding_rate
         else:
-            funding_fee = notional * abs(funding_rate) * Decimal("-1")
+            funding_fee = notional * funding_rate * Decimal("-1")
 
         existing_fees = Decimal(pos.get("total_funding_fees", "0"))
         pos["total_funding_fees"] = str(existing_fees + funding_fee)
@@ -507,7 +726,7 @@ class ShadowAPM:
         entry_price = Decimal(pos.get("entry_price", "0"))
         amount = Decimal(pos.get("amount", "0"))
 
-        if side == "buy":
+        if side in ("buy", "LONG"):
             pnl = (exit_price - entry_price) * amount
         else:
             pnl = (entry_price - exit_price) * amount
@@ -544,16 +763,12 @@ class ShadowAPM:
                 side=side,
                 entry_price=entry_price,
                 amount=amount,
-                confidence=float(pos.get("entry_confidence", 0)),
+                ai_confidence=int(float(pos.get("entry_confidence", 0))),
                 regime=pos.get("regime", ""),
-                strategy=pos.get("strategy", ""),
-                sl_price=Decimal(pos.get("virtual_sl", "0")),
-                tp_price=Decimal(pos.get("virtual_tp", "0")),
-                risk_profile=pos.get("risk_profile_json", ""),
+                risk_profile_json=pos.get("risk_profile_json", ""),
             )
             await self._trade_store.close_trade(
                 symbol=symbol,
-                side=side,
                 exit_price=exit_price,
                 exit_reason=reason,
                 pnl=net_pnl,

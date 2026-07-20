@@ -46,8 +46,8 @@ class RedisClient:
             self.settings.redis_url,
             encoding="utf-8",
             decode_responses=True,
-            max_connections=50,
-            timeout=10,               # wait up to 10s for a free connection
+            max_connections=500,
+            timeout=10,  # wait up to 10s for a free connection
             socket_timeout=socket_timeout,
             socket_connect_timeout=5.0,
             retry_on_timeout=True,
@@ -184,11 +184,15 @@ class RedisClient:
             raise RuntimeError("Redis not connected")
 
         key = "system:circuit_breaker"
-        value = json.dumps({
-            "status": status,
-            "reason": reason,
-            "triggered_at": datetime.now(UTC).isoformat() if status == "TRIGGERED" else None,
-        })
+        value = json.dumps(
+            {
+                "status": status,
+                "reason": reason,
+                "triggered_at": datetime.now(UTC).isoformat()
+                if status == "TRIGGERED"
+                else None,
+            }
+        )
         await self.redis.set(key, value)
         logger.debug("set_circuit_breaker: returning None")
 
@@ -224,7 +228,9 @@ class RedisClient:
             raise RuntimeError("Redis not connected")
 
         result = await self.redis.get("system:config:regime")
-        logger.debug(f"get_session_config: returning result_type={type(result).__name__}")
+        logger.debug(
+            f"get_session_config: returning result_type={type(result).__name__}"
+        )
         return result
 
     # --- AI Cache ---

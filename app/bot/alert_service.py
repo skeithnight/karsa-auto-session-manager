@@ -30,6 +30,7 @@ class AlertService:
 
         # Flush any queued messages
         import asyncio
+
         for msg in self._queue:
             asyncio.create_task(self.send(msg))
         self._queue.clear()

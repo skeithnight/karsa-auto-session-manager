@@ -24,7 +24,7 @@ def _make_pos(
     atr: str = "2.0",
     moved_to_be: bool = False,
     sl_order_id: str = "SL-001",
-    amount: str = "1.0",
+    amount: str = "0.1",
     entry_regime: str = "TREND_BULL",
     max_hold: int = 1440,
 ) -> dict:
@@ -39,7 +39,7 @@ def _make_pos(
         "sl_order_id": sl_order_id,
         "amount": amount,
         "entry_regime": entry_regime,
-        "entry_time": datetime.now(UTC) - timedelta(minutes=10),
+        "entry_time": (datetime.now(UTC) - timedelta(minutes=10)).isoformat(),
         "max_hold_time_mins": max_hold,
         "current_sl": "95.0",
     }
@@ -61,6 +61,7 @@ def _make_apm() -> tuple:
     client.amend_stop_loss = AsyncMock()
     client.place_stop_loss = AsyncMock()
     client.place_take_profit = AsyncMock(return_value={"orderId": "TP-001"})
+    client.set_trading_stop = AsyncMock()
     client.reduce_position = AsyncMock(return_value={"orderId": "RED-001"})
     apm = ActivePositionManager(client, store, regime, alert)
     return apm, client, store, regime, alert
@@ -155,7 +156,7 @@ class TestForceClose:
         await apm._force_close_position(pos, "test")
         assert client.cancel_order.call_count == 2
         client.create_market_order.assert_called_once_with(
-            "SOL/USDT", "SELL", Decimal("1.0"), {"reduceOnly": True}
+            "SOL/USDT", "SELL", Decimal("0.1"), {"reduceOnly": True}
         )
         store.remove.assert_called_once_with("SOL/USDT", "buy")
 
@@ -166,7 +167,7 @@ class TestForceClose:
         pos = _make_pos(side="SHORT")
         await apm._force_close_position(pos, "test")
         client.create_market_order.assert_called_once_with(
-            "SOL/USDT", "BUY", Decimal("1.0"), {"reduceOnly": True}
+            "SOL/USDT", "BUY", Decimal("0.1"), {"reduceOnly": True}
         )
         store.remove.assert_called_once_with("SOL/USDT", "sell")
 
@@ -203,7 +204,7 @@ class TestReconciliation:
 
     @pytest.mark.asyncio
     async def test_missing_sl_replaced(self) -> None:
-        """When SL order disappeared from exchange, re-place it."""
+        """When SL is missing, re-attach via set_trading_stop."""
         apm, client, store, regime, alert = _make_apm()
         store.list_all = AsyncMock(
             return_value=[{
@@ -212,20 +213,17 @@ class TestReconciliation:
                 "sl_order_id": "SL-GONE",
                 "entry_price": "100.0",
                 "amount": "1.0",
+                "initial_risk_per_unit": "5.0",
             }]
         )
         client.fetch_positions = AsyncMock(
             return_value=[{"symbol": "SOL/USDT"}]
         )
-        client.fetch_open_orders = AsyncMock(return_value=[])
-        client.place_stop_loss = AsyncMock(
-            return_value={"orderId": "SL-NEW"}
-        )
+        client.set_trading_stop = AsyncMock()
         await apm._reconcile_positions()
-        client.place_stop_loss.assert_called_once_with(
-            "SOL/USDT", "buy", Decimal("100.0"), Decimal("1.0")
+        client.set_trading_stop.assert_called_once_with(
+            "SOL/USDT", "buy", stop_loss=Decimal("95.0")
         )
-        store.update_sl.assert_called_once_with("SOL/USDT", "buy", "SL-NEW")
 
 
 class TestTakeProfit:
@@ -234,14 +232,14 @@ class TestTakeProfit:
         apm, client, store, regime, alert = _make_apm()
         pos = _make_pos(entry_regime="RANGE", moved_to_be=False, initial_risk="5.0")
         await apm._manage_single_position(pos)
-        client.place_take_profit.assert_called_once()
+        client.set_trading_stop.assert_called()
 
     @pytest.mark.asyncio
-    async def test_no_tp_for_trend_regime(self) -> None:
+    async def test_tp_placed_for_trend_regime(self) -> None:
         apm, client, store, regime, alert = _make_apm()
         pos = _make_pos(entry_regime="TREND_BULL", moved_to_be=False)
         await apm._manage_single_position(pos)
-        client.place_take_profit.assert_not_called()
+        client.set_trading_stop.assert_any_call('SOL/USDT', 'buy', take_profit=Decimal('104.00'))
 
     @pytest.mark.asyncio
     async def test_tp_not_replaced_once_placed(self) -> None:
@@ -249,7 +247,7 @@ class TestTakeProfit:
         pos = _make_pos(entry_regime="CHOP", moved_to_be=False)
         pos["tp_placed"] = True
         await apm._manage_single_position(pos)
-        client.place_take_profit.assert_not_called()
+        client.set_trading_stop.assert_not_called()
 
 
 class TestScaleOut:

@@ -61,7 +61,9 @@ def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSumm
     s.profit_factor = (
         float(s.gross_profit / s.gross_loss)
         if s.gross_loss > 0
-        else float("inf") if s.gross_profit > 0 else 0.0
+        else float("inf")
+        if s.gross_profit > 0
+        else 0.0
     )
 
     total_bars = sum(r.bars_held for r in taken)
@@ -69,9 +71,7 @@ def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSumm
 
     s.regime_counts = dict(Counter(r.regime for r in taken if r.regime))
     s.direction_counts = dict(Counter(r.direction for r in taken))
-    s.exit_reason_counts = dict(
-        Counter(r.exit_reason for r in taken if r.exit_reason)
-    )
+    s.exit_reason_counts = dict(Counter(r.exit_reason for r in taken if r.exit_reason))
 
     return s
 
@@ -128,11 +128,7 @@ def format_backtest_summary(
     )
     lines.append(f"  Net PnL: ${float(s.net_pnl):>8.2f}")
 
-    pf_str = (
-        f"{s.profit_factor:.2f}"
-        if s.profit_factor != float("inf")
-        else "∞"
-    )
+    pf_str = f"{s.profit_factor:.2f}" if s.profit_factor != float("inf") else "∞"
     lines.append(f"  Profit Factor: {pf_str}  |  Avg Hold: {s.avg_bars_held:.0f} bars")
     lines.append("")
 
@@ -145,18 +141,14 @@ def format_backtest_summary(
 
     # Direction breakdown
     if s.direction_counts:
-        direction_str = "  ".join(
-            f"{d}: {c}" for d, c in s.direction_counts.items()
-        )
+        direction_str = "  ".join(f"{d}: {c}" for d, c in s.direction_counts.items())
         lines.append(f"Directions: {direction_str}")
         lines.append("")
 
     # Exit reasons
     if s.exit_reason_counts:
         lines.append("Exit Reasons")
-        for reason, count in sorted(
-            s.exit_reason_counts.items(), key=lambda x: -x[1]
-        ):
+        for reason, count in sorted(s.exit_reason_counts.items(), key=lambda x: -x[1]):
             lines.append(f"  {reason}: {count}")
         lines.append("")
 
@@ -207,14 +199,16 @@ def _format_equity_spark(trades: list[BacktestTradeResult]) -> list[str]:
     ]
 
 
-def format_bulk_backtest_summary(results: list[BacktestTradeResult], bulk_id: str, status: dict[str, Any]) -> str:
+def format_bulk_backtest_summary(
+    results: list[BacktestTradeResult], bulk_id: str, status: dict[str, Any]
+) -> str:
     """Render a telegram alert for a completed bulk backtest."""
     lines = [
         "🚀 <b>BULK BACKTEST COMPLETED</b>",
         f"<pre>Job ID : {bulk_id[:8]}",
         f"Symbols: {status.get('total', 0)}",
         f"Failed : {status.get('failed', 0)}</pre>",
-        ""
+        "",
     ]
 
     if not results:
@@ -226,7 +220,9 @@ def format_bulk_backtest_summary(results: list[BacktestTradeResult], bulk_id: st
     lines.append("📊 <b>Aggregated Performance</b>")
     lines.append("<pre>")
     lines.append(f"Trades   : {s.trades_taken}")
-    lines.append(f"Win Rate : {s.win_rate:.1f}% ({s.winning_trades}W / {s.losing_trades}L)")
+    lines.append(
+        f"Win Rate : {s.win_rate:.1f}% ({s.winning_trades}W / {s.losing_trades}L)"
+    )
     lines.append(f"Net PnL  : ${float(s.net_pnl):.2f}")
 
     pf_str = f"{s.profit_factor:.2f}" if s.profit_factor != float("inf") else "∞"
@@ -237,7 +233,9 @@ def format_bulk_backtest_summary(results: list[BacktestTradeResult], bulk_id: st
     return "\n".join(lines)
 
 
-def format_backtest_list(jobs: list[BacktestJobStatus], active_bulk: dict[str, Any] | None = None) -> str:
+def format_backtest_list(
+    jobs: list[BacktestJobStatus], active_bulk: dict[str, Any] | None = None
+) -> str:
     """Format a list of recent backtest jobs for display."""
     lines: list[str] = []
 
@@ -254,7 +252,9 @@ def format_backtest_list(jobs: list[BacktestJobStatus], active_bulk: dict[str, A
         lines.append("🚀 <b>ACTIVE BULK BACKTEST</b>")
         lines.append(f"<pre>Job: {active_bulk.get('bulk_id', '')[:8]}")
         lines.append(f"Progress: [{bar_str}] {pct:.1f}%")
-        lines.append(f"Tested: {completed} | Pending: {pending} | Failed: {failed}</pre>")
+        lines.append(
+            f"Tested: {completed} | Pending: {pending} | Failed: {failed}</pre>"
+        )
         lines.append("")
 
     if not jobs:

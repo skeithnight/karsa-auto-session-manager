@@ -49,13 +49,17 @@ class BacktestWorker:
         logger.info("BacktestWorker: starting BLPOP loop on backtest_jobs")
         while True:
             try:
-                result = await self._redis.redis.blpop(QUEUE_KEY, timeout=BLPOP_TIMEOUT_S)
+                result = await self._redis.redis.blpop(
+                    QUEUE_KEY, timeout=BLPOP_TIMEOUT_S
+                )
                 if result is None:
                     continue
 
                 _queue_key, raw = result
                 job = json.loads(raw)
-                logger.info(f"BacktestWorker: received job {job.get('job_id', 'unknown')}")
+                logger.info(
+                    f"BacktestWorker: received job {job.get('job_id', 'unknown')}"
+                )
                 await self._process_job(job)
 
             except asyncio.CancelledError:
@@ -79,17 +83,27 @@ class BacktestWorker:
             return
 
         try:
-            candles = await self._load_candles(symbol, candle_limit, start_time, end_time)
+            candles = await self._load_candles(
+                symbol, candle_limit, start_time, end_time
+            )
             if len(candles) < 50:
-                logger.warning(f"BacktestWorker: only {len(candles)} candles for {symbol} (< 50)")
-                await self._publish_result(job_id, symbol, [], False, "insufficient candles")
+                logger.warning(
+                    f"BacktestWorker: only {len(candles)} candles for {symbol} (< 50)"
+                )
+                await self._publish_result(
+                    job_id, symbol, [], False, "insufficient candles"
+                )
                 return
 
-            reports = await self._engine.run(symbol=symbol, candles=candles, job_id=job_id)
+            reports = await self._engine.run(
+                symbol=symbol, candles=candles, job_id=job_id
+            )
             await self._save_results(job_id, reports)
             taken = sum(1 for r in reports if r.trade_taken)
             total_pnl = sum(r.pnl_net for r in reports if r.trade_taken)
-            logger.info(f"BacktestWorker: job {job_id} — {len(reports)} reports, {taken} trades, pnl={total_pnl}")
+            logger.info(
+                f"BacktestWorker: job {job_id} — {len(reports)} reports, {taken} trades, pnl={total_pnl}"
+            )
             await self._publish_result(job_id, symbol, reports, True)
 
         except Exception:
@@ -97,7 +111,11 @@ class BacktestWorker:
             await self._publish_result(job_id, symbol, [], False, "internal error")
 
     async def _load_candles(
-        self, symbol: str, limit: int, start_time: str | None, end_time: str | None,
+        self,
+        symbol: str,
+        limit: int,
+        start_time: str | None,
+        end_time: str | None,
     ) -> list[list]:
         """Pull historical candles from PostgreSQL."""
         # DB stores symbols as BTC/USDT — use original format
@@ -115,7 +133,7 @@ class BacktestWorker:
             SELECT EXTRACT(EPOCH FROM ts) * 1000 AS ts_ms,
                    open, high, low, close, volume
             FROM historical_candles
-            WHERE {' AND '.join(conditions)}
+            WHERE {" AND ".join(conditions)}
             ORDER BY ts ASC
             LIMIT :limit
         """
@@ -123,7 +141,14 @@ class BacktestWorker:
             rows = (await conn.execute(text(query), params)).fetchall()
 
         return [
-            [float(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5])]
+            [
+                float(r[0]),
+                float(r[1]),
+                float(r[2]),
+                float(r[3]),
+                float(r[4]),
+                float(r[5]),
+            ]
             for r in rows
         ]
 
@@ -154,7 +179,9 @@ class BacktestWorker:
                         "job_id": job_id,
                         "symbol": r.symbol,
                         "direction": r.direction,
-                        "regime": r.regime.value if hasattr(r.regime, 'value') else str(r.regime),
+                        "regime": r.regime.value
+                        if hasattr(r.regime, "value")
+                        else str(r.regime),
                         "score": round(r.score, 2),
                         "entry_price": str(r.entry_price),
                         "exit_price": str(r.exit_price) if r.exit_price else None,
@@ -175,8 +202,12 @@ class BacktestWorker:
                 )
 
     async def _publish_result(
-        self, job_id: str, symbol: str, reports: list[BacktestReport],
-        success: bool, error: str = "",
+        self,
+        job_id: str,
+        symbol: str,
+        reports: list[BacktestReport],
+        success: bool,
+        error: str = "",
     ) -> None:
         event = {
             "event": "backtest_complete",
@@ -218,4 +249,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(asyncio.run(main()))

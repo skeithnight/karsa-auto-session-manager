@@ -20,7 +20,7 @@
 | :--- | :--- | :--- | :--- | :--- |
 | `min_24h_volume` | `1,000,000` | USD | `gates.py:16` | Minimum 24h aggregated volume for liquidity gate |
 | `max_spread_pct` | `0.005` | ratio (0.5%) | `gates.py:17` | Maximum bid-ask spread for spread health gate |
-| `daily_drawdown_limit` | `-0.02` | ratio (-2%) | `gates.py:18` | Code authoritative. All docs aligned at -2%. |
+| `daily_drawdown_limit` | `-0.025` | ratio (-2.5%) | `gates.py:18` | Code authoritative. |
 
 ---
 
@@ -28,9 +28,9 @@
 
 | Constant | Value | Unit | Source | Notes |
 | :--- | :--- | :--- | :--- | :--- |
-| `daily_drawdown_limit` | `-0.02` | ratio (-2%) | `circuit_breaker.py:18` | Same conflict as Risk Gate |
-| `max_consecutive_losses` | `3` | count | `circuit_breaker.py:19` | Triggers 60-minute pause |
-| `loss_pause_minutes` | `60` | minutes | `circuit_breaker.py:20` | Pause duration after consecutive losses |
+| `daily_drawdown_limit` | `-0.025` | ratio (-2.5%) | `circuit_breaker.py:18` | Triggers 4-hour cooldown and System Doctor |
+| `max_consecutive_losses` | `3` | count | `circuit_breaker.py:19` | Triggers 4-hour cooldown and System Doctor |
+| `loss_pause_minutes` | `240` | minutes | `circuit_breaker.py:20` | 4-Hour Cooldown after consecutive losses |
 | `max_latency_ms` | `1500` | ms | `circuit_breaker.py:21` | Execution latency threshold for halt |
 
 ---
@@ -66,6 +66,7 @@
 | `REGIME_MULTIPLIERS["CHOP"]` | `0.0` | multiplier | `signals.py:72` | Force FLAT in CHOP |
 | AI confidence blend | `0.5 / 0.5` | ratio | `analyst.py` | `final = quant * 0.5 + AI * 0.5` |
 | AI confidence gate | `0.65` | ratio | `analyst.py` | Minimum final confidence for signal |
+| Momentum Exemption | `0.15` | ratio (15%) | `decision_engine.py` | 24h change > 15% bypasses Macro + Volatility Penalty |
 
 ---
 
@@ -86,6 +87,9 @@
 | Constant | Value | Unit | Source | Notes |
 | :--- | :--- | :--- | :--- | :--- |
 | Reprice attempts | `2` | count | `sor.py` | Max reprices before market fallback |
+| Reprice delay (normal) | `2.0` | seconds | `sor.py` | Delay between repricing attempts |
+| Reprice delay (adaptive) | `0.1` | seconds | `sor.py` | Drops to 100ms if bid-ask spread widens > 0.2% |
+| Iceberg split threshold | `$2,000` | USD | `sor.py` | Notional size > $2000 splits into 4 chunks |
 | SL distance percentage | `0.02` | ratio (2%) | `sor.py` | Default stop-loss distance from fill price |
 
 ---
@@ -114,6 +118,7 @@
 | Stale threshold | `15` | seconds | `ccxt_manager.py` | No update in 15s = STALE |
 | OHLCV cache TTL | `300` | seconds (5min) | `ohlcv_fetcher.py` | In-memory cache for REST OHLCV |
 | GlobalState Redis TTL | `60` | seconds | `main.py` | TTL for `global:state:{symbol}` |
+| Scanner Volume Min | `500,000` | USD | `universe_scanner.py` | Dynamic universe requires $500k volume |
 
 ---
 

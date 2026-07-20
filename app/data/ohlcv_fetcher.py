@@ -36,7 +36,9 @@ class OHLCVFetcher:
 
         Cached in-memory with TTL to avoid excessive REST calls.
         """
-        logger.debug(f"fetch: entering symbol={symbol} timeframe={timeframe} limit={limit}")
+        logger.debug(
+            f"fetch: entering symbol={symbol} timeframe={timeframe} limit={limit}"
+        )
         ttl = ttl_seconds if ttl_seconds is not None else self.default_ttl_seconds
         key = self._cache_key(symbol, timeframe, limit)
 

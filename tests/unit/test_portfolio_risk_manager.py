@@ -14,6 +14,9 @@ from app.risk.portfolio_risk_manager import (
 def _make_signal(symbol: str = "SOL/USDT") -> MagicMock:
     s = MagicMock()
     s.symbol = symbol
+    s.entry_price = "100.0"
+    s.amount = "1.0"
+    s.direction = "LONG"
     return s
 
 

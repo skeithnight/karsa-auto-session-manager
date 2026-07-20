@@ -137,7 +137,9 @@ class SignalGenerator:
                 from app.core import metrics as m
 
                 m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
-                m.signals_killed_total.labels(stage="signal_gen", reason="lead_lag_kill").inc()
+                m.signals_killed_total.labels(
+                    stage="signal_gen", reason="lead_lag_kill"
+                ).inc()
                 logger.debug(
                     f"Signal {symbol}: lead-lag KILL LONG (s_ll={s_lead_lag:.2f})"
                 )
@@ -148,7 +150,9 @@ class SignalGenerator:
                 from app.core import metrics as m
 
                 m.signals_skipped.labels(symbol=symbol, reason="lead_lag_kill").inc()
-                m.signals_killed_total.labels(stage="signal_gen", reason="lead_lag_kill").inc()
+                m.signals_killed_total.labels(
+                    stage="signal_gen", reason="lead_lag_kill"
+                ).inc()
                 logger.debug(
                     f"Signal {symbol}: lead-lag KILL SHORT (s_ll={s_lead_lag:.2f})"
                 )
@@ -221,7 +225,9 @@ class SignalGenerator:
         if direction == "FLAT" or confidence < self.min_confidence:
             m.signals_skipped.labels(symbol=symbol, reason="low_confidence").inc()
             kill_reason = "flat_direction" if direction == "FLAT" else "low_confidence"
-            m.signals_killed_total.labels(stage="confidence_gate", reason=kill_reason).inc()
+            m.signals_killed_total.labels(
+                stage="confidence_gate", reason=kill_reason
+            ).inc()
             logger.debug(
                 f"Signal {symbol}: {direction} (conf={confidence:.2f}) — below threshold"
             )

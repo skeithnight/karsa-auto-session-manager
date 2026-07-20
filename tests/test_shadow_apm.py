@@ -78,7 +78,7 @@ def shadow_apm(mock_redis, mock_executor, mock_pos_store, mock_trade_store):
 
 def _make_open_position(
     symbol: str = "BTC/USDT",
-    side: str = "buy",
+    side: str = "LONG",
     entry_price: str = "50500",
     virtual_sl: str = "50000",
     virtual_tp: str = "60000",
@@ -111,7 +111,7 @@ def _make_open_position(
 
 def _make_pending_position(
     symbol: str = "BTC/USDT",
-    side: str = "buy",
+    side: str = "LONG",
     entry_price: str = "50000",
     pending_since: str | None = None,
     amount: str = "0.5",
@@ -159,7 +159,7 @@ class TestShadowAPMWickDetection:
         # worst_price_seen must have been updated to 49500
         assert pos["worst_price_seen"] == "49500"
         # _close_shadow_position must be called with sl_hit reason
-        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "buy")
+        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "LONG")
 
     @pytest.mark.asyncio
     async def test_wick_recovers_but_worst_persists(self, shadow_apm, mock_executor, mock_pos_store, mock_redis):
@@ -180,7 +180,7 @@ class TestShadowAPMWickDetection:
             await shadow_apm._manage_shadow_position(pos_tick1)
 
         # Position was closed (remove called) on the wick tick
-        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "buy")
+        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "LONG")
 
     @pytest.mark.asyncio
     async def test_no_sl_hit_when_mid_above_sl(self, shadow_apm, mock_executor, mock_pos_store, mock_redis):
@@ -260,7 +260,7 @@ class TestShadowAPMPendingFill:
         Long limit at 50000. Mid dips to 49800 (at or below entry).
         Status must transition to OPEN.
         """
-        pos = _make_pending_position(side="buy", entry_price="50000")
+        pos = _make_pending_position(side="LONG", entry_price="50000")
         mock_executor._get_mid_price = AsyncMock(return_value=Decimal("49800"))
 
         # _check_pending_fill calls self._pos_store._key
@@ -279,7 +279,7 @@ class TestShadowAPMPendingFill:
         Short limit at 50000. Mid rises to 50200 (at or above entry).
         Status must transition to OPEN.
         """
-        pos = _make_pending_position(side="sell", entry_price="50000")
+        pos = _make_pending_position(side="SHORT", entry_price="50000")
         mock_executor._get_mid_price = AsyncMock(return_value=Decimal("50200"))
         mock_pos_store._key = MagicMock(return_value="shadow:position:BTC/USDT:sell")
 
@@ -310,7 +310,7 @@ class TestShadowAPMPendingExpiry:
 
         # Must not transition to OPEN
         assert pos["status"] == "PENDING_VIRTUAL_FILL"
-        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "buy")
+        mock_pos_store.remove.assert_called_once_with("BTC/USDT", "LONG")
         # No mid price fetch needed
         mock_executor._get_mid_price.assert_not_called()
 

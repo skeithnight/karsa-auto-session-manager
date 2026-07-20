@@ -2,7 +2,7 @@
 
 Monitors Bybit API state consistency and triggers emergency halt via Redis
 when critical desyncs are detected:
-  1. Position count desync — Redis positions vs Bybit API positions
+  1. Position content desync — orphaned, phantom, or qty mismatch between Redis and Bybit
   2. Balance staleness — no balance update for > 60s
   3. Orderbook feed desync — no orderbook update for > 30s
 
@@ -106,18 +106,54 @@ class SystemWatchdog:
             await self._trigger_halt(desyncs)
 
     async def _check_position_desync(self) -> str | None:
-        """Compare Redis position count vs Bybit API position count."""
+        """Compare position content (symbol, side, qty) between Redis and Bybit."""
         try:
-            redis_positions = await self._positions.list_all()
-            redis_count = len(redis_positions) if redis_positions else 0
-            bybit_positions = await self._bybit.fetch_positions()
-            bybit_count = len(bybit_positions) if bybit_positions else 0
-            if redis_count != bybit_count:
-                return f"position_desync: redis={redis_count} bybit={bybit_count}"
-            return None
+            redis_positions = await self._positions.list_all() or []
+            bybit_positions = await self._bybit.fetch_positions() or []
         except Exception:
             logger.debug("SystemWatchdog: position desync check failed")
             return None
+
+        # Build symbol:side keyed maps
+        redis_map: dict[str, dict] = {}
+        for p in redis_positions:
+            sym = p.get("symbol", "")
+            side = p.get("side", "")
+            qty = float(p.get("amount", p.get("qty", 0)))
+            if qty != 0.0 and sym:
+                redis_map[f"{sym}:{side}"] = {"symbol": sym, "side": side, "qty": qty}
+
+        bybit_map: dict[str, dict] = {}
+        for p in bybit_positions:
+            sym = p.get("symbol", "")
+            side = p.get("side", "")
+            qty = float(p.get("contracts", p.get("amount", 0)))
+            if qty != 0.0 and sym:
+                bybit_map[f"{sym}:{side}"] = {"symbol": sym, "side": side, "qty": qty}
+
+        desyncs: list[str] = []
+
+        # Positions on Bybit but not in Redis (orphaned)
+        for key, pos in bybit_map.items():
+            if key not in redis_map:
+                desyncs.append(f"orphan:{pos['symbol']}:{pos['side']}:{pos['qty']}")
+
+        # Positions in Redis but not on Bybit (phantom)
+        for key, pos in redis_map.items():
+            if key not in bybit_map:
+                desyncs.append(f"phantom:{pos['symbol']}:{pos['side']}:{pos['qty']}")
+
+        # Qty mismatch for matching positions
+        for key in redis_map:
+            if key in bybit_map:
+                r_qty = redis_map[key]["qty"]
+                b_qty = bybit_map[key]["qty"]
+                if abs(r_qty - b_qty) > 1e-8:
+                    desyncs.append(f"qty_mismatch:{key}:redis={r_qty}:bybit={b_qty}")
+
+        if desyncs:
+            return "position_content_desync: " + "; ".join(desyncs)
+        return None
 
     def _check_balance_staleness(self, now: float) -> str | None:
         """Check if balance has been updated recently."""

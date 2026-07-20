@@ -110,7 +110,9 @@ class CryptoAnalyst:
 
         candles = await self.fetcher.fetch(symbol, "1h", 200)
         if len(candles) < 50:
-            logger.warning(f"Analyst: insufficient candles for {symbol}: {len(candles)}")
+            logger.warning(
+                f"Analyst: insufficient candles for {symbol}: {len(candles)}"
+            )
             return None
 
         closes = [Decimal(str(c[4])) for c in candles]
@@ -165,22 +167,28 @@ class CryptoAnalyst:
             return None
 
         metrics.ai_analyst_calls.labels(result="success").inc()
+        metrics.ai_confidence.labels(symbol=symbol).set(result.ai_confidence)
 
         if self.redis:
             try:
                 await self.redis.set(
                     f"ai:cache:{cache_key}",
-                    json.dumps({
-                        "direction": result.direction,
-                        "ai_confidence": result.ai_confidence,
-                        "reasoning": result.reasoning,
-                        "model_used": result.model_used,
-                    }),
+                    json.dumps(
+                        {
+                            "direction": result.direction,
+                            "ai_confidence": result.ai_confidence,
+                            "reasoning": result.reasoning,
+                            "model_used": result.model_used,
+                        }
+                    ),
                     ex=self.cache_ttl,
                 )
             except Exception:
                 logger.debug(f"Analyst cache write failed for {symbol}")
-        logger.info(f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence}")
+        reasoning_preview = (result.reasoning or "")[:150].replace("\n", " ")
+        logger.info(
+            f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence} | {reasoning_preview}"
+        )
         return result
 
     def _parse_response(self, response: str) -> AnalystResult | None:
@@ -202,27 +210,30 @@ class CryptoAnalyst:
             except json.JSONDecodeError:
                 # Reasoning model: extract from free-form text
                 import re
+
                 direction = "FLAT"
                 confidence = 50
                 reasoning = text[:500]
 
                 text_upper = text.upper()
-                if re.search(r'\b(LONG|BULLISH|BUY)\b', text_upper):
+                if re.search(r"\b(LONG|BULLISH|BUY)\b", text_upper):
                     direction = "LONG"
-                elif re.search(r'\b(SHORT|BEARISH|SELL)\b', text_upper):
+                elif re.search(r"\b(SHORT|BEARISH|SELL)\b", text_upper):
                     direction = "SHORT"
 
-                conf_match = re.search(r'confidence[:\s]*(\d+)', text_upper)
+                conf_match = re.search(r"confidence[:\s]*(\d+)", text_upper)
                 if conf_match:
                     confidence = int(conf_match.group(1))
-                elif any(w in text_upper for w in ['STRONG', 'HIGH', 'VERY']):
+                elif any(w in text_upper for w in ["STRONG", "HIGH", "VERY"]):
                     confidence = 70
-                elif any(w in text_upper for w in ['WEAK', 'LOW', 'UNCERTAIN']):
+                elif any(w in text_upper for w in ["WEAK", "LOW", "UNCERTAIN"]):
                     confidence = 35
                 elif direction == "FLAT":
                     confidence = 40
 
-                logger.info(f"Analyst: parsed from reasoning text — dir={direction} conf={confidence}")
+                logger.info(
+                    f"Analyst: parsed from reasoning text — dir={direction} conf={confidence}"
+                )
 
             if direction not in ("LONG", "SHORT", "FLAT"):
                 direction = "FLAT"

@@ -22,7 +22,9 @@ from app.consumer.decision_engine import DecisionEngine, TradeSignal
 logger = logging.getLogger(__name__)
 
 _CHANNEL_PATTERN = "karsa:candles:*"
-_CHANNEL_RE = re.compile(r"^karsa:candles:(?P<exchange>[^:]+):(?P<symbol>[^:]+):(?P<timeframe>[^:]+)$")
+_CHANNEL_RE = re.compile(
+    r"^karsa:candles:(?P<exchange>[^:]+):(?P<symbol>[^:]+):(?P<timeframe>[^:]+)$"
+)
 _POLL_INTERVAL_S = 1.0  # seconds between subscribe polls
 
 # Channel:  karsa:candles:bybit:BTCUSDT:1h
@@ -180,7 +182,7 @@ class MarketConsumer:
         prices = self._get_global_prices(exchange, symbol)
 
         # Run decision pipeline
-        signal = self._engine.evaluate(
+        signal = await self._engine.evaluate(
             symbol=symbol,
             candles=self._buffer.as_list(symbol),
             global_prices=prices,
@@ -192,14 +194,17 @@ class MarketConsumer:
         if signal is not None:
             logger.info(
                 "signal: %s %s score=%.1f regime=%s entry=%s sl=%s tp=%s",
-                symbol, signal.direction, signal.score, signal.regime.value,
-                signal.entry_price, signal.sl_price, signal.tp_price,
+                symbol,
+                signal.direction,
+                signal.score,
+                signal.regime.value,
+                signal.entry_price,
+                signal.sl_price,
+                signal.tp_price,
             )
             await self._on_signal(symbol, signal)
 
-    def _get_global_prices(
-        self, exchange: str, symbol: str
-    ) -> dict[str, float] | None:
+    def _get_global_prices(self, exchange: str, symbol: str) -> dict[str, float] | None:
         """Build cross-exchange price dict for TREND scoring.
 
         Returns a dict with all three exchange prices if at least one other

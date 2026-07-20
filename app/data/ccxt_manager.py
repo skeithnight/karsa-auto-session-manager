@@ -17,7 +17,9 @@ class CCXTManager:
     def __init__(self) -> None:
         logger.debug("CCXTManager.__init__: entering")
         self.exchanges: dict[str, ccxt_pro.Exchange] = {}
-        self.markets_loaded: list[str] = []  # exchanges with successfully loaded markets
+        self.markets_loaded: list[
+            str
+        ] = []  # exchanges with successfully loaded markets
         self.last_update: dict[str, datetime] = {}
         self.stale_threshold_seconds: int = 15
         logger.debug("CCXTManager.__init__: returning")
@@ -27,27 +29,33 @@ class CCXTManager:
         Callers: main.py (passes settings.bybit_testnet). No schema change."""
         logger.debug("start: entering")
         # Binance — spot only
-        binance = ccxt_pro.binance({
-            "enableRateLimit": True,
-            "options": {
-                "defaultType": "spot",
-                "defaultSubType": "spot",
-                "fetchMarkets": ["spot"],
-            },
-        })
+        binance = ccxt_pro.binance(
+            {
+                "enableRateLimit": True,
+                "options": {
+                    "defaultType": "spot",
+                    "defaultSubType": "spot",
+                    "fetchMarkets": ["spot"],
+                },
+            }
+        )
         self.exchanges["binance"] = binance
 
         # OKX — spot only
-        okx = ccxt_pro.okx({
-            "enableRateLimit": True,
-        })
+        okx = ccxt_pro.okx(
+            {
+                "enableRateLimit": True,
+            }
+        )
         okx.options["defaultType"] = "spot"
         self.exchanges["okx"] = okx
 
         # Bybit — USDT perpetual
-        bybit = ccxt_pro.bybit({
-            "enableRateLimit": True,
-        })
+        bybit = ccxt_pro.bybit(
+            {
+                "enableRateLimit": True,
+            }
+        )
         bybit.options["defaultType"] = "swap"
         if testnet:
             bybit.set_sandbox_mode(True)
@@ -66,18 +74,26 @@ class CCXTManager:
                 try:
                     await exchange.load_markets()
                     self.markets_loaded.append(exchange_id)
-                    logger.info(f"Loaded {len(exchange.markets)} markets from {exchange_id}")
+                    logger.info(
+                        f"Loaded {len(exchange.markets)} markets from {exchange_id}"
+                    )
                     loaded = True
                     break
                 except Exception as e:
                     if attempt == max_retries:
-                        logger.error(f"Failed to load markets from {exchange_id} after {max_retries} attempts: {e}")
+                        logger.error(
+                            f"Failed to load markets from {exchange_id} after {max_retries} attempts: {e}"
+                        )
                         break
-                    wait = 2 ** attempt
-                    logger.warning(f"load_markets({exchange_id}) attempt {attempt}/{max_retries} failed: {e}, retrying in {wait}s")
+                    wait = 2**attempt
+                    logger.warning(
+                        f"load_markets({exchange_id}) attempt {attempt}/{max_retries} failed: {e}, retrying in {wait}s"
+                    )
                     await asyncio.sleep(wait)
             if not loaded:
-                logger.warning(f"Symbol validation will skip {exchange_id} — markets not loaded")
+                logger.warning(
+                    f"Symbol validation will skip {exchange_id} — markets not loaded"
+                )
 
         logger.debug("start: returning None")
 
@@ -98,7 +114,9 @@ class CCXTManager:
         Binance/OKX absence does NOT exclude a symbol — they are reference data only.
         """
         if "bybit" not in self.markets_loaded:
-            logger.warning("Bybit markets not loaded — cannot validate. Returning all config symbols.")
+            logger.warning(
+                "Bybit markets not loaded — cannot validate. Returning all config symbols."
+            )
             return target_symbols
         valid = []
         for symbol in target_symbols:
@@ -154,7 +172,9 @@ class CCXTManager:
         )
         return result
 
-    def get_reference_symbols(self, target_symbols: list[str], exchange_id: str) -> list[str]:
+    def get_reference_symbols(
+        self, target_symbols: list[str], exchange_id: str
+    ) -> list[str]:
         """Return subset of symbols that also exist on a reference exchange (Binance/OKX).
         Used by the data engine to know which streams to open for cross-exchange analysis.
         """
@@ -169,7 +189,9 @@ class CCXTManager:
 
     async def watch_orderbook(self, symbol: str, exchange_id: str) -> dict:
         """Watch L2 orderbook for a symbol on a specific exchange."""
-        logger.debug(f"watch_orderbook: entering symbol={symbol} exchange_id={exchange_id}")
+        logger.debug(
+            f"watch_orderbook: entering symbol={symbol} exchange_id={exchange_id}"
+        )
         exchange = self.exchanges.get(exchange_id)
         if not exchange:
             raise ValueError(f"Unknown exchange: {exchange_id}")
@@ -185,7 +207,7 @@ class CCXTManager:
             logger.error(f"WebSocket error on {exchange_id}: {e}")
             # Force close stale WebSocket so next watch triggers fresh reconnect
             try:
-                if hasattr(exchange, 'ws') and exchange.ws:
+                if hasattr(exchange, "ws") and exchange.ws:
                     await exchange.ws.close()
                     logger.info(f"Force-closed stale WS on {exchange_id}")
             except Exception:
@@ -194,7 +216,9 @@ class CCXTManager:
 
     async def watch_trades(self, symbol: str, exchange_id: str) -> list:
         """Watch trades for a symbol on a specific exchange."""
-        logger.debug(f"watch_trades: entering symbol={symbol} exchange_id={exchange_id}")
+        logger.debug(
+            f"watch_trades: entering symbol={symbol} exchange_id={exchange_id}"
+        )
         exchange = self.exchanges.get(exchange_id)
         if not exchange:
             raise ValueError(f"Unknown exchange: {exchange_id}")
@@ -210,7 +234,7 @@ class CCXTManager:
             logger.error(f"WebSocket error on {exchange_id}: {e}")
             # Force close stale WebSocket so next watch triggers fresh reconnect
             try:
-                if hasattr(exchange, 'ws') and exchange.ws:
+                if hasattr(exchange, "ws") and exchange.ws:
                     await exchange.ws.close()
                     logger.info(f"Force-closed stale WS on {exchange_id}")
             except Exception:

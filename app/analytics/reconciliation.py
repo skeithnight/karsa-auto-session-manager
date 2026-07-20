@@ -98,9 +98,17 @@ def match_trades(
             if live_time is None or shadow_time is None:
                 continue
 
-            live_ts = live_time.timestamp() if isinstance(live_time, datetime) else float(live_time)
+            live_ts = (
+                live_time.timestamp()
+                if isinstance(live_time, datetime)
+                else float(live_time)
+            )
 
-            shadow_ts = shadow_time.timestamp() if isinstance(shadow_time, datetime) else float(shadow_time)
+            shadow_ts = (
+                shadow_time.timestamp()
+                if isinstance(shadow_time, datetime)
+                else float(shadow_time)
+            )
 
             delta = abs(live_ts - shadow_ts)
             if delta <= time_window_seconds and delta < best_delta:
@@ -112,9 +120,15 @@ def match_trades(
 
         shadow_pool.remove(best_match)
 
-        entry_delta = Decimal(str(live.get("entry_price", 0))) - Decimal(str(best_match.get("entry_price", 0)))
-        exit_delta = Decimal(str(live.get("exit_price", 0))) - Decimal(str(best_match.get("exit_price", 0)))
-        pnl_delta = Decimal(str(live.get("pnl", 0))) - Decimal(str(best_match.get("pnl", 0)))
+        entry_delta = Decimal(str(live.get("entry_price", 0))) - Decimal(
+            str(best_match.get("entry_price", 0))
+        )
+        exit_delta = Decimal(str(live.get("exit_price", 0))) - Decimal(
+            str(best_match.get("exit_price", 0))
+        )
+        pnl_delta = Decimal(str(live.get("pnl", 0))) - Decimal(
+            str(best_match.get("pnl", 0))
+        )
         exec_penalty = abs(entry_delta) + abs(exit_delta)
 
         matched.append(
@@ -159,18 +173,30 @@ def compute_reconciliation(matched: list[ReconciliationEntry]) -> Reconciliation
     if not matched:
         return report
 
-    report.avg_entry_slippage = sum((e.entry_price_delta for e in matched), Decimal("0")) / len(matched)
-    report.avg_exit_slippage = sum((e.exit_price_delta for e in matched), Decimal("0")) / len(matched)
-    report.avg_pnl_delta = sum((e.pnl_delta for e in matched), Decimal("0")) / len(matched)
+    report.avg_entry_slippage = sum(
+        (e.entry_price_delta for e in matched), Decimal("0")
+    ) / len(matched)
+    report.avg_exit_slippage = sum(
+        (e.exit_price_delta for e in matched), Decimal("0")
+    ) / len(matched)
+    report.avg_pnl_delta = sum((e.pnl_delta for e in matched), Decimal("0")) / len(
+        matched
+    )
 
     report.total_live_pnl = sum((e.live_pnl for e in matched), Decimal("0"))
     report.total_shadow_pnl = sum((e.shadow_pnl for e in matched), Decimal("0"))
     report.total_pnl_penalty = report.total_live_pnl - report.total_shadow_pnl
 
-    report.avg_execution_penalty = sum((e.execution_penalty for e in matched), Decimal("0")) / len(matched)
+    report.avg_execution_penalty = sum(
+        (e.execution_penalty for e in matched), Decimal("0")
+    ) / len(matched)
 
-    report.fee_asymmetry = sum((e.live_fees - e.shadow_fees for e in matched), Decimal("0"))
-    report.slippage_asymmetry = sum((e.live_slippage - e.shadow_slippage for e in matched), Decimal("0"))
+    report.fee_asymmetry = sum(
+        (e.live_fees - e.shadow_fees for e in matched), Decimal("0")
+    )
+    report.slippage_asymmetry = sum(
+        (e.live_slippage - e.shadow_slippage for e in matched), Decimal("0")
+    )
 
     return report
 

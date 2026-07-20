@@ -51,22 +51,44 @@ async def _on_signal_shadow(
     shadow_trade_store: Any | None,
     crypto_analyst: Any | None = None,
     risk_manager: Any | None = None,
+    engine: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
 
     Checks:
     1. No duplicate shadow position open.
-    2. Execute via ShadowExecutor (virtual fill).
-    3. Record shadow trade in DB.
+    2. Consecutive loss block (3+ losses in same regime).
+    3. Execute via ShadowExecutor (virtual fill).
+    4. Record shadow trade in DB.
     """
-    # Skip if position already open
-    has_pos = await shadow_pos_store.has_position(symbol)
-    if has_pos:
-        logger.info("shadow skip %s — position already open", symbol)
+    # Skip if position already open (check both LONG and SHORT)
+    has_long = await shadow_pos_store.get(symbol, "LONG")
+    has_short = await shadow_pos_store.get(symbol, "SHORT")
+    if has_long or has_short:
+        existing_side = "LONG" if has_long else "SHORT"
+        logger.info(
+            "shadow skip %s — position already open (%s)", symbol, existing_side
+        )
         return
 
-    # AI Analyst gate (mandatory for safe positions)
-    if crypto_analyst and signal.score >= 40.0:
+    # Consecutive loss block
+    if engine and await engine.check_consecutive_losses(symbol, signal.regime):
+        logger.info("shadow skip %s — consecutive loss block", symbol)
+        return
+
+    # AI Analyst gate — skip for high-confidence signals (score >= 75) and CHOP regime
+    # CHOP has inherently conflicting indicators, so the AI systematically rejects
+    # CHOP signals. Bypass AI entirely for CHOP to get clean signal data.
+    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
+    from app.alpha.regime_classifier import MarketRegime
+
+    is_chop = signal.regime in (MarketRegime.CHOP, MarketRegime.RANGE)
+    if (
+        crypto_analyst
+        and signal.score >= 40.0
+        and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
+        and not is_chop
+    ):
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
@@ -80,24 +102,33 @@ async def _on_signal_shadow(
             recent_trades="",
         )
         if not analyst_result or analyst_result.direction != signal.direction:
-            logger.info("shadow skip %s - AI analyst rejected", symbol)
+            from app.core import metrics
+
+            reason = "unavailable" if not analyst_result else "direction_mismatch"
+            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+            logger.info("shadow skip %s - AI analyst rejected (%s)", symbol, reason)
             return
 
     # PortfolioRiskManager gate
     if risk_manager:
-        approved = await risk_manager.evaluate_entry(
-            symbol=symbol,
-            direction=signal.direction,
-            amount=signal.amount,
-            entry_price=signal.entry_price,
-        )
-        if not approved:
+        from app.risk.portfolio_risk_manager import PRMResult
+
+        result: PRMResult = await risk_manager.check(signal)
+        if not result.approved:
             from app.core import metrics
-            metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
-            logger.info("shadow skip %s - PortfolioRiskManager rejected", symbol)
+
+            metrics.risk_gate_reject.labels(
+                symbol=symbol, reason="portfolio_risk"
+            ).inc()
+            logger.info(
+                "shadow skip %s - PortfolioRiskManager rejected: %s",
+                symbol,
+                result.reason,
+            )
             return
 
     from app.core import metrics
+
     metrics.risk_gate_pass.labels(symbol=symbol).inc()
 
     # Execute virtual trade
@@ -125,6 +156,8 @@ async def _on_signal_shadow(
         entry_confidence=signal.score,
         regime=signal.regime.value,
         risk_profile_json=signal.risk_profile.to_json(),
+        virtual_sl=str(signal.sl_price) if signal.sl_price else None,
+        virtual_tp=str(signal.tp_price) if signal.tp_price else None,
     )
 
     # Record trade
@@ -140,7 +173,11 @@ async def _on_signal_shadow(
 
     logger.info(
         "shadow executed %s %s @ %s (score=%.1f, regime=%s)",
-        symbol, signal.direction, fill_price, signal.score, signal.regime.value,
+        symbol,
+        signal.direction,
+        fill_price,
+        signal.score,
+        signal.regime.value,
     )
 
 
@@ -149,15 +186,32 @@ async def _on_candle(_symbol: str, _candle: list) -> None:
     pass
 
 
+async def _read_universe(redis: Any) -> list[str] | None:
+    """Read universe symbols from DynamicUniverseScanner Redis key."""
+    try:
+        import json as _json
+
+        raw = await redis.get("system:universe:symbols")
+        if raw:
+            data = _json.loads(raw)
+            symbols = data.get("symbols")
+            if symbols and isinstance(symbols, list):
+                return symbols
+    except Exception:
+        logger.debug("shadow: failed to read universe from Redis")
+    return None
+
+
 def _start_ingestor(
     settings: Any,
     redis: Any,
     consumer: MarketConsumer,
+    initial_symbols: list[str],
 ) -> tuple[MarketDataIngestor, asyncio.Task]:
     """Create ingestor + sync loop. Returns (ingestor, task)."""
     ingestor = MarketDataIngestor(
         redis_client=redis,
-        symbols=settings.watchlist.split(",") if settings.watchlist else ["BTC/USDT"],
+        symbols=initial_symbols,
         poll_interval_s=30,
         api_key=settings.bybit_api_key or "",
         api_secret=settings.bybit_api_secret or "",
@@ -178,15 +232,43 @@ def _start_ingestor(
     return ingestor, asyncio.create_task(_sync_loop(), name="shadow-ingestor")
 
 
-def _build_shadow_components(
-    redis: Any, pool: Any,
+async def _universe_refresh_loop(
+    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400
+) -> None:
+    """Periodically refresh symbol list from DynamicUniverseScanner."""
+    while True:
+        await asyncio.sleep(interval_s)
+        new_symbols = await _read_universe(redis)
+        if new_symbols:
+            ingestor.update_symbols(new_symbols)
+
+
+async def _orphan_cleanup_loop(
+    pos_store: Any, trade_store: Any, interval_s: int = 300
+) -> None:
+    """Close DB trades with no backing Redis position every 5 minutes."""
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            await pos_store.close_orphans(trade_store)
+        except Exception as e:
+            logger.debug(f"orphan cleanup loop error: {e}")
+
+
+async def _build_shadow_components(
+    redis: Any,
+    settings: Any,
 ) -> tuple[Any, Any, Any, Any]:
     """Create ShadowPositionStore, ShadowTradeStore, ShadowExecutor, ShadowAPM."""
+    from app.core.database import DatabaseEngine
     from app.core.shadow_store import ShadowPositionStore, ShadowTradeStore
     from app.execution.shadow import ShadowAPM, ShadowExecutor
 
+    db_engine = DatabaseEngine()
+    await db_engine.connect(settings.postgres_url)
+
     pos_store = ShadowPositionStore(redis)
-    trade_store = ShadowTradeStore(pool)
+    trade_store = ShadowTradeStore(db_engine)
     executor = ShadowExecutor(
         redis_client=redis,
         position_store=pos_store,
@@ -208,6 +290,7 @@ async def main() -> None:
 
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
+
         start_http_server(int(prom_port))
 
     shutdown_event = asyncio.Event()
@@ -224,20 +307,51 @@ async def main() -> None:
 
     await startup(settings)
     redis = get_redis()
-    pool = get_pool()
+    get_pool()
 
     emitter = TelemetryEmitter(redis, "shadow")
     await emitter.start()
 
     # Build shared decision engine
+    import ccxt.async_support as ccxt
+
+    from app.alpha.multi_tf import MultiTFFilter
+    from app.alpha.trade_memory import TradeMemory
+    from app.data.ohlcv_fetcher import OHLCVFetcher
+
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
-    engine = DecisionEngine(classifier, router, risk_gate)
+    trade_memory = TradeMemory(redis)
+
+    # Init Fetcher & Multi-TF
+    exchange = ccxt.bybit({"enableRateLimit": True})
+    ohlcv_fetcher = OHLCVFetcher(exchange)
+    multi_tf = MultiTFFilter(ohlcv_fetcher)
+
+    engine = DecisionEngine(
+        classifier,
+        router,
+        risk_gate,
+        trade_memory=trade_memory,
+        redis_client=redis,
+        multi_tf=multi_tf,
+    )
+
+    # Set wallet balance for shadow mode — use config-based balance
+    # so position sizing uses proper risk calculations instead of fallback
+    SHADOW_WALLET_BALANCE = Decimal("100.0")  # $100 simulated equity
+    engine.set_wallet_balance(SHADOW_WALLET_BALANCE)
+    logger.info("shadow wallet balance set to %s", SHADOW_WALLET_BALANCE)
 
     # Build shadow-specific stores and executor
     try:
-        shadow_pos_store, shadow_trade_store, shadow_executor, shadow_apm = _build_shadow_components(redis, pool)
+        (
+            shadow_pos_store,
+            shadow_trade_store,
+            shadow_executor,
+            shadow_apm,
+        ) = await _build_shadow_components(redis, settings)
     except Exception:
         logger.exception("failed to create shadow components")
         await shutdown()
@@ -249,14 +363,13 @@ async def main() -> None:
         from app.alpha.analyst import CryptoAnalyst
         from app.core.ai_client import AIClient
         from app.data.ohlcv_fetcher import OHLCVFetcher
+
         ai_client = AIClient(
             router_url=settings.nine_router_base_url,
             auth_token=settings.nine_router_auth_token,
             model=settings.nine_router_model,
         )
-        import ccxt.async_support as ccxt
-        exchange = ccxt.bybit({'enableRateLimit': True})
-        ohlcv_fetcher = OHLCVFetcher(exchange)
+        # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
         crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
     except Exception as e:
         logger.warning(f"Could not initialize CryptoAnalyst in shadow loop: {e}")
@@ -268,13 +381,18 @@ async def main() -> None:
         from app.risk.portfolio_risk_manager import PortfolioRiskManager
 
         class _SectorMapping:
-            def get_sector(self, s: str) -> str:
+            async def get_sector(self, s: str) -> str:
                 from app.data.sector_mapping import get_sector as _get
+
                 return _get(s)
 
         sector_mapping = _SectorMapping()
         bybit_client = BybitClient()
         await bybit_client.connect()
+        from app.core import metrics
+
+        metrics.vpn_status.set(1)
+        metrics.bybit_status.set(1)
 
         risk_manager = PortfolioRiskManager(
             redis_client=redis,
@@ -290,26 +408,53 @@ async def main() -> None:
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
         await _on_signal_shadow(
-            symbol, sig, shadow_executor, shadow_pos_store, shadow_trade_store, crypto_analyst, risk_manager
+            symbol,
+            sig,
+            shadow_executor,
+            shadow_pos_store,
+            shadow_trade_store,
+            crypto_analyst,
+            risk_manager,
+            engine,
         )
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 
+    # Read dynamic universe from Redis, fall back to static config
+    universe_symbols = await _read_universe(redis)
+    initial_symbols = (
+        universe_symbols
+        if universe_symbols
+        else (settings.watchlist.split(",") if settings.watchlist else settings.symbols)
+    )
+    logger.info(
+        f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}"
+    )
+
     # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
-    symbols_to_prefill = settings.watchlist.split(",") if settings.watchlist else settings.symbols[:5]
-    for sym in symbols_to_prefill:
+    for sym in initial_symbols:
         try:
             candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
             if candles:
                 for c in candles:
                     consumer._buffer.append(sym, c)
-            logger.info(f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles")
+            logger.info(
+                f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles"
+            )
         except Exception as e:
             logger.warning(f"failed to pre-fill {sym}: {e}")
 
-    ingestor, ingestor_task = _start_ingestor(settings, redis, consumer)
+    ingestor, ingestor_task = _start_ingestor(
+        settings, redis, consumer, initial_symbols
+    )
+    universe_task = asyncio.create_task(
+        _universe_refresh_loop(redis, ingestor), name="shadow-universe"
+    )
     consumer_task = asyncio.create_task(consumer.start(), name="shadow-consumer")
     apm_task = asyncio.create_task(shadow_apm.run(), name="shadow-apm")
+    orphan_task = asyncio.create_task(
+        _orphan_cleanup_loop(shadow_pos_store, shadow_trade_store), name="shadow-orphan"
+    )
 
     logger.info("karsa-shadow started")
 
@@ -318,16 +463,24 @@ async def main() -> None:
     finally:
         consumer.stop()
         ingestor_task.cancel()
+        universe_task.cancel()
         consumer_task.cancel()
         apm_task.cancel()
+        orphan_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await consumer_task
         with contextlib.suppress(asyncio.CancelledError):
             await ingestor_task
         with contextlib.suppress(asyncio.CancelledError):
+            await universe_task
+        with contextlib.suppress(asyncio.CancelledError):
             await apm_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await orphan_task
         await ingestor.stop()
         await emitter.stop()
+        await exchange.close()
+        await db_engine.dispose()
         await shutdown()
         logger.info("karsa-shadow stopped")
 

@@ -32,7 +32,9 @@ class RiskGate:
         """Gate 1: L1 notional depth above threshold."""
         passed = notional_usd >= self.min_liquidity_usd
         if not passed:
-            logger.warning(f"Liquidity gate FAILED: ${notional_usd:,.2f} < ${self.min_liquidity_usd:,.2f}")
+            logger.warning(
+                f"Liquidity gate FAILED: ${notional_usd:,.2f} < ${self.min_liquidity_usd:,.2f}"
+            )
         return passed
 
     def check_spread_health(self, bid_price: Decimal, ask_price: Decimal) -> bool:
@@ -44,14 +46,18 @@ class RiskGate:
         spread = (ask_price - bid_price) / bid_price
         passed = spread <= self.max_spread_pct
         if not passed:
-            logger.warning(f"Spread gate FAILED: {spread:.4%} > {self.max_spread_pct:.4%}")
+            logger.warning(
+                f"Spread gate FAILED: {spread:.4%} > {self.max_spread_pct:.4%}"
+            )
         return passed
 
     def check_order_notional(self, order_notional_usd: Decimal) -> bool:
         """Gate 0: Reject dust trades below logical profitability threshold."""
         passed = order_notional_usd >= self.min_order_notional_usd
         if not passed:
-            logger.warning(f"Order notional gate FAILED: ${order_notional_usd:,.2f} < ${self.min_order_notional_usd:,.2f}")
+            logger.warning(
+                f"Order notional gate FAILED: ${order_notional_usd:,.2f} < ${self.min_order_notional_usd:,.2f}"
+            )
         return passed
 
     def check_circuit_breaker(self) -> bool:
@@ -83,7 +89,9 @@ class RiskGate:
 
         # Gate 0: dust trade rejection (when order size known)
         if order_notional_usd is not None:
-            gates.append(("order_notional", self.check_order_notional(order_notional_usd)))
+            gates.append(
+                ("order_notional", self.check_order_notional(order_notional_usd))
+            )
 
         gates += [
             ("liquidity", self.check_liquidity(notional_usd)),

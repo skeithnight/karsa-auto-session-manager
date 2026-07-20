@@ -60,7 +60,9 @@ class CircuitBreaker:
             if state.get("status") == "TRIGGERED":
                 self.halted = True
                 self.halt_reason = state.get("reason", "Restored from Redis")
-                logger.warning(f"Circuit breaker restored as HALTED: {self.halt_reason}")
+                logger.warning(
+                    f"Circuit breaker restored as HALTED: {self.halt_reason}"
+                )
         except Exception as e:
             logger.error(f"Circuit breaker restore failed: {e}")
 
@@ -93,7 +95,10 @@ class CircuitBreaker:
             return True
 
         # Absolute USD loss cap
-        if self.max_daily_loss_usd is not None and self.daily_pnl <= -self.max_daily_loss_usd:
+        if (
+            self.max_daily_loss_usd is not None
+            and self.daily_pnl <= -self.max_daily_loss_usd
+        ):
             self.halted = True
             self.halt_reason = (
                 f"USD loss cap breached: {self.daily_pnl} "
@@ -113,6 +118,7 @@ class CircuitBreaker:
 
         if self.consecutive_losses >= self.max_consecutive_losses:
             from datetime import timedelta
+
             self.paused_until = datetime.now(UTC) + timedelta(
                 minutes=self.loss_pause_minutes
             )

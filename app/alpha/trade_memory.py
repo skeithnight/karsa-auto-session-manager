@@ -56,11 +56,15 @@ class TradeMemory:
             # FIFO eviction: keep only latest MAX_ENTRIES
             await self.redis.zremrangebyrank(key, 0, -(MAX_ENTRIES_PER_SYMBOL + 1))
             metrics.trade_memory_stored.labels(symbol=symbol).inc()
-            logger.info(f"Trade memory: stored {symbol} pnl={pnl_pct}% exit={exit_reason}")
+            logger.info(
+                f"Trade memory: stored {symbol} pnl={pnl_pct}% exit={exit_reason}"
+            )
         except Exception as e:
             logger.error(f"Trade memory store failed for {symbol}: {e}")
 
-    async def get_recent(self, symbol: str, regime: str | None = None, count: int = RETRIEVE_COUNT) -> list[dict]:
+    async def get_recent(
+        self, symbol: str, regime: str | None = None, count: int = RETRIEVE_COUNT
+    ) -> list[dict]:
         """Get recent trades for symbol, optionally filtered by regime.
 
         Returns newest-first list of trade dicts.
@@ -102,7 +106,9 @@ class TradeMemory:
             exit_r = t.get("exit", "unknown")
             conf = t.get("confidence", 0)
             pnl_sign = "+" if pnl >= 0 else ""
-            lines.append(f"  {i}. {pnl_sign}{pnl:.1f}% ({hold}min, {exit_r}, conf={conf:.2f})")
+            lines.append(
+                f"  {i}. {pnl_sign}{pnl:.1f}% ({hold}min, {exit_r}, conf={conf:.2f})"
+            )
 
         return "\n".join(lines)
 

@@ -6,6 +6,7 @@ Usage: fmt(bold("Title"), "\\n", code("/cmd"), " — description")
 Ported from karsa-claude-trading src/utils/format.py.
 Import path updated: app.bot.utils.format (was src.utils.format).
 """
+
 from html import escape
 from typing import Union
 
@@ -14,6 +15,7 @@ TextLike = Union[str, "HTML", None]
 
 class HTML(str):
     """Marker class for HTML-safe strings. Prevents double-escaping."""
+
     pass
 
 
@@ -28,24 +30,32 @@ def _safe(text: TextLike) -> str:
 def bold(t: TextLike) -> HTML:
     return HTML(f"<b>{_safe(t)}</b>")
 
+
 def italic(t: TextLike) -> HTML:
     return HTML(f"<i>{_safe(t)}</i>")
+
 
 def underline(t: TextLike) -> HTML:
     return HTML(f"<u>{_safe(t)}</u>")
 
+
 def strike(t: TextLike) -> HTML:
     return HTML(f"<s>{_safe(t)}</s>")
 
+
 def code(t: TextLike) -> HTML:
     return HTML(f"<code>{_safe(t)}</code>")
+
 
 def pre(t: TextLike, lang: str = None) -> HTML:
     """Code block. Optional language for syntax hint."""
     content = _safe(t)
     if lang:
-        return HTML(f'<pre><code class="language-{escape(lang)}">{content}</code></pre>')
+        return HTML(
+            f'<pre><code class="language-{escape(lang)}">{content}</code></pre>'
+        )
     return HTML(f"<pre>{content}</pre>")
+
 
 def link(t: TextLike, url: str) -> HTML:
     return HTML(f'<a href="{escape(url)}">{_safe(t)}</a>')

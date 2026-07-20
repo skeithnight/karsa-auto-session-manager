@@ -60,39 +60,49 @@ class BybitClient:
         mode = "TESTNET" if self.settings.bybit_testnet else "LIVE"
         # Build symbol map: ccxt "PEPE/USDT" → bybit "1000PEPEUSDT"
         try:
-            resp = await asyncio.to_thread(
-                self.session.get_instruments_info, category="linear"
-            )
-            if resp.get("retCode") == 0:
-                for inst in resp["result"]["list"]:
-                    bybit_sym = inst["symbol"]
-                    if not bybit_sym.endswith("USDT"):
-                        continue  # skip PERP contracts
-                    base = bybit_sym.removesuffix("USDT")
-                    # Strip leading multiplier digits: 1000PEPE → PEPE
-                    i = 0
-                    while i < len(base) and base[i].isdigit():
-                        i += 1
-                    token = base[i:] if i > 0 else base
-                    if not token:  # skip pure-numeric symbols like "4USDT"
-                        continue
-                    ccxt_sym = f"{token}/USDT"
-                    self._symbol_map[ccxt_sym] = bybit_sym
-                    # Store lot size and min qty for order rounding
-                    lot_filter = inst.get("lotSizeFilter", {})
-                    ls = lot_filter.get("qtyStep", "1")
-                    mq = lot_filter.get("minOrderQty", "1")
-                    self._lot_sizes[ccxt_sym] = Decimal(str(ls))
-                    self._min_qty[ccxt_sym] = Decimal(str(mq))
-
-                    price_filter = inst.get("priceFilter", {})
-                    ts = price_filter.get("tickSize", "0.01")
-                    self._price_ticks[ccxt_sym] = Decimal(str(ts))
-                logger.info(
-                    f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped"
+            cursor = None
+            while True:
+                resp = await asyncio.to_thread(
+                    self.session.get_instruments_info,
+                    category="linear",
+                    limit=1000,
+                    cursor=cursor,
                 )
-            else:
-                logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
+                if resp.get("retCode") == 0:
+                    for inst in resp["result"]["list"]:
+                        bybit_sym = inst["symbol"]
+                        if not bybit_sym.endswith("USDT"):
+                            continue  # skip PERP contracts
+                        base = bybit_sym.removesuffix("USDT")
+                        # Strip leading multiplier digits: 1000PEPE → PEPE
+                        i = 0
+                        while i < len(base) and base[i].isdigit():
+                            i += 1
+                        token = base[i:] if i > 0 else base
+                        if not token:  # skip pure-numeric symbols like "4USDT"
+                            continue
+                        ccxt_sym = f"{token}/USDT"
+                        self._symbol_map[ccxt_sym] = bybit_sym
+                        # Store lot size and min qty for order rounding
+                        lot_filter = inst.get("lotSizeFilter", {})
+                        ls = lot_filter.get("qtyStep", "1")
+                        mq = lot_filter.get("minOrderQty", "1")
+                        self._lot_sizes[ccxt_sym] = Decimal(str(ls))
+                        self._min_qty[ccxt_sym] = Decimal(str(mq))
+
+                        price_filter = inst.get("priceFilter", {})
+                        ts = price_filter.get("tickSize", "0.01")
+                        self._price_ticks[ccxt_sym] = Decimal(str(ts))
+
+                    cursor = resp["result"].get("nextPageCursor")
+                    if not cursor:
+                        break
+                else:
+                    logger.warning(f"Failed to fetch instruments: {resp.get('retMsg')}")
+                    break
+            logger.info(
+                f"Bybit connected ({mode}), {len(self._symbol_map)} symbols mapped"
+            )
         except Exception as e:
             logger.warning(f"Symbol map fetch failed: {e}, using naive mapping")
         logger.debug("connect: returning None")
@@ -160,13 +170,13 @@ class BybitClient:
                     self.connected = False  # force session recovery next attempt
                 except Exception as e:
                     last_exc = e
-                    logger.warning("pybit_error attempt=%d: %s", attempt + 1, e)
+                    logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
                     if "auth" in str(e).lower():
                         self.connected = False  # force session recovery on auth failure
 
                 # Exponential backoff: 1s, 2s, 4s
                 if attempt < self._MAX_RETRIES - 1:
-                    backoff = 2 ** attempt
+                    backoff = 2**attempt
                     await asyncio.sleep(backoff)
 
             raise last_exc or RuntimeError("Bybit call failed after retries")
@@ -208,7 +218,9 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": side.capitalize(),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
+                side.upper(), side.capitalize()
+            ),
             "orderType": "Limit",
             "qty": str(self._round_qty(symbol, amount)),
             "price": str(self._round_price(symbol, price)),
@@ -236,7 +248,9 @@ class BybitClient:
         order_params = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
-            "side": side.capitalize(),
+            "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
+                side.upper(), side.capitalize()
+            ),
             "orderType": "Market",
             "qty": str(self._round_qty(symbol, amount)),
         }
@@ -341,6 +355,10 @@ class BybitClient:
                 "contracts": _safe_decimal(p.get("size")),
                 "entry_price": _safe_decimal(p.get("avgPrice")),
                 "unrealized_pnl": _safe_decimal(p.get("unrealisedPnl")),
+                "stopLoss": _safe_decimal(p.get("stopLoss")),
+                "takeProfit": _safe_decimal(p.get("takeProfit")),
+                "trailingStop": _safe_decimal(p.get("trailingStop")),
+                "liquidationPrice": _safe_decimal(p.get("liqPrice")),
             }
             for p in result.get("list", [])
             if _safe_decimal(p.get("size")) > 0
@@ -381,15 +399,21 @@ class BybitClient:
         if symbol:
             params["symbol"] = self._to_bybit_symbol(symbol)
         result = await self._execute(self.session.get_tickers, **params)
-        tickers = [
-            {
-                "symbol": t["symbol"],
-                "last": _safe_decimal(t.get("lastPrice")),
-                "bid": _safe_decimal(t.get("bid1Price")),
-                "ask": _safe_decimal(t.get("ask1Price")),
-            }
-            for t in result.get("list", [])
-        ]
+        tickers = []
+        for t in result.get("list", []):
+            sym = t["symbol"]
+            if sym.endswith("USDT"):
+                sym = sym[:-4] + "/USDT"
+            elif sym.endswith("USDC"):
+                sym = sym[:-4] + "/USDC"
+            tickers.append(
+                {
+                    "symbol": sym,
+                    "last": _safe_decimal(t.get("lastPrice")),
+                    "bid": _safe_decimal(t.get("bid1Price")),
+                    "ask": _safe_decimal(t.get("ask1Price")),
+                }
+            )
         logger.debug(f"fetch_tickers: returning {len(tickers)} tickers")
         return tickers
 
@@ -444,6 +468,25 @@ class BybitClient:
         next_cursor = result.get("nextPageCursor") or None
         logger.debug(f"get_order_history: returning {len(orders)} orders")
         return {"orders": orders, "cursor": next_cursor}
+
+    async def get_order_status(self, order_id: str, symbol: str) -> dict[str, Any]:
+        """Fetch single order status by orderId.
+
+        Returns order dict with cumExecQty, leavesQty, status, avgPrice etc.
+        """
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        bybit_symbol = self._to_bybit_symbol(symbol)
+        result = await self._execute(
+            self.session.get_order_history,
+            category="linear",
+            symbol=bybit_symbol,
+            orderId=order_id,
+        )
+        orders = result.get("list", [])
+        if orders:
+            return orders[0]
+        return {}
 
     async def get_closed_pnl(
         self,
@@ -560,6 +603,46 @@ class BybitClient:
         logger.info(f"Position reduced: {amount} {symbol}")
         return result
 
+    async def set_trading_stop(
+        self,
+        symbol: str,
+        side: str,
+        stop_loss: Decimal | None = None,
+        take_profit: Decimal | None = None,
+    ) -> dict[str, Any] | None:
+        """Set SL/TP atomically on the position via Bybit V5 trading-stop.
+
+        Replaces the old two-step conditional-order placement. The exchange
+        attaches SL/TP directly to the position — no separate order object,
+        no race window between fill and SL placement.
+        """
+        logger.debug(
+            f"set_trading_stop: symbol={symbol} sl={stop_loss} tp={take_profit}"
+        )
+        if not self.connected or not self.session:
+            raise RuntimeError("Bybit not connected")
+        if stop_loss is None and take_profit is None:
+            raise ValueError("Must provide at least one of stop_loss or take_profit")
+
+        bybit_symbol = self._to_bybit_symbol(symbol)
+        # positionIdx: 0=one-way mode (default for linear perpetuals)
+        params: dict[str, Any] = {
+            "category": "linear",
+            "symbol": bybit_symbol,
+            "tpslMode": "Full",
+            "positionIdx": 0,
+        }
+        if stop_loss is not None:
+            params["stopLoss"] = str(self._round_price(symbol, stop_loss))
+        if take_profit is not None:
+            params["takeProfit"] = str(self._round_price(symbol, take_profit))
+
+        result = await self._execute(self.session.set_trading_stop, **params)
+        logger.info(
+            f"set_trading_stop: OK for {symbol} sl={stop_loss} tp={take_profit}"
+        )
+        return result
+
     async def amend_stop_loss(
         self,
         order_id: str,
@@ -568,20 +651,13 @@ class BybitClient:
         new_price: Decimal,
         amount: Decimal,
     ) -> dict[str, Any] | None:
-        """Amend existing stop-loss order. Cancels old, places new."""
-        logger.debug(
-            f"amend_stop_loss: entering order_id={order_id} new_price={new_price}"
-        )
-        if not self.connected or not self.session:
-            raise RuntimeError("Bybit not connected")
-        try:
-            await self.cancel_order(order_id, symbol)
-            logger.info(f"Cancelled old SL: {order_id}")
-        except Exception as e:
-            logger.warning(f"Failed to cancel old SL {order_id}: {e}")
-        new_order = await self.place_stop_loss(symbol, side, new_price, amount)
-        logger.debug("amend_stop_loss: returning new order")
-        return new_order
+        """Amend SL to new price using atomic set_trading_stop.
+
+        The order_id parameter is kept for signature compat but unused —
+        atomic SL lives on the position, not as a separate order.
+        """
+        logger.debug(f"amend_stop_loss: symbol={symbol} new_sl={new_price}")
+        return await self.set_trading_stop(symbol, side, stop_loss=new_price)
 
     async def watch_orders(self, symbol: str | None = None) -> list:
         """Watch for order updates — not supported via pybit HTTP.

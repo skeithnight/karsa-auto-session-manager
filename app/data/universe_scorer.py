@@ -18,9 +18,9 @@ from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.data.sector_mapping import get_sector
 
 # Scoring weights
-VOLUME_MAX = Decimal("30")      # 0-30
-MOMENTUM_MAX = Decimal("40")    # 0-40
-SQUEEZE_MAX = Decimal("30")     # 0-30
+VOLUME_MAX = Decimal("30")  # 0-30
+MOMENTUM_MAX = Decimal("40")  # 0-40
+SQUEEZE_MAX = Decimal("30")  # 0-30
 OVEREXTENSION_MAX = Decimal("40")  # penalty -40 to 0
 
 # Selection thresholds
@@ -61,7 +61,9 @@ class UniverseScorer:
         total_volume = Decimal(str(state.get("total_volume", "0")))
         if total_volume <= 0:
             return None
-        volume_score = min(total_volume / Decimal("1000000000") * VOLUME_MAX, VOLUME_MAX)
+        volume_score = min(
+            total_volume / Decimal("1000000000") * VOLUME_MAX, VOLUME_MAX
+        )
 
         try:
             candles = await self.fetcher.fetch(symbol, timeframe="1h", limit=25)
@@ -90,7 +92,8 @@ class UniverseScorer:
                 move_24h = abs((closes[-1] - price_24h_ago) / price_24h_ago)
                 if move_24h > OVEREXTENSION_THRESHOLD:
                     overextension_penalty = -min(
-                        (move_24h - OVEREXTENSION_THRESHOLD) * Decimal("200"), OVEREXTENSION_MAX
+                        (move_24h - OVEREXTENSION_THRESHOLD) * Decimal("200"),
+                        OVEREXTENSION_MAX,
                     )
                 else:
                     overextension_penalty = Decimal("0")
@@ -105,7 +108,9 @@ class UniverseScorer:
             upper, middle, lower = bb
             if middle > 0:
                 bb_width = (upper - lower) / middle
-                squeeze_score = max(SQUEEZE_MAX - bb_width * Decimal("400"), Decimal("0"))
+                squeeze_score = max(
+                    SQUEEZE_MAX - bb_width * Decimal("400"), Decimal("0")
+                )
             else:
                 squeeze_score = Decimal("0")
         else:
@@ -159,9 +164,14 @@ class UniverseScorer:
         symbols = [s["symbol"] for s in selected]
 
         if not symbols:
-            logger.warning("Universe scorer returned 0 — falling back to static config list")
-            symbols = config_symbols[:self.top_n]
-            selected = [{"symbol": s, "total_score": 0, "sector": get_sector(s)} for s in symbols]
+            logger.warning(
+                "Universe scorer returned 0 — falling back to static config list"
+            )
+            symbols = config_symbols[: self.top_n]
+            selected = [
+                {"symbol": s, "total_score": 0, "sector": get_sector(s)}
+                for s in symbols
+            ]
 
         payload = {
             "symbols": symbols,
@@ -169,7 +179,9 @@ class UniverseScorer:
             "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
-            await self.redis.set("system:universe:symbols", json.dumps(payload, default=str))
+            await self.redis.set(
+                "system:universe:symbols", json.dumps(payload, default=str)
+            )
             logger.info(f"Universe refreshed: {len(symbols)} symbols active")
         except Exception as e:
             logger.error(f"Universe Redis write failed: {e}")

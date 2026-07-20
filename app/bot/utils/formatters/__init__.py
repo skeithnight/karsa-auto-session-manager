@@ -31,7 +31,9 @@ def format_price(p) -> str:
         return f"{p:,.8f}"
 
 
-def format_bar(value: float, max_value: float, width: int = 15, show_pct: bool = True) -> str:
+def format_bar(
+    value: float, max_value: float, width: int = 15, show_pct: bool = True
+) -> str:
     """Generate a \u2588\u2591 progress bar string.
 
     Args:
@@ -95,14 +97,20 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
     entry = float(position.get("entry_price", 0) or 0)
     mark = float(position.get("current_price", 0) or 0)
     # Support both spellings from Bybit (unrealized_pnl) and DB (unrealised_pnl)
-    pnl = float(position.get("unrealized_pnl", 0) or position.get("unrealised_pnl", 0) or 0)
-    liq = float(position.get("liquidation_price", 0) or position.get("liq_price", 0) or 0)
-    sl = float(position.get("stop_loss", 0) or 0)
-    tp = float(position.get("take_profit", 0) or 0)
-
-    pnl_pct = ((mark - entry) / entry * 100) if side == "Buy" and entry > 0 else (
-        ((entry - mark) / entry * 100) if entry > 0 else 0
+    pnl = float(
+        position.get("unrealized_pnl", 0) or position.get("unrealised_pnl", 0) or 0
     )
+    liq = float(
+        position.get("liquidation_price", 0) or position.get("liq_price", 0) or 0
+    )
+    sl = float(position.get("stop_loss", 0) or position.get("sl_price", 0) or 0)
+    tp = float(position.get("take_profit", 0) or position.get("tp_price", 0) or 0)
+
+    pos_value = entry * size
+    if pos_value > 0:
+        pnl_pct = (pnl / pos_value) * 100
+    else:
+        pnl_pct = 0.0
     pnl_icon = "🟢" if pnl >= 0 else "🔴"
     side_label = "LONG" if side == "Buy" else "SHORT"
 
@@ -113,10 +121,19 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
         empty = 10 - filled
         alloc_bar = f"{'█' * filled}{'░' * empty} {pos_pct:.1f}%"
 
+    if liq > 0:
+        liq_str = f"Liq: ${format_price(liq)}"
+    else:
+        liq_str = f"Val: ${format_price(pos_value)}"
+
     card = fmt(
-        bold(f"{index}. {symbol} ({side_label})"), f" {pnl_icon}", "\n",
-        f"\u2523 Entry: ${format_price(entry)} \u2192 Mark: ${format_price(mark)}", "\n",
-        f"\u2523 Size: {size}  |  Liq: ${format_price(liq)}", "\n",
+        bold(f"{index}. {symbol} ({side_label})"),
+        f" {pnl_icon}",
+        "\n",
+        f"\u2523 Entry: ${format_price(entry)} \u2192 Mark: ${format_price(mark)}",
+        "\n",
+        f"\u2523 Size: {size}  |  {liq_str}",
+        "\n",
         f"\u2517 PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
     )
 
@@ -135,6 +152,34 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
         card = fmt(
             card,
             f"\n   \U0001f4c9 Risk to SL: -{risk_to_sl_pct:.2f}%  |  R:R: {rr_str}",
+            sep="",
+        )
+
+    # Regime
+    regime = position.get("regime", "")
+    if regime:
+        card = fmt(card, f"\n   \U0001f4ca Regime: {regime}", sep="")
+
+    # Breakeven status
+    moved_to_be = position.get("moved_to_breakeven", False)
+    be_status = "\U0001f7e2 LOCKED" if moved_to_be else "⚪ NOT SET"
+    card = fmt(card, f"\n   ⚖️ Breakeven: {be_status}", sep="")
+
+    # Trailing stop status
+    atr = float(position.get("atr", 0) or 0)
+    if sl > 0 and atr > 0:
+        trail_dist = atr * 3.0
+        card = fmt(
+            card,
+            f"\n   \U0001f4c8 Trail: ATR({atr:.4f}) × 3 = {trail_dist:.4f}",
+            sep="",
+        )
+    elif sl > 0:
+        dist = abs(mark - sl)
+        dist_pct = (dist / mark * 100) if mark > 0 else 0
+        card = fmt(
+            card,
+            f"\n   \U0001f4c8 Trail: active (dist: ${format_price(dist)} / {dist_pct:.2f}%)",
             sep="",
         )
 
@@ -168,7 +213,14 @@ def get_regime_display(regime: str) -> str:
         return f"{regime} 🟡"
 
 
-def format_tp_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
+def format_tp_alert(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    pnl: float,
+    pnl_pct: float,
+) -> str:
     """Format a Take Profit hit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -181,14 +233,24 @@ def format_tp_alert(symbol: str, side: str, entry_price: float, exit_price: floa
         f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
     return fmt(
-        bold("\U0001f3af TAKE PROFIT HIT \U0001f3af"), "\n",
-        "\u2501" * 32, "\n\n",
-        pre(block), "\n\n",
+        bold("\U0001f3af TAKE PROFIT HIT \U0001f3af"),
+        "\n",
+        "\u2501" * 32,
+        "\n\n",
+        pre(block),
+        "\n\n",
         italic("\U0001f7e2 Position closed in profit."),
     )
 
 
-def format_sl_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
+def format_sl_alert(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    pnl: float,
+    pnl_pct: float,
+) -> str:
     """Format a Stop Loss hit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -201,14 +263,24 @@ def format_sl_alert(symbol: str, side: str, entry_price: float, exit_price: floa
         f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
     return fmt(
-        bold("\U0001f6d1 STOP LOSS HIT \U0001f6d1"), "\n",
-        "\u2501" * 32, "\n\n",
-        pre(block), "\n\n",
+        bold("\U0001f6d1 STOP LOSS HIT \U0001f6d1"),
+        "\n",
+        "\u2501" * 32,
+        "\n\n",
+        pre(block),
+        "\n\n",
         italic("\U0001f534 Position closed to protect capital."),
     )
 
 
-def format_breakeven_alert(symbol: str, side: str, entry_price: float, exit_price: float, pnl: float, pnl_pct: float) -> str:
+def format_breakeven_alert(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    pnl: float,
+    pnl_pct: float,
+) -> str:
     """Format a Breakeven / Flat exit alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -221,14 +293,19 @@ def format_breakeven_alert(symbol: str, side: str, entry_price: float, exit_pric
         f"{'PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)"
     )
     return fmt(
-        bold("\u2696\ufe0f POSITION CLOSED (BREAKEVEN)"), "\n",
-        "\u2501" * 32, "\n\n",
-        pre(block), "\n\n",
+        bold("\u2696\ufe0f POSITION CLOSED (BREAKEVEN)"),
+        "\n",
+        "\u2501" * 32,
+        "\n\n",
+        pre(block),
+        "\n\n",
         italic("\U0001f7e4 Position closed with no net profit/loss."),
     )
 
 
-def format_entry_alert(symbol: str, side: str, price: float, amount: float, sl_price: float) -> str:
+def format_entry_alert(
+    symbol: str, side: str, price: float, amount: float, sl_price: float
+) -> str:
     """Format a trade entry + SL placed alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
@@ -242,8 +319,10 @@ def format_entry_alert(symbol: str, side: str, price: float, amount: float, sl_p
         f"{'Max Loss':<12} $1.00"
     )
     return fmt(
-        bold("\u2705 ENTRY FILLED"), "\n",
-        "\u2501" * 32, "\n\n",
+        bold("\u2705 ENTRY FILLED"),
+        "\n",
+        "\u2501" * 32,
+        "\n\n",
         pre(block),
     )
 

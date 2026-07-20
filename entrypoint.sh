@@ -3,19 +3,25 @@
 # Sets DNS to gluetun's resolver (bypasses ISP DNS poisoning).
 # Dispatches to the correct Python module based on KARSA_ROLE.
 
-echo "nameserver 127.0.0.1" > /etc/resolv.conf
-echo "ENTRYPOINT: resolv.conf set to:" >&2
-cat /etc/resolv.conf >&2
+if [ "$KARSA_ROLE" != "backtest" ]; then
+  echo "nameserver 127.0.0.1" > /etc/resolv.conf
+  echo "ENTRYPOINT: resolv.conf set to:" >&2
+  cat /etc/resolv.conf >&2
+fi
 echo "ENTRYPOINT: KARSA_ROLE=$KARSA_ROLE" >&2
 
-# Run DB migrations before starting any service (idempotent)
-echo "ENTRYPOINT: running database migrations..." >&2
-python -m app.core.migrate
-MIGRATE_EXIT=$?
-if [ "$MIGRATE_EXIT" -ne 0 ]; then
-  echo "ENTRYPOINT: migrations FAILED (exit $MIGRATE_EXIT) — continuing for data-engine (polling role)" >&2
+if [ "$KARSA_ROLE" = "commander" ]; then
+  echo "ENTRYPOINT: running database migrations..." >&2
+  python -m app.core.migrate
+  MIGRATE_EXIT=$?
+  if [ "$MIGRATE_EXIT" -ne 0 ]; then
+    echo "ENTRYPOINT: migrations FAILED (exit $MIGRATE_EXIT) — continuing for data-engine (polling role)" >&2
+  fi
+  echo "ENTRYPOINT: migrations done" >&2
+else
+  # Prevent race conditions by giving the commander container time to initialize DB schemas
+  sleep 5
 fi
-echo "ENTRYPOINT: migrations done" >&2
 
 case "$KARSA_ROLE" in
   data-engine)

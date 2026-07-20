@@ -91,7 +91,10 @@ async def scheduled_bulk_backtest_task(
             if not symbols:
                 logger.warning("scheduled_bulk_backtest_task: No symbols in universe")
             else:
-                logger.info("scheduled_bulk_backtest_task: Starting bulk backtest for %d symbols", len(symbols))
+                logger.info(
+                    "scheduled_bulk_backtest_task: Starting bulk backtest for %d symbols",
+                    len(symbols),
+                )
 
                 # 2. Submit Bulk Job
                 bulk_id = await orch.submit_bulk_job(symbols, candle_limit=500)
@@ -110,7 +113,7 @@ async def scheduled_bulk_backtest_task(
                     report_text = format_bulk_backtest_summary(results, bulk_id, status)
 
                     # 5. Send Alert
-                    await alert_service.send_alert(report_text, parse_mode="HTML")
+                    await alert_service.send(report_text, parse_mode="HTML")
                     logger.info("scheduled_bulk_backtest_task: Report sent")
 
         except Exception as e:
@@ -147,6 +150,120 @@ async def telemetry_listener_task(
     logger.debug("telemetry_listener_task: returning None")
 
 
+async def shadow_feedback_task(
+    redis_client: RedisClient,
+    db_engine: DatabaseEngine,
+    alert_service: AlertService,
+    kill_switch: asyncio.Event,
+    interval_hours: int = 1,
+) -> None:
+    """Periodically queries shadow performance and disables unprofitable regimes for Live."""
+    logger.debug("shadow_feedback_task: entering")
+    import json
+    from datetime import datetime, timedelta
+
+    from sqlalchemy import text
+
+    # Initial wait
+    await asyncio.sleep(10)
+
+    while not kill_switch.is_set():
+        try:
+            logger.info("shadow_feedback_task: running Auto-Adjustment check")
+            cutoff_date = datetime.now(UTC) - timedelta(days=7)
+
+            regime_stats = {}
+            async with db_engine.engine.connect() as conn:
+                rows = await conn.execute(
+                    text("""
+                        SELECT regime,
+                               COUNT(*) as total,
+                               COUNT(*) FILTER (WHERE pnl > 0) as wins,
+                               SUM(pnl) as net_pnl
+                        FROM shadow_trades
+                        WHERE exit_time >= :cutoff
+                          AND pnl IS NOT NULL
+                          AND exit_reason != 'orphan_cleanup'
+                        GROUP BY regime
+                    """),
+                    {"cutoff": cutoff_date},
+                )
+                for row in rows:
+                    regime = row[0]
+                    if not regime:
+                        continue
+                    total = row[1]
+                    wins = row[2]
+                    net_pnl = float(row[3] or 0)
+                    win_rate = (wins / total * 100) if total > 0 else 0
+                    regime_stats[regime] = {
+                        "total": total,
+                        "wins": wins,
+                        "net_pnl": net_pnl,
+                        "win_rate": win_rate,
+                    }
+
+            # Fetch current config
+            raw_cfg = await redis_client.redis.get("karsa:auto:config")
+            cfg = json.loads(raw_cfg) if raw_cfg else {}
+            overrides = cfg.get("regime_overrides", {})
+            changed = False
+            alerts = []
+
+            for regime, stats in regime_stats.items():
+                if stats["total"] >= 5:
+                    current_status = overrides.get(regime, "ENABLE")
+                    # Disable logic
+                    if (
+                        stats["win_rate"] < 40.0 or stats["net_pnl"] < -5.0
+                    ) and current_status != "DISABLE":
+                        overrides[regime] = "DISABLE"
+                        changed = True
+                        alerts.append(
+                            f"🛡️ <b>Auto-Adjustment Alert</b>\n"
+                            f"Shadow Mode detected poor performance in <b>{regime}</b> regime.\n"
+                            f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}/{stats['total']})\n"
+                            f"Net PnL: ${stats['net_pnl']:.2f}\n\n"
+                            f"🔴 Live trading for {regime} is now <b>DISABLED</b> to protect capital."
+                        )
+                    # Re-enable logic
+                    elif (
+                        stats["win_rate"] >= 50.0
+                        and stats["net_pnl"] > 0
+                        and current_status == "DISABLE"
+                    ):
+                        overrides[regime] = "ENABLE"
+                        changed = True
+                        alerts.append(
+                            f"🟢 <b>Auto-Adjustment Alert</b>\n"
+                            f"Shadow Mode detected recovery in <b>{regime}</b> regime.\n"
+                            f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}/{stats['total']})\n"
+                            f"Net PnL: ${stats['net_pnl']:.2f}\n\n"
+                            f"Live trading for {regime} is now <b>RESTORED</b>."
+                        )
+
+            if changed:
+                cfg["regime_overrides"] = overrides
+                await redis_client.redis.set("karsa:auto:config", json.dumps(cfg))
+                logger.info(
+                    "shadow_feedback_task: updated regime_overrides: %s", overrides
+                )
+                for alert in alerts:
+                    await alert_service.send(alert, parse_mode="HTML")
+
+        except Exception as e:
+            logger.error("shadow_feedback_task error: %s", e)
+
+        # Sleep until next interval
+        total_wait = interval_hours * 3600
+        waited = 0
+        while waited < total_wait and not kill_switch.is_set():
+            await asyncio.sleep(60)
+            waited += 60
+
+    logger.debug("shadow_feedback_task: returning None")
+
+
 async def main() -> None:
     """Commander entrypoint — only bot, no trading loops."""
     _configure_logging()
@@ -154,6 +271,7 @@ async def main() -> None:
 
     if prom_port := __import__("os").getenv("PROMETHEUS_PORT"):
         from prometheus_client import start_http_server
+
         start_http_server(int(prom_port))
     shutdown_event = asyncio.Event()
 
@@ -179,6 +297,7 @@ async def main() -> None:
     # Lazy connect — only used for wallet queries, not for trading
     try:
         from app.execution.bybit_client import BybitClient
+
         bybit_client = BybitClient()
         await bybit_client.connect()
         logger.info("bybit connected (wallet display only)")
@@ -195,6 +314,7 @@ async def main() -> None:
 
     # Session manager (reads/writes Redis config)
     from app.core.session import AutonomousSessionManager
+
     session_manager = AutonomousSessionManager(
         redis_client=redis_client,
         kill_switch=shutdown_event,
@@ -202,7 +322,11 @@ async def main() -> None:
 
     # Trade Reconciler
     trade_store = TradeStore(db_engine)
-    trade_reconciler = TradeReconciler(bybit_client, trade_store, alert_service) if bybit_client else None
+    trade_reconciler = (
+        TradeReconciler(bybit_client, trade_store, alert_service)
+        if bybit_client
+        else None
+    )
 
     # Register alert service with PTB bot after run_bot wires it
     # (AlertService lazily grabs bot from application.bot_data["bot_instance"])
@@ -244,6 +368,18 @@ async def main() -> None:
         name="commander-telemetry-listener",
     )
 
+    # Start the shadow feedback auto-adjustment task
+    feedback_task = asyncio.create_task(
+        shadow_feedback_task(
+            redis_client=redis_client,
+            db_engine=db_engine,
+            alert_service=alert_service,
+            kill_switch=shutdown_event,
+            interval_hours=1,  # Run every hour
+        ),
+        name="commander-shadow-feedback",
+    )
+
     logger.info("karsa-commander bot and bulk backtest started")
 
     try:
@@ -252,8 +388,15 @@ async def main() -> None:
         bot_task.cancel()
         bulk_task.cancel()
         listener_task.cancel()
+        feedback_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
-            await asyncio.gather(bot_task, bulk_task, listener_task, return_exceptions=True)
+            await asyncio.gather(
+                bot_task,
+                bulk_task,
+                listener_task,
+                feedback_task,
+                return_exceptions=True,
+            )
 
         # Cleanup
         await emitter.stop()

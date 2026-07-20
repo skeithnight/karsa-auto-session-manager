@@ -16,10 +16,13 @@ class DatabaseEngine:
 
     async def connect(self, url: str) -> None:
         """Create engine and verify connectivity."""
-        logger.debug(f"connect: entering url={url.split('@')[-1] if '@' in url else url}")
+        logger.debug(
+            f"connect: entering url={url.split('@')[-1] if '@' in url else url}"
+        )
         self.engine = create_async_engine(url, pool_pre_ping=True)
         async with self.engine.connect() as conn:
             from sqlalchemy import text
+
             await conn.execute(text("SELECT 1"))
         logger.info("Database connected and verified")
         logger.debug("connect: returning None")
@@ -41,6 +44,7 @@ class DatabaseEngine:
             return False
         try:
             from sqlalchemy import text
+
             async with self.engine.connect() as conn:
                 await conn.execute(text("SELECT 1"))
             logger.debug("check: returning True")

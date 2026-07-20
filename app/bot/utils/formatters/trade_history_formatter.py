@@ -3,6 +3,7 @@
 Ported from karsa-claude-trading src/utils/formatters/trade_history_formatter.py.
 No import changes needed — uses only telegram and stdlib.
 """
+
 from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -41,27 +42,47 @@ class TradeHistoryFormatter:
     @staticmethod
     def build_keyboard(current_page: int, total_pages: int) -> InlineKeyboardMarkup:
         """Build Prev/Page/Next inline keyboard."""
-        prev_cb = f"karsa:history:page:{current_page - 1}" if current_page > 1 else "noop"
-        next_cb = f"karsa:history:page:{current_page + 1}" if current_page < total_pages else "noop"
+        prev_cb = (
+            f"karsa:history:page:{current_page - 1}" if current_page > 1 else "noop"
+        )
+        next_cb = (
+            f"karsa:history:page:{current_page + 1}"
+            if current_page < total_pages
+            else "noop"
+        )
         prev_label = "\u25c0\ufe0f Prev" if current_page > 1 else "\u25ab Prev"
-        next_label = "Next \u25b6\ufe0f" if current_page < total_pages else "Next \u25ab"
+        next_label = (
+            "Next \u25b6\ufe0f" if current_page < total_pages else "Next \u25ab"
+        )
         keyboard = [
             [
                 InlineKeyboardButton(prev_label, callback_data=prev_cb),
-                InlineKeyboardButton(f"{current_page} / {total_pages}", callback_data="noop"),
+                InlineKeyboardButton(
+                    f"{current_page} / {total_pages}", callback_data="noop"
+                ),
                 InlineKeyboardButton(next_label, callback_data=next_cb),
             ],
             [
-                InlineKeyboardButton("🔄 Reconcile Trades", callback_data="cmd_reconcile"),
+                InlineKeyboardButton(
+                    "🔄 Reconcile Trades", callback_data="cmd_reconcile"
+                ),
             ],
-            [InlineKeyboardButton("\U0001f3e0 Back to Dashboard", callback_data="cmd_dashboard")],
+            [
+                InlineKeyboardButton(
+                    "\U0001f3e0 Back to Dashboard", callback_data="cmd_dashboard"
+                )
+            ],
         ]
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
     def build_message(trades, current_page, total_trades, wins, losses, net_pnl):
         """Build full message text and keyboard. Returns (text, reply_markup)."""
-        total_pages = max(1, (total_trades + TradeHistoryFormatter.PAGE_SIZE - 1) // TradeHistoryFormatter.PAGE_SIZE)
+        total_pages = max(
+            1,
+            (total_trades + TradeHistoryFormatter.PAGE_SIZE - 1)
+            // TradeHistoryFormatter.PAGE_SIZE,
+        )
         lines = [
             f"\U0001f4dc TRADE HISTORY  (Page {current_page}/{total_pages})",
             "\u2501" * 32,
@@ -71,12 +92,15 @@ class TradeHistoryFormatter:
             lines.append("No closed trades yet.")
         else:
             table_lines = []
-            table_lines.append(f"   {'Symbol':<10} {'PnL':<8} {'Time':<5} {'Reason':<12}")
+            table_lines.append(
+                f"   {'Symbol':<10} {'PnL':<8} {'Time':<5} {'Reason':<12}"
+            )
             table_lines.append("   " + "-" * 37)
             for t in trades:
                 table_lines.append(TradeHistoryFormatter.format_trade(t))
 
             from app.bot.utils.format import pre
+
             lines.append(pre("\n".join(table_lines)))
         lines.append("")
         lines.append("\u2501" * 32)
@@ -92,7 +116,9 @@ class TradeHistoryFormatter:
 
         lines.append(f"Trades    {wins}W / {losses}L  \u00b7  Total: {total}")
         lines.append(f"Win Rate  [{wr_bar}]  {wr:.0f}%")
-        lines.append(f"Net PnL   {pnl_icon} ${net_pnl:+,.2f}  \u00b7  Avg: ${avg_pnl:+,.2f}")
+        lines.append(
+            f"Net PnL   {pnl_icon} ${net_pnl:+,.2f}  \u00b7  Avg: ${avg_pnl:+,.2f}"
+        )
 
         text = "\n".join(lines)
         keyboard = TradeHistoryFormatter.build_keyboard(current_page, total_pages)

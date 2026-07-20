@@ -44,6 +44,7 @@ class AlphaBridge:
         symbol: str,
         candles: list[list],
         global_state: dict[str, Any] | None = None,
+        ingestor: Any = None,
     ) -> TradeSignal | None:
         """Run the full DecisionEngine pipeline and return a validated signal.
 
@@ -51,12 +52,24 @@ class AlphaBridge:
             symbol: Trading pair (e.g. "BTC/USDT").
             candles: OHLCV array, shape (N,6) with [ts, o, h, l, c, v].
             global_state: Market state from Redis (VWAP, skew, bid/ask). Optional.
+            ingestor: MarketDataIngestor for freshness check. Optional.
 
         Returns:
             TradeSignal if score meets threshold, else None.
         """
+        # Data freshness gate — reject stale micro-structure data
+        if (
+            ingestor is not None
+            and hasattr(ingestor, "is_stale")
+            and ingestor.is_stale(symbol)
+        ):
+            logger.warning("AlphaBridge: %s data stale — scoring blocked", symbol)
+            return None
+
         if len(candles) < self._MIN_CANDLES:
-            logger.debug("AlphaBridge: %s insufficient candles (%d/50)", symbol, len(candles))
+            logger.debug(
+                "AlphaBridge: %s insufficient candles (%d/50)", symbol, len(candles)
+            )
             return None
 
         generated_at = time.time()
@@ -80,8 +93,11 @@ class AlphaBridge:
         latency_ms = (time.time() - generated_at) * 1000
         logger.info(
             "AlphaBridge: signal %s %s score=%.1f regime=%s latency=%.0fms",
-            symbol, signal.direction, signal.score,
-            signal.regime.value, latency_ms,
+            symbol,
+            signal.direction,
+            signal.score,
+            signal.regime.value,
+            latency_ms,
         )
 
         if self._emitter is not None:

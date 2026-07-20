@@ -155,10 +155,12 @@ A conditional component substitution layer in `main.py`. When `SHADOW_MODE_ENABL
 *   **Refresh:** Every 4 hours (configurable). Data engine picks up changes naturally.
 *   **Sector mapping** (`app/data/sector_mapping.py`): Static classification — BTC/ETH, L1, L2, DeFi, Meme, AI, RWA. Stablecoins excluded.
 
-### I. Multi-Timeframe Confirmation (`app/alpha/multi_tf.py`)
-*   **Purpose:** Prevent entering against the 4H trend. KCT requires 1H trigger + 4H trend agreement.
+### I. Multi-Timeframe Confirmation & Macro Anchors (`app/alpha/multi_tf.py`)
+*   **Purpose:** Prevent entering against the 4H trend or the broader macro flow. KCT requires 1H trigger + 4H trend agreement.
 *   **Logic:** Fetch 4H OHLCV via `ohlcv_fetcher` (TTL=3600s, ~1 REST call/symbol/hour). Compute EMA(20) on 4H using `ta_tools.calculate_ema()`. If signal direction contradicts 4H EMA trend: apply 0.5x confidence penalty. Graceful degradation: no penalty if 4H data unavailable.
-*   **Integration:** Wired in `alpha_bridge_task` between `signal_generator.generate()` and AI analyst call.
+*   **Macro Anchor (Lead-Lag):** Validates the asset's direction against the major anchors (BTC/USDT, ETH/USDT). If >50% of macro anchors contradict the signal, it applies a **0.8x Penalty** to the final score, demanding exceptional idiosyncratic strength to pass the gate.
+*   **Momentum Exemption:** If a token is experiencing extreme volatility (up or down >15% in 24 hours), it is flagged as detached from the macro trend. It **bypasses the Macro Anchor Penalty** and **forces the Volatility Gate multiplier back to 1.0x** to avoid mathematically choking explosive gainers.
+*   **Integration:** Wired in `DecisionEngine.evaluate()` between StrategyRouter and AI analyst call.
 
 ### J. Sector Diversity Cap (`app/risk/sector_cap.py`)
 *   **Purpose:** Prevent concentrated losses when correlated crypto sectors dump together.
@@ -233,7 +235,7 @@ Sequential pipeline in `alpha_bridge_task`:
 
 1. **Deterministic composite** (`signals.py`): `regime_mult × (0.4×S_skew + 0.3×S_lead_lag + 0.2×S_funding + 0.1×S_oi)`. Regime modifier: TREND=1.2×, MR=0.8×, CHOP=0.0×.
 2. **Entry filter** (`entry_filter.py`): 5 checks — regime (CHOP blocks), spread (<0.3%), depth ratio, time-of-day (block 00:00–01:00 UTC), existing position.
-3. **Multi-timeframe confirmation** (`multi_tf.py`): 4H EMA(20) trend check. Contradicts 1H signal → 0.5× confidence penalty.
+3. **Multi-timeframe confirmation & Macro Anchors** (`multi_tf.py`): 4H EMA(20) trend check (0.5x penalty if fighting trend). Macro Lead-Lag check (BTC/ETH contradiction applies a 0.8x penalty to final score).
 4. **AI CryptoAnalyst** (`analyst.py`, MANDATORY): Structured prompt with TA indicators + trade memory context. Final confidence = `quant_confidence × 0.5 + ai_confidence × 0.5`. Gate: >= 0.65. **If AI call fails, signal is rejected.**
 
 ### Stage 4 — Risk Gate (Deterministic Only)
@@ -245,9 +247,10 @@ Sequential gates in `risk_gate_task`:
 
 ### Stage 5 — SOR Execution (Deterministic Only)
 Smart Order Router in `executor_task`:
-1. Post-Only Limit at current price.
-2. Reprice (up to 2 attempts, moving toward market).
-3. Market/IOC fallback.
+1. **Iceberg Slicing:** If the trade notional exceeds `$2,000`, the order is intercepted and mathematically sliced into 4 hidden chunks, fired sequentially with randomized 1.5s - 3.5s delays to prevent exchange front-running.
+2. Post-Only Limit at current price.
+3. **Adaptive Reprice:** Reprices up to 2 attempts moving toward market. If the live bid/ask spread widens unnaturally (e.g., > 0.2%), it drops the delay to a lightning-fast `100ms` to aggressively secure the fill.
+4. Market/IOC fallback.
 4. **Exchange-side SL placed immediately on every fill** via `bybit_client.place_stop_loss()`. No AI in this path.
 
 ### Stage 6 — Post-Entry Management

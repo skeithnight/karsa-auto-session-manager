@@ -14,6 +14,7 @@ Core responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from datetime import UTC, datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any
@@ -27,10 +28,19 @@ APM_RECONCILE_INTERVAL_S: int = 300
 APM_BREAKEVEN_FEE_PCT = Decimal("0.001")
 APM_TREND_TRAIL_ATR_MULT = Decimal("3.0")
 APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")
-APM_BREAKEVEN_LOCK_R = Decimal("1.0")
+APM_BREAKEVEN_LOCK_R = Decimal("1.0")  # fallback when ATR unavailable
+APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
 
 # Regime shift hysteresis: require N consecutive shifted checks
 REGIME_SHIFT_CONFIRM_COUNT: int = 3
+
+
+def _safe_dec(value: object, default: str = "0") -> Decimal:
+    """Convert any value safely to Decimal without raising."""
+    try:
+        return Decimal(str(value)) if value is not None else Decimal(default)
+    except Exception:
+        return Decimal(default)
 
 
 class ActivePositionManager:
@@ -64,6 +74,35 @@ class ActivePositionManager:
 
                 positions = await self._store.list_all()  # type: ignore[attr-defined]
 
+                # Sync Bybit positions missing from Redis
+                exchange_positions = await self._client.fetch_positions()  # type: ignore[attr-defined]
+                existing_syms = {
+                    (p.get("symbol", ""), p.get("side", "")) for p in positions
+                }
+                for ep in exchange_positions:
+                    ep_sym = ep.get("symbol", "")
+                    ep_side = "LONG" if ep.get("side") == "buy" else "SHORT"
+                    ccxt_sym = (
+                        ep_sym[:-4] + "/" + ep_sym[-4:] if len(ep_sym) > 4 else ep_sym
+                    )
+                    if (ccxt_sym, ep_side) not in existing_syms:
+                        entry = Decimal(str(ep.get("entry_price", 0)))
+                        amount = Decimal(str(ep.get("contracts", 0)))
+                        if entry > 0 and amount > 0:
+                            await self._store.save(
+                                symbol=ccxt_sym,
+                                side=ep_side,
+                                entry_price=entry,
+                                amount=amount,
+                            )
+                            # Re-read the saved pos to get full dict for reconciliation
+                            saved = await self._store.get(ccxt_sym, ep_side)
+                            if saved:
+                                positions.append(saved)
+                            self._log.warning(
+                                f"APM: synced orphan {ccxt_sym} {ep_side} from Bybit"
+                            )
+
                 # Fetch live mark prices for all held symbols
                 live_prices: dict[str, Decimal] = {}
                 try:
@@ -74,7 +113,9 @@ class ActivePositionManager:
                         if sym and last:
                             live_prices[sym] = Decimal(str(last))
                 except Exception:
-                    self._log.warning("APM: failed to fetch live prices, using entry_price fallback")
+                    self._log.warning(
+                        "APM: failed to fetch live prices, using entry_price fallback"
+                    )
 
                 for pos in positions:
                     symbol = pos.get("symbol", "")
@@ -94,39 +135,460 @@ class ActivePositionManager:
                 self._log.exception("APM: error in monitoring loop")
                 await asyncio.sleep(APM_ERROR_BACKOFF_S)
 
+    async def start_health_check_loop(self, interval_s: int = 60) -> None:
+        """Scheduled position health check — runs every `interval_s` seconds.
+
+        Detects positions with missing critical fields and auto-repairs them
+        from Bybit REST API + ATR computation. Runs as a separate asyncio task,
+        independent of the main 2s monitoring loop.
+
+        Critical fields checked every cycle:
+          - initial_risk_per_unit  (APM won't protect position without this)
+          - entry_regime           (controls trailing/TP strategy)
+          - entry_price / amount   (needed for R-multiple calculation)
+          - atr                    (needed for breakeven and trailing)
+          - current_sl / stop_loss (exchange-side SL must exist)
+        """
+        _REQUIRED_FIELDS = [
+            "initial_risk_per_unit",
+            "entry_regime",
+            "entry_price",
+            "amount",
+            "atr",
+        ]
+        while True:
+            try:
+                await asyncio.sleep(interval_s)
+                positions = await self._store.list_all()  # type: ignore[attr-defined]
+                if not positions:
+                    continue
+
+                repaired = 0
+                for pos in positions:
+                    symbol = pos.get("symbol", "")
+                    side = pos.get("side", "LONG")
+                    if not symbol:
+                        continue
+
+                    missing = await self._store.get_missing_fields(  # type: ignore[attr-defined]
+                        symbol, side, _REQUIRED_FIELDS
+                    )
+                    if not missing:
+                        continue
+
+                    self._log.warning(
+                        "HEALTH_CHECK: %s %s missing fields %s — auto-repairing",
+                        symbol,
+                        side,
+                        missing,
+                    )
+                    changed = await self._reconcile_position(pos)
+
+                    # Also verify SL exists on exchange after repair
+                    entry_price = _safe_dec(pos.get("entry_price", "0"))
+                    current_sl = _safe_dec(
+                        pos.get("current_sl", pos.get("stop_loss", "0"))
+                    )
+                    initial_risk = _safe_dec(pos.get("initial_risk_per_unit", "0"))
+                    if current_sl <= 0 and entry_price > 0 and initial_risk > 0:
+                        # SL still missing after repair — place emergency SL
+                        api_side = "buy" if side == "LONG" else "sell"
+                        if side == "LONG":
+                            sl_price = entry_price - initial_risk
+                        else:
+                            sl_price = entry_price + initial_risk
+                        try:
+                            await self._client.set_trading_stop(
+                                symbol, api_side, stop_loss=sl_price
+                            )  # type: ignore[attr-defined]
+                            await self._store.update_fields(
+                                symbol,
+                                side,
+                                {  # type: ignore[attr-defined]
+                                    "current_sl": str(sl_price),
+                                    "stop_loss": str(sl_price),
+                                },
+                            )
+                            self._log.warning(
+                                "HEALTH_CHECK: emergency SL placed for %s %s @ %s",
+                                symbol,
+                                side,
+                                sl_price,
+                            )
+                            changed = True
+                        except Exception as e:
+                            self._log.error(
+                                "HEALTH_CHECK: emergency SL FAILED for %s: %s — POSITION UNPROTECTED",
+                                symbol,
+                                e,
+                            )
+                            if self._alert:
+                                await self._alert.send(  # type: ignore[attr-defined]
+                                    f"🚨 HEALTH CHECK: SL missing & placement FAILED for {symbol} {side}. MANUAL INTERVENTION NEEDED."
+                                )
+
+                    if changed:
+                        repaired += 1
+
+                if repaired:
+                    self._log.warning("HEALTH_CHECK: repaired %d positions", repaired)
+                    if self._alert:
+                        await self._alert.send(  # type: ignore[attr-defined]
+                            f"⚠️ APM health check: auto-repaired {repaired} position(s) with missing fields."
+                        )
+
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._log.exception("APM: health check loop error")
+                await asyncio.sleep(APM_ERROR_BACKOFF_S)
+
     # ------------------------------------------------------------------
     # Per-position management
     # ------------------------------------------------------------------
+
+    async def _reconcile_position(self, pos: dict[str, Any]) -> bool:
+        """Fill ALL missing fields from Bybit + candle data. Returns True if any field was updated.
+
+        Critical: ensures no empty data in Redis. Runs once per position when fields are missing.
+        """
+        symbol = pos.get("symbol", "")
+        side = pos.get("side", "LONG")
+        changed = False
+
+        # 1. Fetch Bybit position data for entry_price, SL, TP, amount
+        try:
+            bybit_symbol = symbol.replace("/", "")
+            exchange_positions = await self._client.fetch_positions()
+            exchange_pos = None
+            for p in exchange_positions:
+                p_sym = (p.get("symbol") or "").replace("/", "")
+                p_side = "LONG" if p.get("side") == "buy" else "SHORT"
+                if p_sym == bybit_symbol and p_side == side:
+                    exchange_pos = p
+                    break
+
+            if exchange_pos:
+                # Entry price
+                if not pos.get("entry_price") or pos.get("entry_price") == "0":
+                    entry = exchange_pos.get("entry_price", 0)
+                    if entry and float(entry) > 0:
+                        pos["entry_price"] = str(entry)
+                        changed = True
+                        self._log.info(f"APM reconcile: {symbol} entry_price={entry}")
+
+                # Amount (contracts)
+                if not pos.get("amount") or pos.get("amount") == "0":
+                    amount = exchange_pos.get("contracts", 0)
+                    if amount and float(amount) > 0:
+                        pos["amount"] = str(amount)
+                        changed = True
+
+                # SL from exchange — validate direction
+                exch_sl = exchange_pos.get("stopLoss")
+                if exch_sl and str(exch_sl) not in ("0", "None", ""):
+                    sl_val = Decimal(str(exch_sl))
+                    entry_val = Decimal(str(pos.get("entry_price", 0)))
+                    # SL must be below entry for LONG, above for SHORT
+                    if entry_val > 0:
+                        if side == "LONG" and sl_val >= entry_val:
+                            self._log.warning(
+                                f"APM reconcile: {symbol} SL {sl_val} >= entry {entry_val} for LONG — skipping"
+                            )
+                        elif side == "SHORT" and sl_val <= entry_val:
+                            self._log.warning(
+                                f"APM reconcile: {symbol} SL {sl_val} <= entry {entry_val} for SHORT — skipping"
+                            )
+                        else:
+                            pos["current_sl"] = str(exch_sl)
+                            pos["stop_loss"] = str(exch_sl)
+
+                # TP from exchange
+                exch_tp = exchange_pos.get("takeProfit")
+                if exch_tp and str(exch_tp) not in ("0", "None", ""):
+                    pos["take_profit"] = str(exch_tp)
+        except Exception:
+            self._log.debug(f"APM reconcile: failed to fetch Bybit data for {symbol}")
+
+        # 2. ATR from candles
+        atr = Decimal(str(pos.get("atr", "0") or "0"))
+        if atr <= 0:
+            atr = await self._compute_atr(symbol)
+            if atr > 0:
+                pos["atr"] = str(atr)
+                changed = True
+                self._log.info(f"APM reconcile: {symbol} atr={atr}")
+
+        # 3. Regime from classifier
+        entry_regime = pos.get("entry_regime", "")
+        if not entry_regime and symbol:
+            try:
+                import numpy as np
+
+                candles = []
+                if hasattr(self._client, "session") and self._client.session:
+                    bybit_symbol = symbol.replace("/", "")
+                    raw = await self._client._execute(
+                        self._client.session.get_kline,
+                        category="linear",
+                        symbol=bybit_symbol,
+                        interval="60",
+                        limit=60,
+                    )
+                    candle_data = raw.get("list", [])
+                    if len(candle_data) >= 50:
+                        candle_data.reverse()
+                        candles = [[float(x) for x in c] for c in candle_data]
+                if candles and hasattr(self._regime, "classify"):
+                    arr = np.array(candles, dtype=np.float64)
+                    regime = self._regime.classify(arr)
+                    entry_regime = regime.value
+                    pos["entry_regime"] = entry_regime
+                    pos["regime"] = entry_regime
+                    changed = True
+                    self._log.info(f"APM reconcile: {symbol} regime={entry_regime}")
+            except Exception:
+                self._log.debug(
+                    f"APM reconcile: regime classification failed for {symbol}"
+                )
+
+        # 4. initial_risk_per_unit from ATR
+        initial_risk = Decimal(str(pos.get("initial_risk_per_unit", "0") or "0"))
+        if initial_risk <= 0 and atr > 0:
+            regime = entry_regime or "RANGE"
+            sl_buffer = Decimal("1.0") if "RANGE" in regime else Decimal("1.5")
+            initial_risk = atr * sl_buffer
+            pos["initial_risk_per_unit"] = str(initial_risk)
+            changed = True
+            self._log.info(f"APM reconcile: {symbol} initial_risk={initial_risk}")
+
+        # 5. entry_time — use entered_at if missing
+        if not pos.get("entry_time") and pos.get("entered_at"):
+            pos["entry_time"] = pos["entered_at"]
+
+        # 6. Set exchange-side SL if missing
+        current_sl = Decimal(
+            str(pos.get("current_sl", pos.get("stop_loss", "0")) or "0")
+        )
+        entry_price = Decimal(str(pos.get("entry_price", "0") or "0"))
+        if current_sl <= 0 and entry_price > 0 and initial_risk > 0:
+            if side == "LONG":
+                sl_price = entry_price - initial_risk
+            else:
+                sl_price = entry_price + initial_risk
+            try:
+                api_side = "buy" if side == "LONG" else "sell"
+                await self._client.set_trading_stop(
+                    symbol, api_side, stop_loss=sl_price
+                )
+                pos["current_sl"] = str(sl_price)
+                pos["stop_loss"] = str(sl_price)
+                changed = True
+                self._log.warning(
+                    f"APM reconcile: {symbol} exchange SL set to {sl_price}"
+                )
+            except Exception as e:
+                if "10001" in str(e):
+                    # SL above/below price — wrong direction, compute opposite
+                    if side == "LONG":
+                        sl_price = entry_price - initial_risk
+                    else:
+                        sl_price = entry_price + initial_risk
+                    try:
+                        await self._client.set_trading_stop(
+                            symbol, api_side, stop_loss=sl_price
+                        )
+                        pos["current_sl"] = str(sl_price)
+                        pos["stop_loss"] = str(sl_price)
+                        changed = True
+                        self._log.warning(
+                            f"APM reconcile: {symbol} exchange SL corrected to {sl_price}"
+                        )
+                    except Exception:
+                        self._log.debug(
+                            f"APM reconcile: SL placement failed for {symbol}"
+                        )
+                else:
+                    self._log.debug(
+                        f"APM reconcile: SL placement failed for {symbol}: {e}"
+                    )
+
+        # 7. Set exchange-side TP if missing and TREND regime
+        if entry_regime and "TREND" in entry_regime:
+            current_tp = pos.get("take_profit", "")
+            if not current_tp or str(current_tp) in ("0", "None", ""):
+                # For TREND, use 2x ATR as TP
+                if atr > 0 and entry_price > 0:
+                    if side == "LONG":
+                        tp_price = entry_price + (atr * Decimal("2.0"))
+                    else:
+                        tp_price = entry_price - (atr * Decimal("2.0"))
+                    try:
+                        api_side = "buy" if side == "LONG" else "sell"
+                        await self._client.set_trading_stop(
+                            symbol, api_side, take_profit=tp_price
+                        )
+                        pos["take_profit"] = str(tp_price)
+                        changed = True
+                        self._log.warning(
+                            f"APM reconcile: {symbol} exchange TP set to {tp_price}"
+                        )
+                    except Exception:
+                        self._log.debug(
+                            f"APM reconcile: TP placement failed for {symbol}"
+                        )
+
+        # 8. Persist changes
+        if changed:
+            try:
+                # Use canonical side key (LONG/SHORT) to match position_store._key()
+                from app.core.position_store import _normalize_side
+
+                side_key = _normalize_side(side)
+                redis_key = f"karsa:position:{symbol}:{side_key}"
+                changed_fields = [
+                    f
+                    for f in [
+                        "entry_price",
+                        "amount",
+                        "current_sl",
+                        "stop_loss",
+                        "take_profit",
+                        "atr",
+                        "entry_regime",
+                        "regime",
+                        "initial_risk_per_unit",
+                        "entry_time",
+                    ]
+                    if pos.get(f)
+                ]
+                await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+                self._log.warning(
+                    "APM reconcile: %s updated %d field(s): %s",
+                    symbol,
+                    len(changed_fields),
+                    changed_fields,
+                )
+            except Exception:
+                self._log.exception(f"APM reconcile: persist failed for {symbol}")
+
+        return changed
 
     async def _manage_single_position(self, pos: dict[str, Any]) -> None:
         """Run all position checks: breakeven, trailing, time, regime."""
         symbol = pos.get("symbol", "")
         side = pos.get("side", "LONG")
-        entry_price = Decimal(str(pos.get("entry_price", "0")))
-        live_price = Decimal(str(pos.get("live_price", pos.get("entry_price", "0"))))
+
+        # Reconcile ALL missing fields from Bybit + candles
+        await self._reconcile_position(pos)
+
+        _raw_entry = pos.get("entry_price", "0") or "0"
+        entry_price = Decimal(str(_raw_entry))
+        _raw_live = pos.get("live_price", pos.get("entry_price", "0")) or "0"
+        live_price = Decimal(str(_raw_live))
         entry_regime = pos.get("entry_regime", "UNKNOWN")
-        sl_price = Decimal(str(pos.get("current_sl", pos.get("stop_loss", "0"))))
-        initial_risk = Decimal(str(pos.get("initial_risk_per_unit", "0")))
+        _raw_sl = pos.get("current_sl", pos.get("stop_loss", "0")) or "0"
+        sl_price = Decimal(str(_raw_sl))
+        _raw_risk = pos.get("initial_risk_per_unit", "0") or "0"
+        initial_risk = Decimal(str(_raw_risk))
         moved_to_be = pos.get("moved_to_breakeven", False)
         entry_time = pos.get("entry_time")
         max_hold_mins = int(pos.get("max_hold_time_mins", 1440))
 
-        if entry_price <= 0 or initial_risk <= 0:
+        if entry_price <= 0:
+            return
+
+        if initial_risk <= 0:
             return
 
         r_mult = self._calculate_r_multiple(side, entry_price, live_price, initial_risk)
+
+        # Track Peak Price for Chandelier Trailing
+        peak_price = Decimal(str(pos.get("peak_price", entry_price)))
+        peak_updated = False
+        if side == "LONG" and live_price > peak_price or side == "SHORT" and live_price < peak_price:
+            peak_price = live_price
+            peak_updated = True
+
+        if peak_updated:
+            pos["peak_price"] = str(peak_price)
+
+        # --- $1 hard cap: if current SL would lose > $1, tighten SL to exactly -$1 ---
+        # Rule: if already in loss beyond $1 — let it be (don't widen SL).
+        # Only tighten when the SL *would* cause a loss exceeding $1 on fill.
+        amount = Decimal(str(pos.get("amount", "0")))
+        if amount > 0 and entry_price > 0 and sl_price > 0:
+            if side == "LONG":
+                # Loss = (sl_price - entry_price) * amount  — negative = loss
+                sl_loss = (sl_price - entry_price) * amount
+            else:
+                # Loss = (entry_price - sl_price) * amount  — negative = loss
+                sl_loss = (entry_price - sl_price) * amount
+
+            if sl_loss < Decimal("-1"):
+                # SL is too loose — tighten to exactly -$1 max loss
+                if side == "LONG":
+                    new_sl = entry_price - (Decimal("1") / amount)
+                else:
+                    new_sl = entry_price + (Decimal("1") / amount)
+
+                # Safety: new_sl must be beyond entry in the right direction
+                sl_valid = (side == "LONG" and new_sl < entry_price) or (
+                    side == "SHORT" and new_sl > entry_price
+                )
+                if sl_valid and new_sl > 0:
+                    try:
+                        api_side = "buy" if side == "LONG" else "sell"
+                        await self._client.set_trading_stop(  # type: ignore[attr-defined]
+                            symbol, api_side, stop_loss=new_sl
+                        )
+                        pos["current_sl"] = str(new_sl)
+                        pos["stop_loss"] = str(new_sl)
+                        sl_price = new_sl  # update local var so trailing uses new SL
+                        self._log.warning(
+                            "APM: $1 CAP %s %s SL tightened from %s to %s (was $%.4f loss)",
+                            symbol,
+                            side,
+                            pos.get("current_sl"),
+                            new_sl,
+                            float(sl_loss),
+                        )
+                    except Exception:
+                        self._log.exception(f"APM: $1 cap SL amend failed for {symbol}")
 
         # Exchange-side TP for RANGE/CHOP — place once on first loop
         if not pos.get("tp_placed") and entry_regime in ("RANGE", "CHOP"):
             await self._ensure_take_profit(pos, entry_price, initial_risk, side)
 
-        # Scale-out: RANGE/CHOP close 50% at +1R, TREND close 30% at +2R
-        scale_threshold = APM_BREAKEVEN_LOCK_R if "TREND" not in entry_regime else Decimal("2.0")
-        scale_pct = Decimal("0.50") if "TREND" not in entry_regime else Decimal("0.30")
-        if not pos.get("scaled_out") and r_mult >= scale_threshold:
-            await self._scale_out_position(pos, scale_pct, entry_price, side)
+        # Multi-Tier Scale-Outs
+        scale_tier = pos.get("scale_tier", 0)
 
-        if not moved_to_be and r_mult >= APM_BREAKEVEN_LOCK_R:
+        # Range/Chop logic: 50% at 1R (Tier 1)
+        if "TREND" not in entry_regime:
+            if scale_tier < 1 and r_mult >= APM_BREAKEVEN_LOCK_R:
+                await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
+                pos["scale_tier"] = 1
+        # Trend logic: 33% at 1.5R (Tier 1), 33% at 3.0R (Tier 2)
+        elif scale_tier < 1 and r_mult >= Decimal("1.5"):
+            await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+            pos["scale_tier"] = 1
+            # Force breakeven lock upon Tier 1 scale-out to secure a free ride
+            if not moved_to_be:
+                await self._move_stop_to_breakeven(pos, entry_price, side)
+                moved_to_be = True
+        elif scale_tier < 2 and r_mult >= Decimal("3.0"):
+            await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+            pos["scale_tier"] = 2
+
+        # ATR-based BE trigger: price must move beyond noise threshold
+        atr = Decimal(str(pos.get("atr", "0")))
+        if atr > 0:
+            price_move = abs(live_price - entry_price)
+            be_triggered = price_move >= atr * APM_BREAKEVEN_ATR_MULT
+        else:
+            # Fallback to fixed 1R when ATR unavailable
+            be_triggered = r_mult >= APM_BREAKEVEN_LOCK_R
+        if not moved_to_be and be_triggered:
             await self._move_stop_to_breakeven(pos, entry_price, side)
 
         if "TREND" in entry_regime:
@@ -139,9 +601,59 @@ class ActivePositionManager:
 
         await self._check_regime_shift(pos, symbol, entry_regime)
 
+        pos["last_check_at"] = datetime.now(UTC).isoformat()
+        try:
+            from app.core.position_store import _normalize_side
+
+            side_key = _normalize_side(side)
+            redis_key = f"karsa:position:{symbol}:{side_key}"
+            await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # R-multiple calculation
     # ------------------------------------------------------------------
+
+    async def _compute_atr(self, symbol: str, period: int = 14) -> Decimal:
+        """Fetch 1h candles from Bybit and compute ATR(period) via Wilder smoothing."""
+        try:
+            import numpy as np
+
+            bybit_symbol = symbol.replace("/", "")
+            if hasattr(self._client, "session") and self._client.session:
+                raw = await self._client._execute(
+                    self._client.session.get_kline,
+                    category="linear",
+                    symbol=bybit_symbol,
+                    interval="60",
+                    limit=60,
+                )
+                candles = raw.get("list", [])
+                if len(candles) < period + 1:
+                    return Decimal("0")
+                candles.reverse()
+                arr = np.array(
+                    [[float(x) for x in c] for c in candles], dtype=np.float64
+                )
+                highs, lows, closes = arr[:, 2], arr[:, 3], arr[:, 4]
+                prev_closes = np.roll(closes, 1)
+                prev_closes[0] = closes[0]
+                tr = np.maximum(
+                    highs - lows,
+                    np.maximum(np.abs(highs - prev_closes), np.abs(lows - prev_closes)),
+                )
+                tr = tr[1:]
+                atr = np.mean(tr[:period])
+                for i in range(period, len(tr)):
+                    atr = (atr * (period - 1) + tr[i]) / period
+                result = Decimal(str(atr))
+                if result > 0:
+                    self._log.info(f"APM: computed ATR for {symbol} = {result}")
+                return result
+        except Exception:
+            self._log.debug(f"APM: ATR computation failed for {symbol}")
+        return Decimal("0")
 
     @staticmethod
     def _calculate_r_multiple(
@@ -163,11 +675,14 @@ class ActivePositionManager:
     # ------------------------------------------------------------------
 
     async def _ensure_take_profit(
-        self, pos: dict[str, Any], entry_price: Decimal, initial_risk: Decimal, side: str
+        self,
+        pos: dict[str, Any],
+        entry_price: Decimal,
+        initial_risk: Decimal,
+        side: str,
     ) -> None:
-        """Place exchange-side TP once for RANGE/CHOP regimes."""
+        """Place exchange-side TP once for RANGE/CHOP regimes via atomic set_trading_stop."""
         symbol = pos.get("symbol", "")
-        amount = Decimal(str(pos.get("amount", "0")))
         api_side = "buy" if side == "LONG" else "sell"
         try:
             if side == "LONG":
@@ -175,10 +690,9 @@ class ActivePositionManager:
             else:
                 tp_price = entry_price - initial_risk
 
-            result = await self._client.place_take_profit(symbol, api_side, tp_price, amount)  # type: ignore[attr-defined]
-            if result:
-                pos["tp_placed"] = True
-                self._log.info(f"APM: exchange-side TP placed for {symbol} @ {tp_price}")
+            await self._client.set_trading_stop(symbol, api_side, take_profit=tp_price)  # type: ignore[attr-defined]
+            pos["tp_placed"] = True
+            self._log.info(f"APM: atomic TP placed for {symbol} @ {tp_price}")
         except Exception:
             self._log.exception(f"APM: TP placement failed for {symbol}")
 
@@ -199,8 +713,11 @@ class ActivePositionManager:
                 return
             await self._client.reduce_position(symbol, api_side, close_qty)  # type: ignore[attr-defined]
             pos["scaled_out"] = True
+            # Update amount in pos dict so subsequent calculations use reduced quantity
+            new_amount = amount - close_qty
+            pos["amount"] = str(new_amount)
             self._log.info(
-                f"APM: scale-out {pct*100}% ({close_qty}) for {symbol}"
+                f"APM: scale-out {pct * 100}% ({close_qty}) for {symbol}, remaining={new_amount}"
             )
         except Exception:
             self._log.exception(f"APM: scale-out failed for {symbol}")
@@ -225,12 +742,32 @@ class ActivePositionManager:
 
             new_sl_str = str(new_sl)
             try:
-                await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
+                await self._client.amend_stop_loss(
+                    sl_order_id, symbol, api_side, new_sl, amount
+                )  # type: ignore[attr-defined]
             except Exception:
                 self._log.warning(f"APM: breakeven amend failed for {symbol}, retrying")
-                await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
+                await self._client.amend_stop_loss(
+                    sl_order_id, symbol, api_side, new_sl, amount
+                )  # type: ignore[attr-defined]
 
-            await self._store.update_sl(symbol, api_side, sl_order_id)  # type: ignore[attr-defined]
+            # BUG-4 fix: persist breakeven flag + new SL price to Redis so this
+            # does not re-trigger on every 2s cycle.
+            pos["moved_to_breakeven"] = True
+            pos["current_sl"] = new_sl_str
+            pos["stop_loss"] = new_sl_str
+            try:
+                from app.core.position_store import _normalize_side
+
+                side_key = _normalize_side(side)
+                redis_key = f"karsa:position:{pos.get('symbol', '')}:{side_key}"
+                await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+            except Exception:
+                self._log.exception(
+                    f"APM: failed to persist breakeven flag for {symbol}"
+                )
+
+            await self._store.update_sl(symbol, api_side, sl_order_id, new_sl)  # type: ignore[attr-defined]
             self._log.info(f"APM: breakeven locked for {symbol} at {new_sl_str}")
 
         except Exception:
@@ -261,12 +798,15 @@ class ActivePositionManager:
 
         trail_distance = atr * APM_TREND_TRAIL_ATR_MULT
 
+        # True Chandelier: trail from the peak price reached, not current live price
+        peak = Decimal(str(pos.get("peak_price", live_price)))
+
         if side == "LONG":
-            new_sl = live_price - trail_distance
+            new_sl = peak - trail_distance
             if new_sl <= current_sl:
                 return
         else:
-            new_sl = live_price + trail_distance
+            new_sl = peak + trail_distance
             if new_sl >= current_sl:
                 return
 
@@ -274,8 +814,16 @@ class ActivePositionManager:
             sl_order_id = pos.get("sl_order_id", "")
             amount = Decimal(str(pos.get("amount", "0")))
             api_side = "buy" if side == "LONG" else "sell"
-            await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, amount)  # type: ignore[attr-defined]
-            self._log.info(f"APM: trailing SL amended for {symbol} to {new_sl}")
+            await self._client.amend_stop_loss(
+                sl_order_id, symbol, api_side, new_sl, amount
+            )  # type: ignore[attr-defined]
+            # Update local pos dict with new SL so we don't spam requests
+            new_sl_str = str(new_sl)
+            pos["current_sl"] = new_sl_str
+            pos["stop_loss"] = new_sl_str
+            self._log.info(
+                f"APM: trailing SL amended for {symbol} to {new_sl} (Peak={peak})"
+            )
         except Exception:
             self._log.exception(f"APM: trailing SL amend failed for {symbol}")
 
@@ -286,7 +834,23 @@ class ActivePositionManager:
     async def _manage_time_exit(
         self, pos: dict[str, Any], entry_time: object, max_minutes: int
     ) -> None:
-        """Force close if position held beyond max_hold_time_mins."""
+        """Force close if position held beyond max_hold_time_mins.
+
+        BUG-6 fix: entry_time from Redis is always an ISO string, not a datetime.
+        Parse it here before the isinstance guard.
+        """
+        # Parse string to timezone-aware datetime if needed
+        if isinstance(entry_time, str):
+            try:
+                entry_time = datetime.fromisoformat(entry_time)
+                if entry_time.tzinfo is None:
+                    entry_time = entry_time.replace(tzinfo=UTC)
+            except Exception:
+                self._log.debug(
+                    "APM: could not parse entry_time=%r for time-exit", entry_time
+                )
+                return
+
         if not isinstance(entry_time, datetime):
             return
 
@@ -355,7 +919,9 @@ class ActivePositionManager:
             # Market close with reduceOnly
             if qty > 0:
                 close_side = "SELL" if side == "LONG" else "BUY"
-                await self._client.create_market_order(symbol, close_side, qty, {"reduceOnly": True})  # type: ignore[attr-defined]
+                await self._client.create_market_order(
+                    symbol, close_side, qty, {"reduceOnly": True}
+                )  # type: ignore[attr-defined]
             # Remove from local state (side needed for Redis key)
             await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
 
@@ -363,10 +929,20 @@ class ActivePositionManager:
             if self._alert:
                 await self._alert.send(f"🔴 APM force closed {symbol}: {reason}")  # type: ignore[attr-defined]
 
-        except Exception:
-            self._log.exception(f"APM: CRITICAL force close failed for {symbol}")
-            if self._alert:
-                await self._alert.send(f"🚨 APM FORCE CLOSE FAILED {symbol} — MANUAL INTERVENTION NEEDED")  # type: ignore[attr-defined]
+        except Exception as e:
+            err_str = str(e)
+            if "110017" in err_str or "position is zero" in err_str:
+                # Position already closed on exchange — clean up Redis
+                self._log.warning(
+                    f"APM: {symbol} already closed on exchange, removing Redis key"
+                )
+                await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
+            else:
+                self._log.exception(f"APM: CRITICAL force close failed for {symbol}")
+                if self._alert:
+                    await self._alert.send(
+                        f"🚨 APM FORCE CLOSE FAILED {symbol} — MANUAL INTERVENTION NEEDED"
+                    )  # type: ignore[attr-defined]
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -380,39 +956,48 @@ class ActivePositionManager:
         try:
             internal = await self._store.list_all()  # type: ignore[attr-defined]
             external = await self._client.fetch_positions()  # type: ignore[attr-defined]
-            external_symbols = {p.get("symbol") for p in external}
+            external_symbols = {p.get("symbol", "").replace("/", "") for p in external}
 
             for pos in internal:
                 symbol = pos.get("symbol", "")
-                if symbol not in external_symbols:
+                if symbol.replace("/", "") not in external_symbols:
                     self._log.warning(
                         f"APM: ghost position detected — {symbol} not on Bybit, removing"
                     )
-                    api_side = pos.get("side", "buy")
+                    raw_side = pos.get("side", "buy")
+                    api_side = "buy" if raw_side in ("buy", "LONG") else "sell"
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
                     continue
 
-                # Verify SL order still exists on exchange
-                sl_order_id = pos.get("sl_order_id", "")
-                if sl_order_id:
-                    open_orders = await self._client.fetch_open_orders()  # type: ignore[attr-defined]
-                    sl_alive = any(
-                        o.get("id") == sl_order_id for o in open_orders
-                    )
-                    if not sl_alive:
-                        self._log.warning(
-                            f"APM: SL order {sl_order_id} missing for {symbol}, re-placing"
+                # Verify SL is attached to the position
+                entry_price = Decimal(str(pos.get("entry_price", "0")))
+                raw_side = pos.get("side", "buy")
+                api_side = "buy" if raw_side in ("buy", "LONG") else "sell"
+                if entry_price > 0:
+                    try:
+                        # Re-attach SL atomically via set_trading_stop
+                        sl_distance = Decimal(
+                            str(pos.get("initial_risk_per_unit", "0"))
                         )
-                        entry_price = Decimal(str(pos.get("entry_price", "0")))
-                        amount = Decimal(str(pos.get("amount", "0")))
-                        api_side = pos.get("side", "buy")
-                        if entry_price > 0 and amount > 0:
-                            new_sl = await self._client.place_stop_loss(  # type: ignore[attr-defined]
-                                symbol, api_side, entry_price, amount
+                        if sl_distance > 0:
+                            sl_price = (
+                                entry_price - sl_distance
+                                if api_side == "buy"
+                                else entry_price + sl_distance
                             )
-                            if new_sl:
-                                new_id = new_sl.get("orderId", "")
-                                await self._store.update_sl(symbol, api_side, new_id)  # type: ignore[attr-defined]
+                        else:
+                            # Fallback: 2% of entry
+                            sl_price = (
+                                entry_price * Decimal("0.98")
+                                if api_side == "buy"
+                                else entry_price * Decimal("1.02")
+                            )
+                        await self._client.set_trading_stop(  # type: ignore[attr-defined]
+                            symbol, api_side, stop_loss=sl_price
+                        )
+                        self._log.info(f"APM: SL reconciled for {symbol} at {sl_price}")
+                    except Exception:
+                        self._log.warning(f"APM: SL reconciliation failed for {symbol}")
 
         except Exception:
             self._log.exception("APM: reconciliation failed")

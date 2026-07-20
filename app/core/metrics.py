@@ -314,16 +314,34 @@ position_duration = Gauge(
     ["symbol"],
 )
 
+position_sl_price = Gauge(
+    "karsa_position_sl_price_usdt",
+    "Current stop-loss price for active position",
+    ["symbol"],
+)
+
 stop_loss_placement = Counter(
     "karsa_stop_loss_placement_total",
     "Stop-loss placement attempts",
     ["symbol", "result"],
 )
 
+sl_tp_atomic_placement = Counter(
+    "karsa_sl_tp_atomic_placement_total",
+    "Atomic SL/TP placement via set_trading_stop",
+    ["symbol"],
+)
+
 position_lifecycle_duration = Histogram(
     "karsa_position_lifecycle_duration_seconds",
     "Time from position open to close",
     buckets=[60, 300, 900, 1800, 3600, 7200, 14400, 28800],
+)
+
+pnl_unrealized_drift = Gauge(
+    "karsa_pnl_unrealized_drift_pct",
+    "Unrealized PnL drift between exchange and local calculation",
+    ["symbol"],
 )
 
 # ── Data Integrity ───────────────────────────────────────────
@@ -443,6 +461,49 @@ wallet_total_equity = Gauge(
     "Total equity in USDT",
 )
 
+# ── Funnel Dashboard ─────────────────────────────────────────
+universe_size = Gauge(
+    "karsa_universe_size",
+    "Current active universe symbol count",
+)
+
+data_age_seconds = Gauge(
+    "karsa_data_age_seconds",
+    "Seconds since last successful data fetch",
+    ["symbol"],
+)
+
+data_fetch_total = Counter(
+    "karsa_data_fetch_total",
+    "Data fetch attempts by field and result",
+    ["symbol", "field", "result"],
+)
+
+execution_slippage_bps = Histogram(
+    "karsa_execution_slippage_bps",
+    "Entry vs fill price delta in basis points",
+    ["symbol"],
+    buckets=[0.1, 0.5, 1, 2, 5, 10, 20, 50],
+)
+
+sor_step_total = Counter(
+    "karsa_sor_step_total",
+    "SOR execution step that filled the order",
+    ["symbol", "step"],
+)
+
+param_threshold = Gauge(
+    "karsa_param_threshold",
+    "Current tunable threshold values",
+    ["name"],
+)
+
+ai_confidence = Gauge(
+    "karsa_ai_confidence",
+    "Latest AI Analyst confidence score",
+    ["symbol"],
+)
+
 max_positions = Gauge(
     "karsa_asm_max_positions",
     "Maximum allowed open positions",
@@ -493,6 +554,18 @@ karsa_shadow_sl_hits_total = Counter(
     ["symbol", "side"],
 )
 
+karsa_shadow_tp_hits_total = Counter(
+    "karsa_shadow_tp_hits_total",
+    "Shadow TP hits triggered",
+    ["symbol", "side"],
+)
+
+karsa_shadow_time_exits_total = Counter(
+    "karsa_shadow_time_exits_total",
+    "Shadow time-based exits",
+    ["symbol", "side"],
+)
+
 karsa_shadow_funding_fees_total_usdt = Counter(
     "karsa_shadow_funding_fees_total_usdt",
     "Total shadow funding fees in USDT",
@@ -503,6 +576,32 @@ karsa_shadow_limit_orders_unfilled_total = Counter(
     "Shadow post-only limit orders expired unfilled",
     ["symbol"],
 )
+
+# ── Live Mode ────────────────────────────────────────────────
+karsa_live_orders_placed_total = Counter(
+    "karsa_live_orders_placed_total",
+    "Live orders placed on Bybit",
+    ["symbol", "side"],
+)
+
+karsa_live_exits_placed_total = Counter(
+    "karsa_live_exits_placed_total",
+    "Live exits placed",
+    ["symbol", "reason"],
+)
+
+karsa_live_sl_hits_total = Counter(
+    "karsa_live_sl_hits_total",
+    "Live SL hits triggered",
+    ["symbol", "side"],
+)
+
+karsa_shadow_stale_cleanups_total = Counter(
+    "karsa_shadow_stale_cleanups_total",
+    "Shadow positions auto-closed for missing SL",
+    ["symbol", "side"],
+)
+
 
 def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
     """Helper to sum prometheus metric values across all labels via Prometheus API."""
@@ -533,6 +632,7 @@ def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
 
     return total
 
+
 def get_funnel_metrics() -> dict:
     """Fetch all funnel metrics for the shadow pipeline."""
     return {
@@ -541,10 +641,35 @@ def get_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_calls")) - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        "ai_approvals": max(
+            0,
+            int(get_metric_sum("karsa_ai_analyst_calls"))
+            - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        ),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
         "trade_sl_hits": int(get_metric_sum("karsa_shadow_sl_hits")),
-        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed"))
+        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed")),
+    }
+
+
+def get_live_funnel_metrics() -> dict:
+    """Fetch all funnel metrics for the live pipeline."""
+    return {
+        "universe_attempted": int(get_metric_sum("karsa_signals_pipeline_attempted")),
+        "universe_processed": int(get_metric_sum("karsa_signals_entered_pipeline")),
+        "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
+        "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
+        "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
+        "ai_approvals": max(
+            0,
+            int(get_metric_sum("karsa_ai_analyst_calls"))
+            - int(get_metric_sum("karsa_ai_analyst_rejections")),
+        ),
+        "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
+        "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
+        "trade_orders": int(get_metric_sum("karsa_orders_placed")),
+        "trade_sl_hits": int(get_metric_sum("karsa_stop_loss_placement")),
+        "trade_exits": int(get_metric_sum("karsa_positions_closed")),
     }

@@ -16,7 +16,9 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 logger = logging.getLogger(__name__)
 
 
-def format_pre_table(headers: list[str], rows: list[list[str]], align_right: list[int] = None) -> str:
+def format_pre_table(
+    headers: list[str], rows: list[list[str]], align_right: list[int] = None
+) -> str:
     """
     Formats data into an aligned ASCII table for Telegram <pre> tags.
     :param align_right: List of column indices that should be right-aligned (e.g., numbers).
@@ -57,6 +59,7 @@ def escape_html(text: str) -> str:
     Delegates to format._safe() for consistency with composable formatters.
     """
     from app.bot.utils.format import _safe
+
     return _safe(text)
 
 
@@ -66,13 +69,13 @@ def _split_html_safe(text: str, limit: int) -> list[str]:
     Tracks open HTML tags across chunk boundaries.
     Closes open tags at end of chunk, reopens them at start of next chunk.
     """
-    lines = text.split('\n')
+    lines = text.split("\n")
     chunks = []
     current_chunk = []
     current_len = 0
     open_tags: list[str] = []  # stack of open tags
 
-    tag_pattern = re.compile(r'<(/?)(pre|b|i|code|u|s|a|blockquote|tg-spoiler)([^>]*)>')
+    tag_pattern = re.compile(r"<(/?)(pre|b|i|code|u|s|a|blockquote|tg-spoiler)([^>]*)>")
 
     for line in lines:
         if current_len + len(line) + 1 > limit and current_chunk:
@@ -80,7 +83,7 @@ def _split_html_safe(text: str, limit: int) -> list[str]:
             closing = ""
             for tag in reversed(open_tags):
                 closing += f"</{tag}>"
-            chunks.append('\n'.join(current_chunk) + closing)
+            chunks.append("\n".join(current_chunk) + closing)
 
             # Reopen tags at start of next chunk
             reopening = ""
@@ -94,29 +97,44 @@ def _split_html_safe(text: str, limit: int) -> list[str]:
 
         # Track open/close tags in this line
         for match in tag_pattern.finditer(line):
-            is_close = match.group(1) == '/'
+            is_close = match.group(1) == "/"
             tag_name = match.group(2)
-            if tag_name in ('pre', 'b', 'i', 'code', 'u', 's', 'blockquote', 'tg-spoiler'):
+            if tag_name in (
+                "pre",
+                "b",
+                "i",
+                "code",
+                "u",
+                "s",
+                "blockquote",
+                "tg-spoiler",
+            ):
                 if is_close and tag_name in open_tags:
                     open_tags.remove(tag_name)
                 elif not is_close:
                     open_tags.append(tag_name)
 
     if current_chunk:
-        chunks.append('\n'.join(current_chunk))
+        chunks.append("\n".join(current_chunk))
 
     return chunks
 
 
-async def send_long_message(update: Update, text: str, parse_mode: str = "HTML", reply_markup=None):
+async def send_long_message(
+    update: Update, text: str, parse_mode: str = "HTML", reply_markup=None
+):
     """Sends a message, splitting it into chunks if it exceeds Telegram's 4096 limit."""
     limit = 4000  # Leave buffer for parse tags
 
     if len(text) <= limit:
         if update.callback_query:
-            await update.callback_query.message.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            await update.callback_query.message.edit_text(
+                text, parse_mode=parse_mode, reply_markup=reply_markup
+            )
         elif update.message:
-            await update.message.reply_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
+            await update.message.reply_text(
+                text, parse_mode=parse_mode, reply_markup=reply_markup
+            )
         return
 
     chunks = _split_html_safe(text, limit)
@@ -126,15 +144,21 @@ async def send_long_message(update: Update, text: str, parse_mode: str = "HTML",
         markup = reply_markup if is_last else None
         try:
             if update.callback_query:
-                await update.callback_query.message.edit_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+                await update.callback_query.message.edit_text(
+                    chunk, parse_mode=parse_mode, reply_markup=markup
+                )
             elif update.message:
-                await update.message.reply_text(chunk, parse_mode=parse_mode, reply_markup=markup)
+                await update.message.reply_text(
+                    chunk, parse_mode=parse_mode, reply_markup=markup
+                )
         except Exception as exc:
             logger.warning("send_long_message_html_failed", extra={"error": str(exc)})
             # Fallback: send as plain text if HTML parsing fails
-            plain = re.sub(r'<[^>]+>', '', chunk)
+            plain = re.sub(r"<[^>]+>", "", chunk)
             if update.callback_query:
-                await update.callback_query.message.edit_text(plain, reply_markup=markup)
+                await update.callback_query.message.edit_text(
+                    plain, reply_markup=markup
+                )
             elif update.message:
                 await update.message.reply_text(plain, reply_markup=markup)
 
@@ -143,11 +167,15 @@ def build_nav_keyboard(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMa
     """Builds inline keyboard from a list of rows of (text, callback_data) tuples."""
     keyboard = []
     for row in buttons:
-        keyboard.append([InlineKeyboardButton(text, callback_data=data) for text, data in row])
+        keyboard.append(
+            [InlineKeyboardButton(text, callback_data=data) for text, data in row]
+        )
     return InlineKeyboardMarkup(keyboard)
 
 
-async def send_or_edit_message(update: Update, text: str, parse_mode: str = "HTML", reply_markup=None):
+async def send_or_edit_message(
+    update: Update, text: str, parse_mode: str = "HTML", reply_markup=None
+):
     """Smart sender: edits existing message if callback_query, sends new if message.
 
     Prevents "Message is not modified" errors on refresh and chat spam on edit.
@@ -160,7 +188,10 @@ async def send_or_edit_message(update: Update, text: str, parse_mode: str = "HTM
                     text, parse_mode=parse_mode, reply_markup=reply_markup
                 )
             except Exception as exc:
-                logger.warning("send_or_edit_message_edit_failed_fallback", extra={"error": str(exc)})
+                logger.warning(
+                    "send_or_edit_message_edit_failed_fallback",
+                    extra={"error": str(exc)},
+                )
                 return await update.callback_query.message.reply_text(
                     text, parse_mode=parse_mode, reply_markup=reply_markup
                 )
@@ -178,5 +209,7 @@ async def send_toast(bot, chat_id: int, text: str):
     try:
         return await bot.send_message(chat_id=chat_id, text=text, parse_mode="HTML")
     except Exception as exc:
-        logger.warning("send_toast_failed", extra={"chat_id": chat_id, "error": str(exc)})
+        logger.warning(
+            "send_toast_failed", extra={"chat_id": chat_id, "error": str(exc)}
+        )
         return None

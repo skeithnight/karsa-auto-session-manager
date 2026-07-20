@@ -50,7 +50,9 @@ class RegimeClassifier:
     # Public API
     # ------------------------------------------------------------------
 
-    def classify(self, candles: np.ndarray[Any, Any] | list[list[float]]) -> MarketRegime:
+    def classify(
+        self, candles: np.ndarray[Any, Any] | list[list[float]]
+    ) -> MarketRegime:
         """Classify market regime from OHLCV candles.
 
         Args:
@@ -137,8 +139,13 @@ class RegimeClassifier:
                 if ohlcv_fetcher is not None:
                     # Fetch BTC 1H candles — convert to numpy array
                     import numpy as _np
+
                     candles_raw = await ohlcv_fetcher.fetch(symbol, "1h", limit=200)  # type: ignore[attr-defined]
-                    candles = _np.array(candles_raw, dtype=float) if candles_raw else _np.array([])
+                    candles = (
+                        _np.array(candles_raw, dtype=float)
+                        if candles_raw
+                        else _np.array([])
+                    )
                     regime = self.classify(candles)
 
                     # Write to Redis with metadata
@@ -206,7 +213,10 @@ class RegimeClassifier:
 
     @staticmethod
     def _calculate_adx(
-        highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any], period: int = 14
+        highs: np.ndarray[Any, Any],
+        lows: np.ndarray[Any, Any],
+        closes: np.ndarray[Any, Any],
+        period: int = 14,
     ) -> float:
         """ADX(14) via Wilder smoothing. Returns 0.0 on insufficient data."""
         n = len(closes)
@@ -269,7 +279,9 @@ class RegimeClassifier:
         return adx
 
     @staticmethod
-    def _calculate_hurst(prices: np.ndarray[Any, Any], windows: list[int] | None = None) -> float:
+    def _calculate_hurst(
+        prices: np.ndarray[Any, Any], windows: list[int] | None = None
+    ) -> float:
         """R/S Hurst exponent. H > 0.5 = trending, H < 0.5 = mean-reverting."""
         if windows is None:
             windows = [10, 20, 40]
@@ -332,7 +344,10 @@ class RegimeClassifier:
 
     @staticmethod
     def _calculate_atr_percentile(
-        highs: np.ndarray[Any, Any], lows: np.ndarray[Any, Any], closes: np.ndarray[Any, Any], period: int = 14
+        highs: np.ndarray[Any, Any],
+        lows: np.ndarray[Any, Any],
+        closes: np.ndarray[Any, Any],
+        period: int = 14,
     ) -> float:
         """ATR(14) percentile rank vs 100-bar history. Returns 0-100."""
         n = len(closes)

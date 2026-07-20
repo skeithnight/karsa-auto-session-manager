@@ -17,10 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
+from decimal import Decimal
 from typing import Any
 
 import ccxt.async_support as ccxt
 from loguru import logger
+
+from app.core import metrics
 
 REDIS_KEY_PREFIX = "karsa:market"
 ORDERBOOK_DEPTH = 25  # top 25 levels each side
@@ -53,6 +57,14 @@ class MarketDataIngestor:
         self.oi_change: dict[str, float] = {}
         self._prev_oi: dict[str, float] = {}
 
+        # Failure tracking per symbol: escalate from debug to warning
+        self._failure_counts: dict[str, int] = {}
+        self._escalation_threshold = 3
+
+        # Freshness tracking: timestamp of last successful fetch per symbol
+        self._last_fetch_ts: dict[str, float] = {}
+        self.max_staleness_s: float = 2.0
+
         # ccxt Bybit session for REST polling
         self._session: ccxt.bybit | None = None
         self._api_key = api_key
@@ -62,18 +74,21 @@ class MarketDataIngestor:
     async def start(self) -> None:
         """Main polling loop. Runs until stop() is called."""
         self._running = True
-        self._session = ccxt.bybit({
-            "apiKey": self._api_key,
-            "secret": self._api_secret,
-            "options": {"defaultType": "swap"},
-        })
+        self._session = ccxt.bybit(
+            {
+                "apiKey": self._api_key,
+                "secret": self._api_secret,
+                "options": {"defaultType": "swap"},
+            }
+        )
         if self._testnet:
             self._session.set_sandbox_mode(True)
         await self._session.load_markets()
 
         logger.info(
             "MarketDataIngestor: starting poll loop symbols=%s interval=%ds",
-            self._symbols, self._interval,
+            self._symbols,
+            self._interval,
         )
 
         while self._running:
@@ -108,21 +123,71 @@ class MarketDataIngestor:
             return
 
         ccxt_sym = self._to_ccxt_symbol(symbol)
+        cycle_failures = 0
 
         try:
             await self._fetch_orderbook(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: orderbook fetch failed %s", symbol)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="orderbook", result="success"
+            ).inc()
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "orderbook", e)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="orderbook", result="failure"
+            ).inc()
 
         try:
             await self._fetch_funding_rate(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: funding fetch failed %s", symbol)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="funding", result="success"
+            ).inc()
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "funding", e)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="funding", result="failure"
+            ).inc()
 
         try:
             await self._fetch_oi(symbol, ccxt_sym)
-        except Exception:
-            logger.debug("MarketDataIngestor: OI fetch failed %s", symbol)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="oi", result="success"
+            ).inc()
+        except Exception as e:
+            cycle_failures += 1
+            self._log_fetch_failure(symbol, "OI", e)
+            metrics.data_fetch_total.labels(
+                symbol=symbol, field="oi", result="failure"
+            ).inc()
+
+        if cycle_failures == 0:
+            self._failure_counts[symbol] = 0
+            self._last_fetch_ts[symbol] = time.time()
+            metrics.data_age_seconds.labels(symbol=symbol).set(0.0)
+        else:
+            last_ts = self._last_fetch_ts.get(symbol)
+            if last_ts is not None:
+                metrics.data_age_seconds.labels(symbol=symbol).set(
+                    time.time() - last_ts
+                )
+
+    def _log_fetch_failure(self, symbol: str, field: str, error: Exception) -> None:
+        """Log fetch failure with escalation after threshold consecutive misses."""
+        self._failure_counts[symbol] = self._failure_counts.get(symbol, 0) + 1
+        count = self._failure_counts[symbol]
+        if count > self._escalation_threshold:
+            logger.warning(
+                "MarketDataIngestor: persistent %s fetch failure for %s (%d consecutive) — %s",
+                field,
+                symbol,
+                count,
+                error,
+            )
+        else:
+            logger.debug(
+                "MarketDataIngestor: %s fetch failed %s — %s", field, symbol, error
+            )
 
     async def _fetch_orderbook(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch L2 orderbook and compute bid/ask volume imbalance.
@@ -144,6 +209,14 @@ class MarketDataIngestor:
         self.orderbook_delta[symbol] = delta
         await self._publish(symbol, "orderbook_delta", str(round(delta, 6)))
 
+        # Cache mid price for shadow APM (SL/TP monitoring)
+        if bids and asks:
+            best_bid = Decimal(str(bids[0][0]))
+            best_ask = Decimal(str(asks[0][0]))
+            if best_bid > 0 and best_ask > 0:
+                mid = str((best_bid + best_ask) / 2)
+                await self._redis.set(f"shadow:price:{symbol}", mid, ex=300)
+
     async def _fetch_funding_rate(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch current funding rate.
 
@@ -164,9 +237,7 @@ class MarketDataIngestor:
         try:
             oi_data = await self._session.fetch_open_interest(ccxt_sym)  # type: ignore[union-attr]
             current_oi = float(
-                oi_data.get("openInterestAmount")
-                or oi_data.get("openInterest")
-                or 0
+                oi_data.get("openInterestAmount") or oi_data.get("openInterest") or 0
             )
         except (AttributeError, TypeError):
             current_oi = 0.0
@@ -185,7 +256,9 @@ class MarketDataIngestor:
         try:
             await self._redis.set(f"{REDIS_KEY_PREFIX}:{symbol}:{field}", value)
         except Exception:
-            logger.debug("MarketDataIngestor: redis publish %s failed %s", field, symbol)
+            logger.debug(
+                "MarketDataIngestor: redis publish %s failed %s", field, symbol
+            )
 
     def update_consumer(self, consumer: Any) -> None:
         """Push latest values into a MarketConsumer's dicts.
@@ -196,6 +269,17 @@ class MarketDataIngestor:
         consumer.funding_rate.update(self.funding_rate)
         consumer.oi_change.update(self.oi_change)
 
+    def update_symbols(self, new_symbols: list[str]) -> None:
+        """Update symbol list at runtime. New symbols picked up on next poll cycle."""
+        added = set(new_symbols) - set(self._symbols)
+        removed = set(self._symbols) - set(new_symbols)
+        if added or removed:
+            logger.info(
+                f"MarketDataIngestor: universe update +{len(added)} -{len(removed)} "
+                f"({len(new_symbols)} total)"
+            )
+        self._symbols = list(new_symbols)
+
     def get_all(self, symbol: str) -> dict[str, float | None]:
         """Get all three data points for a symbol."""
         return {
@@ -203,3 +287,10 @@ class MarketDataIngestor:
             "funding_rate": self.funding_rate.get(symbol),
             "oi_change": self.oi_change.get(symbol),
         }
+
+    def is_stale(self, symbol: str) -> bool:
+        """Check if data for symbol exceeds max staleness threshold."""
+        ts = self._last_fetch_ts.get(symbol)
+        if ts is None:
+            return True
+        return (time.time() - ts) > self.max_staleness_s

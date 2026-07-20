@@ -112,12 +112,24 @@ class PositionStore:
             return None
 
     async def update_peak(self, symbol: str, side: str, price: Decimal) -> None:
-        """Update peak price if new high."""
+        """Update peak price (HWM for LONG, LWM for SHORT)."""
         pos = await self.get(symbol, side)
         if not pos:
             return
-        peak = Decimal(pos.get("peak_price", "0"))
-        if price > peak:
+            
+        norm_side = _normalize_side(side)
+        current_peak = pos.get("peak_price")
+        
+        if current_peak is None:
+            updated = True
+        else:
+            peak = Decimal(current_peak)
+            if norm_side == "LONG":
+                updated = price > peak
+            else:
+                updated = price < peak
+                
+        if updated:
             pos["peak_price"] = str(price)
             pos["last_check_at"] = datetime.now(UTC).isoformat()
             await self.redis.set(self._key(symbol, side), json.dumps(pos))

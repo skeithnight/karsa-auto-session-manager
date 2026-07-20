@@ -70,7 +70,7 @@ class TestOrderbookDelta:
         await ingestor._fetch_orderbook("BTC/USDT", "BTC/USDT")
         redis.set.assert_called()
         key = redis.set.call_args[0][0]
-        assert f"shadow:price:BTC/USDT" in key
+        assert "shadow:price:BTC/USDT" in key
 
     @pytest.mark.asyncio
     async def test_delta_range_clamped(self) -> None:

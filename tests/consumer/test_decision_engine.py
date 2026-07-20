@@ -6,12 +6,11 @@ pipeline logic without real indicator math.
 
 from __future__ import annotations
 
-import pytest
-
 from decimal import Decimal
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from app.alpha.regime_classifier import MarketRegime
 from app.consumer.decision_engine import DecisionEngine, TradeSignal

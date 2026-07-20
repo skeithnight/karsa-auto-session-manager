@@ -54,6 +54,7 @@ app/
 │   ├── session.py         # UTC session/regime logic (not one of the "6 Keys" — see CONTEXT.md #5)
 │   ├── state.py            # In-memory state + Postgres sync (Key 5)
 │   ├── trade_store.py      # Postgres trade CRUD
+│   ├── trade_reconciler.py # Compare local trades vs Bybit execution history
 │   ├── ai_client.py        # 9router async HTTP client (AI layer)
 │   ├── metrics.py          # Prometheus metrics (counters, gauges, histograms)
 │   ├── position_store.py   # Redis-backed position lifecycle state
@@ -73,6 +74,7 @@ app/
 │   └── sector_mapping.py     # Static sector classification with keyword fallback
 ├── alpha/                  # Key 2 — Alpha Bridge (Hub-and-Spoke, Phase 6)
 │   ├── metrics.py
+│   ├── bridge.py             # AlphaBridge — orchestrates signal generation to TradeSignal
 │   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
 │   ├── regime.py             # Hurst + ADX regime classifier (existing)
 │   ├── regime_classifier.py  # [BUILT] RegimeClassifier — The Hub (ADX+Hurst+ATR, Phase 6)
@@ -121,7 +123,7 @@ app/
 ├── watchdog/                 # Key 6
 │   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
 │   ├── dead_mans_switch.py     # External health ping
-│   └── system_watchdog.py      # System-level health checks (disk, memory, CPU)
+│   └── system_doctor.py      # AI-driven diagnostic agent (triggered on circuit breaker)
 └── bot/                      # Key 7 — Telegram Command Interface
     ├── handlers.py           # All command & callback handlers
     ├── runner.py             # PTB app builder, bot_data wiring, startup
@@ -130,7 +132,9 @@ app/
         ├── format.py
         ├── telegram_helpers.py
         └── formatters/
-            └── trade_history_formatter.py
+            ├── trade_history_formatter.py
+            ├── live_funnel_formatter.py
+            └── shadow_funnel_formatter.py
 tests/                        # see TESTING_STRATEGY.md for full layout
 docs/
 ├── architecture/

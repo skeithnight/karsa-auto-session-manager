@@ -642,7 +642,7 @@ class ActivePositionManager:
             await self._manage_trend_trailing_stop(pos, live_price, r_mult, side, sl_price)
 
         if entry_time is not None:
-            await self._manage_time_exit(pos, entry_time, max_hold_mins, live_price, entry_price, side)
+            await self._manage_time_exit(pos, entry_time, max_hold_mins, live_price, entry_price, side, r_mult)
 
         await self._check_regime_shift(pos, symbol, entry_regime)
 
@@ -870,7 +870,8 @@ class ActivePositionManager:
         max_minutes: int,
         live_price: Decimal,
         entry_price: Decimal,
-        side: str
+        side: str,
+        r_mult: Decimal = Decimal("0"),
     ) -> None:
         """Force close if position held beyond max_hold_time_mins or if it is stale underwater.
 
@@ -899,8 +900,22 @@ class ActivePositionManager:
             await self._force_close_position(pos, f"time_exit_{held_mins:.0f}min")
             return
             
-        # Underwater Stale Exit (45 mins)
-        if held_mins >= 45:
+        # Quick Profit Exit (Take Profit if R > 2.0 in < 5 mins)
+        if held_mins <= 5 and r_mult >= Decimal("2.0"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"APM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._force_close_position(pos, f"quick_profit_exit_R{r_mult:.1f}")
+            return
+
+        # Stagnation Exit (Cut if R < 0.2 after 10 mins)
+        if held_mins >= 10 and r_mult < Decimal("0.2"):
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"APM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._force_close_position(pos, f"stagnation_exit_{held_mins:.0f}min")
+            return
+
+        # Underwater Stale Exit (15 mins)
+        if held_mins >= 15:
             is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
             if is_underwater:
                 symbol = pos.get("symbol", "")

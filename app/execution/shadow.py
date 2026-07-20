@@ -541,23 +541,25 @@ class ShadowAPM:
         # Persist state back to Redis
         await self._redis.set(key, _json.dumps(pos))
 
-        # --- $1 hard cap: if current SL would lose > $1, tighten SL to -$1 level ---
+        # --- $5 hard cap: if current SL would lose > $5, tighten SL to -$5 level ---
+        # Raised from $1 to $5 — small-cap tokens with large position sizes
+        # were getting SL tightened too aggressively, causing instant exits.
         amount = Decimal(pos.get("amount", "0"))
         if amount > 0 and virtual_sl > 0:
             if side == "LONG":
                 sl_loss = (virtual_sl - entry_price) * amount
             else:
                 sl_loss = (entry_price - virtual_sl) * amount
-            if sl_loss < -1:
-                # Current SL too loose — tighten to exactly -$1 loss
+            if sl_loss < -5:
+                # Current SL too loose — tighten to exactly -$5 loss
                 if side == "LONG":
-                    new_sl = entry_price - Decimal("1") / amount
+                    new_sl = entry_price - Decimal("5") / amount
                 else:
-                    new_sl = entry_price + Decimal("1") / amount
+                    new_sl = entry_price + Decimal("5") / amount
                 pos["virtual_sl"] = str(new_sl)
                 await self._redis.set(key, _json.dumps(pos))
                 logger.warning(
-                    f"SHADOW $1 CAP: {symbol} {side} SL tightened "
+                    f"SHADOW $5 CAP: {symbol} {side} SL tightened "
                     f"from {virtual_sl} to {new_sl} (was ${sl_loss:.4f} loss)"
                 )
 

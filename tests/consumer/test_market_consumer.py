@@ -55,7 +55,7 @@ class TestMarketConsumerProcessMessage:
         pubsub_mock.listen = AsyncMock(return_value=iter([]))
         redis.pubsub.return_value = pubsub_mock
 
-        engine = MagicMock()
+        engine = AsyncMock()
         engine.evaluate.return_value = None
         signals_received = []
 
@@ -85,7 +85,7 @@ class TestMarketConsumerProcessMessage:
     @pytest.mark.asyncio
     async def test_skips_stale_candle(self) -> None:
         redis = AsyncMock()
-        engine = MagicMock()
+        engine = AsyncMock()
         signals = []
 
         async def on_signal(symbol, sig):
@@ -110,7 +110,7 @@ class TestMarketConsumerProcessMessage:
     @pytest.mark.asyncio
     async def test_skips_invalid_json(self) -> None:
         redis = AsyncMock()
-        engine = MagicMock()
+        engine = AsyncMock()
         consumer = MarketConsumer(redis, engine, AsyncMock())
         await consumer._process_message(
             "karsa:candles:bybit:BTCUSDT:1h", "NOT JSON"
@@ -120,7 +120,7 @@ class TestMarketConsumerProcessMessage:
     @pytest.mark.asyncio
     async def test_engine_called_with_50_candles(self) -> None:
         redis = AsyncMock()
-        engine = MagicMock()
+        engine = AsyncMock()
         engine.evaluate.return_value = None
         consumer = MarketConsumer(redis, engine, AsyncMock())
 
@@ -141,7 +141,7 @@ class TestMarketConsumerProcessMessage:
         redis = AsyncMock()
 
         signal_result = MagicMock()
-        engine = MagicMock()
+        engine = AsyncMock()
         engine.evaluate.return_value = signal_result
 
         signals = []
@@ -169,7 +169,7 @@ class TestMarketConsumerGlobalPrices:
     @pytest.mark.asyncio
     async def test_builds_global_prices_for_trend_scoring(self) -> None:
         redis = AsyncMock()
-        engine = MagicMock()
+        engine = AsyncMock()
         engine.evaluate.return_value = None
         consumer = MarketConsumer(redis, engine, AsyncMock())
 

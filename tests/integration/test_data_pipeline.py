@@ -254,7 +254,7 @@ class TestGlobalPricesInjection:
         """Consumer passes global_prices to engine.evaluate."""
         redis_mock = MagicMock()
         engine_mock = MagicMock()
-        engine_mock.evaluate.return_value = None
+        engine_mock.evaluate = AsyncMock(return_value=None)
         consumer = MarketConsumer(redis_mock, engine_mock, AsyncMock())
 
         # Set cross-exchange prices

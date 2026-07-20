@@ -192,6 +192,8 @@ class DecisionEngine:
                         funding_rate,
                     )
                     continue
+            momentum_exemption = False
+            macro_penalty = 1.0
 
             # Multi-Timeframe Trend Alignment Block
             if self._multi_tf:
@@ -205,7 +207,6 @@ class DecisionEngine:
                     continue
 
                 # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
-                momentum_exemption = False
                 if len(arr) >= 24:
                     close_now = arr[-1][4]
                     close_24h_ago = arr[-24][4]
@@ -214,7 +215,6 @@ class DecisionEngine:
                         momentum_exemption = True
 
                 # Macro Anchor (Lead-Lag) Penalty
-                macro_penalty = 1.0
                 if symbol not in ["BTC/USDT", "ETH/USDT"] and not momentum_exemption:
                     macro_penalty = await self._multi_tf.get_macro_anchor_penalty(
                         direction

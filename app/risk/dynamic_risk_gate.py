@@ -95,7 +95,7 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         max_hold_time_mins=RANGE_MAX_HOLD_MINS,
         use_post_only=True,
         trail_atr_mult=Decimal("2.0"),
-        sl_atr_buffer=Decimal("1.0"),
+        sl_atr_buffer=Decimal("1.5"),  # widened from 1.0 — volatile tokens hit 1.0 ATR SL immediately
     ),
     MarketRegime.CHOP: RiskProfile(
         regime="CHOP",

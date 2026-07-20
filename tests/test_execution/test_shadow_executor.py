@@ -128,7 +128,7 @@ class TestShadowExecutor:
         """Exits always execute as Market Orders (Taker)."""
         mock_redis.get.return_value = json.dumps({"last": "50000"})
 
-        result = await shadow_executor.execute_exit("BTC/USDT", "buy", Decimal("1.0"))
+        result = await shadow_executor.execute_exit("BTC/USDT", "LONG", Decimal("1.0"))
 
         assert result is not None
         assert result["side"] == "sell"  # Closing a buy means selling
@@ -142,7 +142,7 @@ class TestShadowExecutor:
     async def test_mid_price_lookup_fallback(self, shadow_executor, mock_redis):
         """Test get_mid_price fallback logic: system:state -> ticker"""
         # Scenario 1: First try succeeds with last price only
-        mock_redis.get.side_effect = lambda key: json.dumps({"last": "12345"}) if key == "system:state:BTC/USDT" else None
+        mock_redis.get.side_effect = lambda key: json.dumps({"last": "12345"}) if key == "global:state:BTC/USDT" else None
         price = await shadow_executor._get_mid_price("BTC/USDT")
         assert price == Decimal("12345")
 

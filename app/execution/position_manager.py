@@ -842,8 +842,6 @@ class ActivePositionManager:
         # Parse string to timezone-aware datetime if needed
         if isinstance(entry_time, str):
             try:
-                from datetime import UTC
-
                 entry_time = datetime.fromisoformat(entry_time)
                 if entry_time.tzinfo is None:
                     entry_time = entry_time.replace(tzinfo=UTC)

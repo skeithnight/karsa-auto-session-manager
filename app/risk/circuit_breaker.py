@@ -49,6 +49,10 @@ class CircuitBreaker:
         self.paused_until: datetime | None = None
         self.on_halt: Callable | None = None  # Callback for halt sequence
 
+        metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="drawdown").set(0)
+        metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="usd_loss_cap").set(0)
+        metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="consecutive_losses").set(0)
+
     async def restore(self) -> None:
         """Restore state from Redis on startup. No-op if no redis or no saved state."""
         if not self.redis:
@@ -63,6 +67,7 @@ class CircuitBreaker:
                 logger.warning(
                     f"Circuit breaker restored as HALTED: {self.halt_reason}"
                 )
+                metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="drawdown").set(2)
         except Exception as e:
             logger.error(f"Circuit breaker restore failed: {e}")
 
@@ -89,6 +94,7 @@ class CircuitBreaker:
                 f"(limit: {self.daily_drawdown_limit})"
             )
             metrics.circuit_breaker_trips.labels(breaker_name="drawdown").inc()
+            metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="drawdown").set(2)
             logger.critical(self.halt_reason)
             self._fire_alert(self.halt_reason)
             self._persist_sync("TRIGGERED", self.halt_reason)
@@ -105,6 +111,7 @@ class CircuitBreaker:
                 f"(cap: -{self.max_daily_loss_usd})"
             )
             metrics.circuit_breaker_trips.labels(breaker_name="usd_loss_cap").inc()
+            metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="usd_loss_cap").set(2)
             logger.critical(self.halt_reason)
             self._fire_alert(self.halt_reason)
             self._persist_sync("TRIGGERED", self.halt_reason)
@@ -125,6 +132,7 @@ class CircuitBreaker:
             metrics.circuit_breaker_trips.labels(
                 breaker_name="consecutive_losses"
             ).inc()
+            metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="consecutive_losses").set(1)
             logger.warning(
                 f"Max consecutive losses ({self.max_consecutive_losses}) — "
                 f"paused until {self.paused_until}"
@@ -144,6 +152,7 @@ class CircuitBreaker:
 
         if datetime.now(UTC) >= self.paused_until:
             self.paused_until = None
+            metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="consecutive_losses").set(0)
             return False
 
         return True

@@ -34,13 +34,16 @@ logger = logging.getLogger("karsa.live")
 
 
 def _configure_logging() -> None:
+    from app.core.context import TraceIdFilter
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
         logging.Formatter(
             '{"ts":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","msg":"%(message)s"}'
+            '"logger":"%(name)s","trace_id":"%(trace_id)s","msg":"%(message)s"}'
         )
     )
+    handler.addFilter(TraceIdFilter())
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
 
@@ -139,6 +142,9 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 ) -> None:
     """Handle a TradeSignal by executing a real order on Bybit.
 
+    from app.core.context import trace_id_ctx
+    trace_id_ctx.set(signal.trace_id or "")
+
     Checks:
     1. No duplicate position already open.
     2. Consecutive loss block (3+ losses in same regime).
@@ -205,13 +211,19 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         return
 
     # PortfolioRiskManager gate (mandatory, no bypass)
-    if risk_manager is not None:
-        from app.risk.portfolio_risk_manager import PRMResult
+    if risk_manager is None:
+        logger.error(
+            "skip %s - PortfolioRiskManager is uninitialized! Blocking trade for safety.",
+            symbol,
+        )
+        return
 
-        result: PRMResult = await risk_manager.check(signal)
-        if not result.approved:
-            logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
-            return
+    from app.risk.portfolio_risk_manager import PRMResult
+
+    result: PRMResult = await risk_manager.check(signal)
+    if not result.approved:
+        logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
+        return
 
     # Execute via SmartOrderRouter
     result = await executor.execute(
@@ -252,6 +264,35 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         initial_risk_per_unit=str(initial_risk_per_unit),
         risk_profile_json=signal.risk_profile.to_json(),
     )
+
+    # Phase 2: Shadow vs. Live Divergence Metrics
+    try:
+        import json
+        from datetime import UTC, datetime
+
+        shadow_key = f"shadow:position:{symbol}:{signal.direction}"
+        shadow_raw = await position_store.redis.get(shadow_key)
+        if shadow_raw:
+            shadow_pos = json.loads(shadow_raw)
+            shadow_entry_time_str = shadow_pos.get("entered_at")
+            shadow_entry_price_str = shadow_pos.get("entry_price")
+
+            if shadow_entry_time_str:
+                shadow_dt = datetime.fromisoformat(shadow_entry_time_str)
+                divergence_secs = (datetime.now(UTC) - shadow_dt).total_seconds()
+                from app.core import metrics
+                metrics.shadow_live_entry_divergence_seconds.labels(symbol=symbol).observe(divergence_secs)
+
+            if shadow_entry_price_str:
+                shadow_entry_price = float(shadow_entry_price_str)
+                if shadow_entry_price > 0:
+                    diff_bps = ((float(fill_price) - shadow_entry_price) / shadow_entry_price) * 10000
+                    if signal.direction == "SHORT":
+                        diff_bps = -diff_bps  # Positive means better fill for short
+                    from app.core import metrics
+                    metrics.shadow_live_slippage_bps.labels(symbol=symbol, side=signal.direction).observe(diff_bps)
+    except Exception as e:
+        logger.debug("Failed to calculate shadow divergence for %s: %s", symbol, e)
 
     # Record trade
     if trade_store:
@@ -1165,7 +1206,9 @@ async def main() -> None:  # noqa: PLR0915
             await wallet_metrics_task
         await ingestor.stop()
         await emitter.stop()
-        await exchange.close()
+        if "exchange" in locals() and exchange is not None:
+            with contextlib.suppress(Exception):
+                await exchange.close()
         await db_engine.dispose()
         await shutdown()
         logger.info("karsa-live stopped")

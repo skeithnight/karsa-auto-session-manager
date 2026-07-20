@@ -353,7 +353,7 @@ async def main() -> None:
             db_engine=db_engine,
             alert_service=alert_service,
             kill_switch=shutdown_event,
-            interval_hours=24,  # Run daily
+            interval_hours=settings.commander_bulk_backtest_interval_hours,
         ),
         name="commander-bulk-backtest",
     )
@@ -375,7 +375,7 @@ async def main() -> None:
             db_engine=db_engine,
             alert_service=alert_service,
             kill_switch=shutdown_event,
-            interval_hours=1,  # Run every hour
+            interval_hours=settings.commander_feedback_interval_hours,
         ),
         name="commander-shadow-feedback",
     )

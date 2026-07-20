@@ -184,7 +184,7 @@ class DynamicUniverseScanner:
             try:
                 cand["atr"] = await self._compute_symbol_atr(cand["symbol"])
             except Exception:
-                logger.debug("UniverseScanner: ATR failed for %s", cand["symbol"])
+                logger.debug("UniverseScanner: ATR failed for {}", cand["symbol"])
                 cand["atr"] = 0.0
         for cand in sort_by_vol[ATR_CAP_CANDIDATES:]:
             cand["atr"] = 0.0

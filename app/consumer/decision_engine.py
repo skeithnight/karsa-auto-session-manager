@@ -60,6 +60,7 @@ class TradeSignal:
     timestamp_ms: int
     candles: list[list] = field(repr=False)
     expires_at: float | None = None
+    trace_id: str | None = None
 
 
 class DecisionEngine:
@@ -397,6 +398,8 @@ class DecisionEngine:
         # Entry fee rate (maker for post_only, taker otherwise)
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
+        import uuid
+
         return TradeSignal(
             symbol=symbol,
             direction=direction,
@@ -411,6 +414,7 @@ class DecisionEngine:
             atr=atr,
             timestamp_ms=ts_ms,
             candles=arr.tolist(),
+            trace_id=uuid.uuid4().hex,
         )
 
     @staticmethod

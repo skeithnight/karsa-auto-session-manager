@@ -25,6 +25,7 @@ class Settings(BaseSettings):
 
     # ── Shadow Mode ────────────────────────────────────────────
     shadow_mode_enabled: bool = False
+    shadow_initial_balance: str = "100.0"
     shadow_slippage_pct: str = "0.0005"
     shadow_taker_fee_pct: str = "0.00055"
     shadow_maker_fee_pct: str = "0.0002"
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
     # ── Telegram alerts ────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+
+    # ── Commander ──────────────────────────────────────────────
+    commander_bulk_backtest_interval_hours: int = 24
+    commander_feedback_interval_hours: int = 1
 
     # ── Trading ────────────────────────────────────────────────
     symbols: list[str] = [

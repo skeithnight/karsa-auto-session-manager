@@ -68,8 +68,8 @@ cd karsa-auto-session-manager
 # Set up environment variables
 cp .env.example .env
 
-# Run the stack
-docker-compose up -d
+# Run the stack (infra + apps)
+make up
 ```
 
 ## ⚠️ Safety Warning

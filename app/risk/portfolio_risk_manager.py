@@ -12,9 +12,9 @@ Checks:
 from __future__ import annotations
 
 import asyncio
-from decimal import Decimal
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 
 from loguru import logger
 
@@ -272,9 +272,10 @@ class PortfolioRiskManager:
 
     async def monitor_circuit_breakers(self) -> None:
         """Background task: periodically check for circuit breaker conditions and trigger Doctor."""
-        from app.watchdog.system_doctor import SystemDoctor
-        from app.core.ai_client import AIClient
         import json as _json
+
+        from app.core.ai_client import AIClient
+        from app.watchdog.system_doctor import SystemDoctor
 
         doctor = None
         if self._redis:

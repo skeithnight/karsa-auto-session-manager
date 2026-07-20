@@ -210,9 +210,7 @@ class DecisionEngine:
                     close_now = arr[-1][4]
                     close_24h_ago = arr[-24][4]
                     pct_change = (close_now - close_24h_ago) / close_24h_ago
-                    if direction == "LONG" and pct_change > 0.15:
-                        momentum_exemption = True
-                    elif direction == "SHORT" and pct_change < -0.15:
+                    if direction == "LONG" and pct_change > 0.15 or direction == "SHORT" and pct_change < -0.15:
                         momentum_exemption = True
 
                 # Macro Anchor (Lead-Lag) Penalty
@@ -386,8 +384,7 @@ class DecisionEngine:
             max_notional = self._wallet_balance * Decimal("0.40")
             if entry_price > 0:
                 max_amount = max_notional / entry_price
-                if amount > max_amount:
-                    amount = max_amount
+                amount = min(amount, max_amount)
         else:
             # Fallback: fixed base_size when balance unknown
             amount = (

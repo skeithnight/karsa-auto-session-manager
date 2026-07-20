@@ -159,9 +159,10 @@ async def shadow_feedback_task(
 ) -> None:
     """Periodically queries shadow performance and disables unprofitable regimes for Live."""
     logger.debug("shadow_feedback_task: entering")
-    from sqlalchemy import text
     import json
     from datetime import datetime, timedelta
+
+    from sqlalchemy import text
 
     # Initial wait
     await asyncio.sleep(10)
@@ -175,12 +176,12 @@ async def shadow_feedback_task(
             async with db_engine.engine.connect() as conn:
                 rows = await conn.execute(
                     text("""
-                        SELECT regime, 
-                               COUNT(*) as total, 
+                        SELECT regime,
+                               COUNT(*) as total,
                                COUNT(*) FILTER (WHERE pnl > 0) as wins,
                                SUM(pnl) as net_pnl
                         FROM shadow_trades
-                        WHERE exit_time >= :cutoff 
+                        WHERE exit_time >= :cutoff
                           AND pnl IS NOT NULL
                           AND exit_reason != 'orphan_cleanup'
                         GROUP BY regime

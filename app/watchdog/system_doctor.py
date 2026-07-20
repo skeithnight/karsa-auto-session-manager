@@ -11,8 +11,8 @@ import json
 
 from loguru import logger
 
-from app.core.redis_client import RedisClient
 from app.core.ai_client import AIClient
+from app.core.redis_client import RedisClient
 
 
 class SystemDoctor:

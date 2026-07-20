@@ -14,11 +14,11 @@ Core responsibilities:
 from __future__ import annotations
 
 import asyncio
+import json as _json
 from datetime import UTC, datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any
 
-import json as _json
 from loguru import logger
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.4) ---
@@ -506,10 +506,7 @@ class ActivePositionManager:
         # Track Peak Price for Chandelier Trailing
         peak_price = Decimal(str(pos.get("peak_price", entry_price)))
         peak_updated = False
-        if side == "LONG" and live_price > peak_price:
-            peak_price = live_price
-            peak_updated = True
-        elif side == "SHORT" and live_price < peak_price:
+        if side == "LONG" and live_price > peak_price or side == "SHORT" and live_price < peak_price:
             peak_price = live_price
             peak_updated = True
 
@@ -572,17 +569,16 @@ class ActivePositionManager:
                 await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
                 pos["scale_tier"] = 1
         # Trend logic: 33% at 1.5R (Tier 1), 33% at 3.0R (Tier 2)
-        else:
-            if scale_tier < 1 and r_mult >= Decimal("1.5"):
-                await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
-                pos["scale_tier"] = 1
-                # Force breakeven lock upon Tier 1 scale-out to secure a free ride
-                if not moved_to_be:
-                    await self._move_stop_to_breakeven(pos, entry_price, side)
-                    moved_to_be = True
-            elif scale_tier < 2 and r_mult >= Decimal("3.0"):
-                await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
-                pos["scale_tier"] = 2
+        elif scale_tier < 1 and r_mult >= Decimal("1.5"):
+            await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+            pos["scale_tier"] = 1
+            # Force breakeven lock upon Tier 1 scale-out to secure a free ride
+            if not moved_to_be:
+                await self._move_stop_to_breakeven(pos, entry_price, side)
+                moved_to_be = True
+        elif scale_tier < 2 and r_mult >= Decimal("3.0"):
+            await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
+            pos["scale_tier"] = 2
 
         # ATR-based BE trigger: price must move beyond noise threshold
         atr = Decimal(str(pos.get("atr", "0")))

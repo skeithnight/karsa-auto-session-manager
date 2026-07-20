@@ -180,7 +180,7 @@ async def _regime_metrics_loop(
 
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 

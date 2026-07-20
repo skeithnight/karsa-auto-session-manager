@@ -313,10 +313,11 @@ async def main() -> None:
     await emitter.start()
 
     # Build shared decision engine
-    from app.alpha.trade_memory import TradeMemory
-    from app.alpha.multi_tf import MultiTFFilter
-    from app.data.ohlcv_fetcher import OHLCVFetcher
     import ccxt.async_support as ccxt
+
+    from app.alpha.multi_tf import MultiTFFilter
+    from app.alpha.trade_memory import TradeMemory
+    from app.data.ohlcv_fetcher import OHLCVFetcher
 
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()

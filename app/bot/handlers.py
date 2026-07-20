@@ -39,7 +39,7 @@ settings = get_settings()
 
 def _safe_float(val, default: float = 0.0) -> float:
     """Convert to float, handling 'none'/None/non-numeric gracefully."""
-    if val is None or val == "none" or val == "":
+    if val is None or val in {"none", ""}:
         return default
     try:
         return float(val)

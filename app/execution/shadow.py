@@ -25,19 +25,18 @@ from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
-from app.execution.position_manager import (
-    APM_BREAKEVEN_FEE_PCT,
-    APM_TREND_TRAIL_ATR_MULT,
-    APM_TREND_TRAIL_ACTIVATE_R,
-    APM_BREAKEVEN_LOCK_R,
-    REGIME_SHIFT_CONFIRM_COUNT,
-)
-
 from loguru import logger
 
 from app.core import metrics
 from app.core.config import get_settings
 from app.core.redis_client import RedisClient
+from app.execution.position_manager import (
+    APM_BREAKEVEN_FEE_PCT,
+    APM_BREAKEVEN_LOCK_R,
+    APM_TREND_TRAIL_ACTIVATE_R,
+    APM_TREND_TRAIL_ATR_MULT,
+    REGIME_SHIFT_CONFIRM_COUNT,
+)
 
 # ---------------------------------------------------------------------------
 # Constants

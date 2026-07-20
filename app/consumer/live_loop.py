@@ -18,6 +18,7 @@ from typing import Any
 
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
+from app.bot.alert_service import AlertService
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
 from app.consumer.market_consumer import MarketConsumer
 from app.core.config import get_settings
@@ -28,7 +29,6 @@ from app.core.trade_store import TradeStore
 from app.data.market_data_ingestor import MarketDataIngestor
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.risk.dynamic_risk_gate import DynamicRiskGate
-from app.bot.alert_service import AlertService
 
 logger = logging.getLogger("karsa.live")
 
@@ -124,7 +124,7 @@ async def _wallet_metrics_loop(
 
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
 
 
@@ -348,9 +348,9 @@ async def _position_exit_loop(
         return
 
     from app.bot.utils.formatters import (
+        format_breakeven_alert,
         format_sl_alert,
         format_tp_alert,
-        format_breakeven_alert,
     )
 
     while True:
@@ -769,9 +769,10 @@ async def main() -> None:  # noqa: PLR0915
     await emitter.start()
 
     # Build components
-    from app.alpha.trade_memory import TradeMemory
-    from app.alpha.multi_tf import MultiTFFilter
     import ccxt.async_support as ccxt
+
+    from app.alpha.multi_tf import MultiTFFilter
+    from app.alpha.trade_memory import TradeMemory
 
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()

@@ -20,6 +20,8 @@ from typing import Any
 import ccxt.async_support as ccxt
 from loguru import logger
 
+from app.core import metrics
+
 REDIS_UNIVERSE_KEY = "system:universe:symbols"
 REDIS_SCANNER_STATUS_KEY = "system:universe:scanner:status"
 
@@ -153,9 +155,11 @@ class DynamicUniverseScanner:
             if vol_usd < self._min_vol:
                 continue
             base = symbol.split(":")[0]
+            percentage = float(ticker.get("percentage") or 0)
             candidates.append({
                 "symbol": base,
                 "volume_usd": vol_usd,
+                "percentage": percentage,
             })
 
         if not candidates:
@@ -178,13 +182,23 @@ class DynamicUniverseScanner:
         for cand in sort_by_vol[ATR_CAP_CANDIDATES:]:
             cand["atr"] = 0.0
 
-        # 4. Compute composite score: 60% volume + 40% ATR normalization
+        # 4. Compute composite score: 40% volume + 30% ATR + 30% gainer/momentum
         max_vol = max(c["volume_usd"] for c in candidates) or 1.0
         max_atr = max(c.get("atr", 0) for c in candidates) or 1.0
+        max_pct = max(abs(c.get("percentage", 0)) for c in candidates) or 1.0
+        
         for cand in candidates:
             norm_vol = cand["volume_usd"] / max_vol
             norm_atr = cand.get("atr", 0) / max_atr if max_atr > 0 else 0.0
-            cand["score"] = norm_vol * 0.6 + norm_atr * 0.4  # 60% volume, 40% ATR  # 60% volume, 40% ATR
+            
+            # Use absolute percentage for momentum, but penalize negative moves slightly
+            pct = cand.get("percentage", 0)
+            abs_pct = abs(pct)
+            norm_pct = abs_pct / max_pct if max_pct > 0 else 0.0
+            if pct < 0:
+                norm_pct *= 0.7  # Prefer gainers over losers
+                
+            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3
 
         # 5. Sort by composite score, take top N
         candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -231,6 +245,7 @@ class DynamicUniverseScanner:
         try:
             await self._redis.set(REDIS_UNIVERSE_KEY, json.dumps(payload, default=str))
             await self._redis.set(REDIS_SCANNER_STATUS_KEY, json.dumps(status_data, default=str))
+            metrics.universe_size.set(len(self.symbols))
         except Exception:
             logger.exception("UniverseScanner: Redis write failed")
 

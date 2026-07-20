@@ -97,12 +97,14 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
     # Support both spellings from Bybit (unrealized_pnl) and DB (unrealised_pnl)
     pnl = float(position.get("unrealized_pnl", 0) or position.get("unrealised_pnl", 0) or 0)
     liq = float(position.get("liquidation_price", 0) or position.get("liq_price", 0) or 0)
-    sl = float(position.get("stop_loss", 0) or 0)
-    tp = float(position.get("take_profit", 0) or 0)
+    sl = float(position.get("stop_loss", 0) or position.get("sl_price", 0) or 0)
+    tp = float(position.get("take_profit", 0) or position.get("tp_price", 0) or 0)
 
-    pnl_pct = ((mark - entry) / entry * 100) if side == "Buy" and entry > 0 else (
-        ((entry - mark) / entry * 100) if entry > 0 else 0
-    )
+    pos_value = entry * size
+    if pos_value > 0:
+        pnl_pct = (pnl / pos_value) * 100
+    else:
+        pnl_pct = 0.0
     pnl_icon = "🟢" if pnl >= 0 else "🔴"
     side_label = "LONG" if side == "Buy" else "SHORT"
 
@@ -113,10 +115,15 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
         empty = 10 - filled
         alloc_bar = f"{'█' * filled}{'░' * empty} {pos_pct:.1f}%"
 
+    if liq > 0:
+        liq_str = f"Liq: ${format_price(liq)}"
+    else:
+        liq_str = f"Val: ${format_price(pos_value)}"
+
     card = fmt(
         bold(f"{index}. {symbol} ({side_label})"), f" {pnl_icon}", "\n",
         f"\u2523 Entry: ${format_price(entry)} \u2192 Mark: ${format_price(mark)}", "\n",
-        f"\u2523 Size: {size}  |  Liq: ${format_price(liq)}", "\n",
+        f"\u2523 Size: {size}  |  {liq_str}", "\n",
         f"\u2517 PnL: {pnl_icon} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
     )
 
@@ -137,6 +144,26 @@ def format_position_card(position: dict, index: int = 0, pos_pct: float = 0.0) -
             f"\n   \U0001f4c9 Risk to SL: -{risk_to_sl_pct:.2f}%  |  R:R: {rr_str}",
             sep="",
         )
+
+    # Regime
+    regime = position.get("regime", "")
+    if regime:
+        card = fmt(card, f"\n   \U0001f4ca Regime: {regime}", sep="")
+
+    # Breakeven status
+    moved_to_be = position.get("moved_to_breakeven", False)
+    be_status = "\U0001f7e2 LOCKED" if moved_to_be else "⚪ NOT SET"
+    card = fmt(card, f"\n   ⚖️ Breakeven: {be_status}", sep="")
+
+    # Trailing stop status
+    atr = float(position.get("atr", 0) or 0)
+    if sl > 0 and atr > 0:
+        trail_dist = atr * 3.0
+        card = fmt(card, f"\n   \U0001f4c8 Trail: ATR({atr:.4f}) × 3 = {trail_dist:.4f}", sep="")
+    elif sl > 0:
+        dist = abs(mark - sl)
+        dist_pct = (dist / mark * 100) if mark > 0 else 0
+        card = fmt(card, f"\n   \U0001f4c8 Trail: active (dist: ${format_price(dist)} / {dist_pct:.2f}%)", sep="")
 
     return card
 

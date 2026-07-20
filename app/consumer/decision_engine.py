@@ -69,6 +69,8 @@ class DecisionEngine:
     Modes (live/shadow) use identical pipeline; execution layer handles divergence.
     """
 
+    _CONSECUTIVE_LOSS_THRESHOLD: int = 3
+
     def __init__(
         self,
         classifier: RegimeClassifier,
@@ -79,6 +81,8 @@ class DecisionEngine:
         slippage_pct: Decimal = _SLIPPAGE_PCT,
         taker_fee: Decimal = _TAKER_FEE,
         maker_fee: Decimal = _MAKER_FEE,
+        trade_memory: object | None = None,
+        redis_client: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._router = router
@@ -88,8 +92,30 @@ class DecisionEngine:
         self._slippage = slippage_pct
         self._taker_fee = taker_fee
         self._maker_fee = maker_fee
+        self._wallet_balance: Decimal = Decimal("0")
+        self._trade_memory = trade_memory
+        self._redis = redis_client
 
-    def evaluate(
+    def set_wallet_balance(self, balance: Decimal) -> None:
+        """Update wallet balance for position sizing."""
+        self._wallet_balance = balance
+
+    async def _get_risk_pct(self) -> Decimal:
+        """Read risk_pct from Redis karsa:auto:config. Default10%."""
+        if self._redis is None:
+            return Decimal("0.10")
+        try:
+            import json as _json
+            raw = await self._redis.get("karsa:auto:config")
+            if raw:
+                cfg = _json.loads(raw)
+                pct = cfg.get("risk_pct", 10)
+                return Decimal(str(pct)) / Decimal("100")
+        except Exception:
+            pass
+        return Decimal("0.10")
+
+    async def evaluate(
         self,
         symbol: str,
         candles: list[list] | np.ndarray,
@@ -130,6 +156,12 @@ class DecisionEngine:
         # Step 1: Regime classification
         regime = self._classifier.classify(arr)
         logger.debug("evaluate: %s regime=%s", symbol, regime.value)
+        if self._redis:
+            try:
+                key = f"system:regime:{symbol.replace('/', ':')}"
+                await self._redis.set(key, regime.value)
+            except Exception as e:
+                logger.warning("Failed to save regime to redis for %s: %s", symbol, e)
 
         # Step 2: Determine directions (regime-dependent)
         directions = self._determine_directions(regime)
@@ -152,9 +184,46 @@ class DecisionEngine:
 
             if score >= effective_gate:
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
-                return self._build_signal(symbol, direction, regime, score, arr)
+                return await self._build_signal(symbol, direction, regime, score, arr)
 
         return None
+
+    async def check_consecutive_losses(self, symbol: str, regime: MarketRegime) -> bool:
+        """Check if symbol has 3+ consecutive losses in the same regime.
+
+        Returns True if signal should be REJECTED (too many consecutive losses).
+        """
+        if self._trade_memory is None:
+            return False
+
+        try:
+            trades = await self._trade_memory.get_recent(symbol, count=5)
+            if not trades:
+                return False
+
+            regime_str = regime.value
+            consecutive = 0
+            for t in trades:
+                pnl = t.get("pnl_pct", 0)
+                t_regime = t.get("regime", "")
+                if pnl < 0 and t_regime == regime_str:
+                    consecutive += 1
+                else:
+                    break
+
+            if consecutive >= self._CONSECUTIVE_LOSS_THRESHOLD:
+                logger.warning(
+                    "consecutive_loss_block: %s %d losses in %s — REJECTING",
+                    symbol, consecutive, regime_str,
+                )
+                from app.core import metrics
+                metrics.signal_confidence_passed_total.labels(regime=regime_str)
+                return True
+            return False
+
+        except Exception:
+            logger.exception("consecutive_loss_check failed for %s", symbol)
+            return False
 
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
         """Determine which directions to evaluate based on regime."""
@@ -164,7 +233,7 @@ class DecisionEngine:
             return ["SHORT"]
         return ["LONG", "SHORT"]
 
-    def _build_signal(
+    async def _build_signal(
         self,
         symbol: str,
         direction: str,
@@ -208,11 +277,22 @@ class DecisionEngine:
             else:
                 tp_price = entry_price - offset
 
-        # Position size (risk-distance based)
+        # Position size (balance-based risk allocation)
         risk_distance = abs(entry_price - sl_price)
         if risk_distance <= Decimal("0"):
             amount = self._base_size
+        elif self._wallet_balance > 0:
+            # amount = (balance * risk_pct * size_multiplier) / risk_distance
+            risk_pct = await self._get_risk_pct()
+            amount = self._wallet_balance * risk_pct * profile.size_multiplier / risk_distance
+            # Cap notional to 40% of equity (PRM single position limit)
+            max_notional = self._wallet_balance * Decimal("0.40")
+            if entry_price > 0:
+                max_amount = max_notional / entry_price
+                if amount > max_amount:
+                    amount = max_amount
         else:
+            # Fallback: fixed base_size when balance unknown
             amount = self._base_size * Decimal("100") * profile.size_multiplier / risk_distance
 
         # Entry fee rate (maker for post_only, taker otherwise)

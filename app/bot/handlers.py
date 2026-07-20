@@ -37,6 +37,16 @@ settings = get_settings()
 # ---------------------------------------------------------------------------
 
 
+def _safe_float(val, default: float = 0.0) -> float:
+    """Convert to float, handling 'none'/None/non-numeric gracefully."""
+    if val is None or val == "none" or val == "":
+        return default
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
 def _get_bybit(context: ContextTypes.DEFAULT_TYPE):
     """Retrieve the BybitClient injected into bot_data at startup."""
     logger.debug("_get_bybit: entering")
@@ -294,7 +304,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if is_active:
         keyboard = [
             [
-                InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
+                InlineKeyboardButton("\U0001f4bc Positions", callback_data="cmd_portfolio"),
                 InlineKeyboardButton("\U0001f4cb Activity", callback_data="cmd_activity"),
             ],
             [
@@ -322,7 +332,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 InlineKeyboardButton("\u2699\ufe0f Settings", callback_data="cmd_settings"),
             ],
             [
-                InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
+                InlineKeyboardButton("\U0001f4bc Positions", callback_data="cmd_portfolio"),
                 InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_dashboard"),
             ],
             [InlineKeyboardButton("\U0001f4ca Reports", callback_data="cmd_report_menu")],
@@ -391,7 +401,7 @@ async def activity_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_activity")],
         [
-            InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
+            InlineKeyboardButton("\U0001f4bc Positions", callback_data="cmd_portfolio"),
             InlineKeyboardButton("\U0001f4dc History", callback_data="cmd_trade_history"),
         ],
         [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
@@ -419,6 +429,11 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         bybit = _get_bybit(context)
         r = _get_redis(context)
         positions = await bybit.fetch_positions()
+        
+        try:
+            is_active = (await r.get("karsa:auto:state:active")) == "1"
+        except Exception:
+            is_active = False
 
         # Pre-fetch entered_at timestamps from PositionStore (async-safe)
         dur_cache: dict[str, str] = {}
@@ -452,13 +467,20 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "\n\n",
                 italic("\U0001f4ed No active positions. Desk is in cash."),
             )
-            keyboard = [
-                [
-                    InlineKeyboardButton("\U0001f680 Launch Session", callback_data="auto_launch"),
-                    InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_portfolio"),
-                ],
-                [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
-            ]
+            keyboard = []
+            if is_active:
+                keyboard.append([
+                    InlineKeyboardButton("⏸️ Pause Session", callback_data="asm_pause"),
+                    InlineKeyboardButton("🛑 Stop & Close All", callback_data="asm_stop"),
+                ])
+                keyboard.append([InlineKeyboardButton("🔄 Refresh", callback_data="cmd_portfolio")])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton("🚀 Launch Session", callback_data="auto_launch"),
+                    InlineKeyboardButton("🔄 Refresh", callback_data="cmd_portfolio"),
+                ])
+            keyboard.append([InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")])
+            
             await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
             return
 
@@ -510,19 +532,75 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [
             [
                 InlineKeyboardButton("\U0001f4ca Position Detail", callback_data="view_positions_detail"),
-                InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_portfolio"),
+                InlineKeyboardButton("\U0001f527 Auto-Repair", callback_data="cmd_repair_positions"),
             ],
             [
                 InlineKeyboardButton("\U0001f39b\ufe0f Control Panel", callback_data="cmd_control"),
+                InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_portfolio"),
+            ],
+            [
+                InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard"),
                 InlineKeyboardButton("\U0001f4dc History", callback_data="cmd_trade_history"),
             ],
-            [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
         ]
         await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
     except Exception as exc:
         logger.error("portfolio_failed", extra={"error": str(exc)})
         await _reply(update, f"\u274c Portfolio load failed: {exc}", reply_markup=build_main_keyboard())
     logger.debug("portfolio_cmd: returning None")
+
+
+async def repair_positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manually trigger a position repair sweep (cleans corrupt keys + normalizes)."""
+    if not _is_authorized(update):
+        return
+        
+    redis = _get_redis(context)
+    if not redis or not redis.redis:
+        await _reply(update, "\u26a0\ufe0f Redis not available.")
+        return
+
+    try:
+        import json as _json
+        keys = await redis.redis.keys("karsa:position:*")
+        purged = 0
+        normalized = 0
+        
+        for key in keys:
+            key_str = key if isinstance(key, str) else key.decode()
+            raw = await redis.redis.get(key_str)
+            if not raw:
+                await redis.redis.delete(key_str)
+                purged += 1
+                continue
+            try:
+                pos = _json.loads(raw)
+                side = pos.get("side", "")
+                if side not in ("LONG", "SHORT"):
+                    pos["side"] = "LONG" if side in ("buy", "Buy") else "SHORT"
+                    await redis.redis.set(key_str, _json.dumps(pos))
+                    normalized += 1
+            except _json.JSONDecodeError:
+                await redis.redis.delete(key_str)
+                purged += 1
+                
+        text = (
+            f"<b>\U0001f527 Auto-Repair Initiated</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            f"• <b>Purged:</b> {purged} corrupt/empty ghost keys\n"
+            f"• <b>Normalized:</b> {normalized} misaligned side keys\n\n"
+            f"<i>The APM background scheduler will sync missing Stop Loss fields with Bybit within 60s.</i>"
+        )
+        
+        keyboard = [
+            [InlineKeyboardButton("\U0001f504 Refresh Positions", callback_data="cmd_portfolio")],
+            [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+        ]
+        await _reply(update, text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        
+    except Exception as exc:
+        logger.error(f"repair_positions_failed: {exc}")
+        await _reply(update, f"\u274c Auto-Repair failed: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -638,6 +716,52 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.debug("report_shadow_cmd: returning None")
 
 
+async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Live performance funnel metrics."""
+    logger.debug("report_live_cmd: entering")
+    if not _is_authorized(update):
+        return
+
+    from app.analytics.performance import compute_performance, fetch_all_closed_trades, format_performance_report
+
+    db_engine = context.bot_data.get("db_engine")
+    if db_engine is None:
+        text = fmt(bold("\U0001f534 LIVE FUNNEL"), "\n", "\u26a0\ufe0f DB not connected \u2014 report unavailable.")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    from dataclasses import dataclass
+
+    @dataclass
+    class _Store:
+        db: object
+
+    store = _Store(db=db_engine)
+
+    try:
+        from app.bot.utils.formatters.live_funnel_formatter import format_live_funnel
+        from app.core.metrics import get_live_funnel_metrics
+
+        funnel_metrics = get_live_funnel_metrics()
+
+        live_trades = await fetch_all_closed_trades(store)
+        live_report = compute_performance(live_trades) if live_trades else compute_performance([])
+    except Exception as exc:
+        logger.error("report_live_fetch_failed: %s", exc)
+        text = fmt(bold("\U0001f534 LIVE FUNNEL"), "\n", f"\u26a0\ufe0f Fetch failed: {exc}")
+        await _reply(update, text, reply_markup=build_main_keyboard())
+        return
+
+    text = format_live_funnel(funnel_metrics, format_performance_report(live_report))
+    keyboard = [
+        [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_live")],
+        [InlineKeyboardButton("\u25c0\ufe0f Back to Reports", callback_data="cmd_report_menu")],
+        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+    ]
+    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    logger.debug("report_live_cmd: returning None")
+
+
 async def report_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Reports Menu \u2014 choose which report to view."""
     logger.debug("report_menu_cmd: entering")
@@ -647,6 +771,7 @@ async def report_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = fmt(bold("\U0001f4ca REPORTS MENU"), "\n", "\u2501" * 32, "\n\n", "Select a report type to view:")
     keyboard = [
         [InlineKeyboardButton("\U0001f465 Shadow Funnel", callback_data="cmd_report_shadow")],
+        [InlineKeyboardButton("\U0001f534 Live Funnel", callback_data="cmd_report_live")],
         [InlineKeyboardButton("\U0001f4c8 Live Performance", callback_data="cmd_performance")],
         [InlineKeyboardButton("\U0001f52c Backtest Report", callback_data="cmd_backtest")],
         [InlineKeyboardButton("\u25c0\ufe0f Back to Dashboard", callback_data="cmd_dashboard")],
@@ -971,21 +1096,44 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
 
     keyboard = []
 
+    # Fetch Redis position data for trailing/BE/regime info
+    r = _get_redis(context)
+    redis_cache: dict[str, dict] = {}
+    if r:
+        for p in positions:
+            sym = p.get("symbol", "")
+            side_raw = p.get("side", "buy")
+            side_long = "LONG" if side_raw in ("buy", "Buy") else "SHORT"
+            key = f"karsa:position:{sym}:{side_long}"
+            try:
+                import json as _json
+                raw = await r.get(key)
+                if raw:
+                    redis_cache[sym] = _json.loads(raw) if isinstance(raw, str) else raw
+            except Exception:
+                pass
+
     if not positions:
         lines.append(italic("\U0001f4ed No open positions."))
     else:
         for i, (p, pos_val) in enumerate(zip(positions, position_values), 1):
-            # Normalise field names from fetch_positions to what format_position_card expects
+            sym = p.get("symbol", "?")
+            rd = redis_cache.get(sym, {})
             normalised = {
-                "symbol": p.get("symbol", "?"),
+                "symbol": sym,
                 "side": "Buy" if p.get("side", "buy") in ("buy", "Buy") else "Sell",
                 "size": str(p.get("contracts", p.get("size", 0))),
                 "entry_price": p.get("entry_price", 0),
-                "current_price": p.get("entry_price", 0),  # no mark price in fetch_positions
+                "current_price": p.get("entry_price", 0),
                 "unrealized_pnl": p.get("unrealized_pnl", 0),
-                "liq_price": 0,
-                "sl_price": 0,
-                "tp_price": 0,
+                "liq_price": _safe_float(p.get("liquidationPrice")) or _safe_float(p.get("info", {}).get("liqPrice", 0)) or 0,
+                "sl_price": _safe_float(rd.get("current_sl")) or _safe_float(p.get("stopLoss")),
+                "tp_price": _safe_float(rd.get("take_profit")) or _safe_float(p.get("takeProfit")),
+                "regime": rd.get("entry_regime", rd.get("regime", "")),
+                "moved_to_breakeven": rd.get("moved_to_breakeven", False),
+                "trailing_active": bool(float(rd.get("current_sl", 0) or 0) > 0 and rd.get("entry_regime", "")),
+                "atr": float(rd.get("atr", 0) or 0),
+                "peak_price": float(rd.get("peak_price", 0) or 0),
             }
             pos_pct = float(pos_val / total_equity * 100) if total_equity > 0 else 0
             card = format_position_card(normalised, index=i, pos_pct=pos_pct)
@@ -1006,9 +1154,12 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
         [
             [
                 InlineKeyboardButton("\U0001f504 Refresh", callback_data="view_positions_detail"),
-                InlineKeyboardButton("\U0001f4ca Table View", callback_data="cmd_portfolio"),
+                InlineKeyboardButton("\U0001f527 Auto-Repair", callback_data="cmd_repair_positions"),
             ],
-            [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+            [
+                InlineKeyboardButton("\U0001f4ca Table View", callback_data="cmd_portfolio"),
+                InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard"),
+            ],
         ]
     )
 
@@ -1211,7 +1362,7 @@ async def universe_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("\U0001f504 Refresh", callback_data="universe_detail"),
-            InlineKeyboardButton("\U0001f4bc Positions", callback_data="view_positions_detail"),
+            InlineKeyboardButton("\U0001f4bc Positions", callback_data="cmd_portfolio"),
         ],
         [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
     ]
@@ -1465,6 +1616,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await report_menu_cmd(update, context)
     elif data == "cmd_report_shadow":
         await report_shadow_cmd(update, context)
+    elif data == "cmd_report_live":
+        await report_live_cmd(update, context)
 
     # Settings toggles
     elif data == "settings:max_positions":
@@ -1477,6 +1630,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Positions
     elif data in {"view_positions_detail", "cmd_positions"}:
         await view_positions_detail_cmd(update, context)
+    elif data == "cmd_repair_positions":
+        await repair_positions_cmd(update, context)
 
     # Move SL to BE
     elif data.startswith("move_sl_be_"):

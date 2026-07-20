@@ -51,13 +51,15 @@ async def _on_signal_shadow(
     shadow_trade_store: Any | None,
     crypto_analyst: Any | None = None,
     risk_manager: Any | None = None,
+    engine: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
 
     Checks:
     1. No duplicate shadow position open.
-    2. Execute via ShadowExecutor (virtual fill).
-    3. Record shadow trade in DB.
+    2. Consecutive loss block (3+ losses in same regime).
+    3. Execute via ShadowExecutor (virtual fill).
+    4. Record shadow trade in DB.
     """
     # Skip if position already open (check both LONG and SHORT)
     has_long = await shadow_pos_store.get(symbol, "LONG")
@@ -65,6 +67,11 @@ async def _on_signal_shadow(
     if has_long or has_short:
         existing_side = "LONG" if has_long else "SHORT"
         logger.info("shadow skip %s — position already open (%s)", symbol, existing_side)
+        return
+
+    # Consecutive loss block
+    if engine and await engine.check_consecutive_losses(symbol, signal.regime):
+        logger.info("shadow skip %s — consecutive loss block", symbol)
         return
 
     # AI Analyst gate — skip for high-confidence signals (score >= 75)
@@ -279,10 +286,12 @@ async def main() -> None:
     await emitter.start()
 
     # Build shared decision engine
+    from app.alpha.trade_memory import TradeMemory
     classifier = RegimeClassifier(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
-    engine = DecisionEngine(classifier, router, risk_gate)
+    trade_memory = TradeMemory(redis)
+    engine = DecisionEngine(classifier, router, risk_gate, trade_memory=trade_memory, redis_client=redis)
 
     # Build shadow-specific stores and executor
     try:
@@ -342,7 +351,7 @@ async def main() -> None:
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
         await _on_signal_shadow(
-            symbol, sig, shadow_executor, shadow_pos_store, shadow_trade_store, crypto_analyst, risk_manager
+            symbol, sig, shadow_executor, shadow_pos_store, shadow_trade_store, crypto_analyst, risk_manager, engine
         )
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
@@ -355,7 +364,7 @@ async def main() -> None:
     logger.info(f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}")
 
     # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
-    for sym in initial_symbols[:10]:
+    for sym in initial_symbols:
         try:
             candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
             if candles:

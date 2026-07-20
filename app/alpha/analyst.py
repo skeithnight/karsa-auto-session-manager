@@ -165,6 +165,7 @@ class CryptoAnalyst:
             return None
 
         metrics.ai_analyst_calls.labels(result="success").inc()
+        metrics.ai_confidence.labels(symbol=symbol).set(result.ai_confidence)
 
         if self.redis:
             try:

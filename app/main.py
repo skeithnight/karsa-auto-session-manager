@@ -534,6 +534,7 @@ async def alpha_bridge_task(
                                 if final_conf < 0.65:
                                     logger.info(f"AI analyst rejected {symbol}: {analyst_result.reasoning}")
                                     metrics.signals_skipped.labels(symbol=symbol, reason="ai_rejected").inc()
+                                    metrics.ai_analyst_rejections.labels(reason="low_confidence").inc()
                                     continue
                                 signal.confidence = final_conf
                                 signal.metrics["ai_analyst"] = analyst_result.direction
@@ -577,6 +578,10 @@ async def risk_gate_task(
     """Key 3: Gate signals through risk checks."""
     logger.debug("risk_gate_task: entering")
     logger.info("Risk Gate starting...")
+
+    metrics.param_threshold.labels("alpha_entry").set(0.65)
+    metrics.param_threshold.labels("max_slippage").set(0.5)
+    metrics.param_threshold.labels("ai_veto").set(0.85)
 
     while not kill_switch.is_set():
         try:

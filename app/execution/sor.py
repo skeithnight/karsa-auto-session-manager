@@ -62,6 +62,8 @@ class SmartOrderRouter:
         3. Market/IOC fallback
         4. Place exchange-side Stop-Loss immediately on fill (CLAUDE.md Rule 5)
         """
+        # Normalize side: accept "LONG"/"SHORT" from signal, convert to "buy"/"sell"
+        side = "buy" if side in ("buy", "LONG") else "sell"
         logger.debug(f"execute: entering symbol={symbol} side={side}")
         order: dict[str, Any] | None = None
 
@@ -90,11 +92,11 @@ class SmartOrderRouter:
             if order.get("status") == "open":
                 logger.info(f"Post-Only filled: {order['orderId']}")
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-                fill_price = Decimal(str(order.get("average", price)))
+                fill_price = Decimal(str(order.get("average", order.get("avgPrice", price))))
                 slippage_bps = abs(fill_price - price) / price * Decimal("10000")
                 metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                 sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
-                order["sl_order_id"] = sl_id
+                order["sl_order_id"] = sl_id or ""  # atomic SL has no order ID; normalize to ""
                 logger.debug("execute: returning dict (Post-Only filled)")
                 return order
         except Exception as e:
@@ -127,13 +129,13 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
                     logger.info(f"Reprice filled: {order['orderId']}")
-                    fill_price = Decimal(str(order.get("average", current_price)))
+                    fill_price = Decimal(str(order.get("average", order.get("avgPrice", current_price))))
                     slippage_bps = abs(fill_price - price) / price * Decimal("10000")
                     metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                     sl_id = await self._place_sl_after_fill(
                         symbol, side, current_price, amount, max_loss_usd, price_tick
                     )
-                    order["sl_order_id"] = sl_id
+                    order["sl_order_id"] = sl_id or ""
                     logger.debug("execute: returning dict (Reprice filled)")
                     return order
             except Exception as e:
@@ -149,11 +151,11 @@ class SmartOrderRouter:
             market_order = await self.client.create_market_order(symbol, side, amount)
             logger.info(f"Market fallback filled: {market_order['orderId']}")
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-            fill_price = Decimal(str(market_order.get("average", price)))
+            fill_price = Decimal(str(market_order.get("average", market_order.get("avgPrice", price))))
             slippage_bps = abs(fill_price - price) / price * Decimal("10000")
             metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
             sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
-            market_order["sl_order_id"] = sl_id
+            market_order["sl_order_id"] = sl_id or ""
             logger.debug("execute: returning dict (Market fallback)")
             return market_order
         except Exception as e:
@@ -182,7 +184,7 @@ class SmartOrderRouter:
 
         if price <= 0:
             logger.warning(f"SOR exit: invalid price {price} for {symbol}, falling back to market")
-            return await self.client.create_market_order(symbol, side, amount)
+            return await self.client.create_market_order(symbol, side, amount, params={"reduceOnly": True})
 
         remaining = amount
         total_filled = Decimal("0")
@@ -190,7 +192,7 @@ class SmartOrderRouter:
         # Step 1: Post-Only Limit
         logger.info(f"SOR exit Step 1: Post-Only {side} {remaining} @ {price}")
         try:
-            order = await self.client.create_limit_order(symbol, side, remaining, price)
+            order = await self.client.create_limit_order(symbol, side, remaining, price, params={"reduceOnly": True})
             if order.get("status") == "open":
                 logger.info(f"Exit Post-Only filled: {order['orderId']}")
                 return order
@@ -233,7 +235,7 @@ class SmartOrderRouter:
 
                 if remaining <= 0:
                     break  # fully filled across attempts
-                order = await self.client.create_limit_order(symbol, side, remaining, current_price)
+                order = await self.client.create_limit_order(symbol, side, remaining, current_price, params={"reduceOnly": True})
                 if order.get("status") == "open":
                     logger.info(f"Exit reprice filled: {order['orderId']}")
                     return order
@@ -246,7 +248,7 @@ class SmartOrderRouter:
             try:
                 if order and order.get("id"):
                     await self.client.cancel_order(order["id"], symbol)
-                market_order = await self.client.create_market_order(symbol, side, remaining)
+                market_order = await self.client.create_market_order(symbol, side, remaining, params={"reduceOnly": True})
                 logger.info(f"Exit market fallback filled: {market_order['orderId']}")
                 return market_order
             except Exception as e:
@@ -413,7 +415,7 @@ class SmartOrderRouter:
             order = await self._try_post_only(symbol, side, amount, price)
             if order is not None:
                 sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)
-                order["sl_order_id"] = sl_id
+                order["sl_order_id"] = sl_id or ""
                 return order
             logger.info(
                 "SOR: Post-Only rejected for %s (CHOP/RANGE) — no market fallback",
@@ -468,7 +470,7 @@ class SmartOrderRouter:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") == "open":
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-                fill_price = Decimal(str(order.get("average", price)))
+                fill_price = Decimal(str(order.get("average", order.get("avgPrice", price))))
                 slippage_bps = abs(fill_price - price) / price * Decimal("10000")
                 metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                 return order
@@ -511,7 +513,7 @@ class SmartOrderRouter:
             try:
                 order = await self.client.create_limit_order(symbol, side, amount, current_price)
                 if order.get("status") == "open":
-                    fill_price = Decimal(str(order.get("average", current_price)))
+                    fill_price = Decimal(str(order.get("average", order.get("avgPrice", current_price))))
                     slippage_bps = abs(fill_price - price) / price * Decimal("10000")
                     metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
                     sl_id = await self._place_sl_after_fill(
@@ -534,7 +536,7 @@ class SmartOrderRouter:
         try:
             market_order = await self.client.create_market_order(symbol, side, amount)
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-            fill_price = Decimal(str(market_order.get("average", price)))
+            fill_price = Decimal(str(market_order.get("average", market_order.get("avgPrice", price))))
             slippage_bps = abs(fill_price - price) / price * Decimal("10000")
             metrics.execution_slippage_bps.labels(symbol=symbol).observe(float(slippage_bps))
             sl_id = await self._place_sl_after_fill(symbol, side, price, amount, max_loss_usd, price_tick)

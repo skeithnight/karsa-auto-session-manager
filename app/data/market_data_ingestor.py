@@ -18,10 +18,13 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+from decimal import Decimal
 from typing import Any
 
 import ccxt.async_support as ccxt
 from loguru import logger
+
+from app.core import metrics
 
 REDIS_KEY_PREFIX = "karsa:market"
 ORDERBOOK_DEPTH = 25  # top 25 levels each side
@@ -124,25 +127,36 @@ class MarketDataIngestor:
 
         try:
             await self._fetch_orderbook(symbol, ccxt_sym)
+            metrics.data_fetch_total.labels(symbol=symbol, field="orderbook", result="success").inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "orderbook", e)
+            metrics.data_fetch_total.labels(symbol=symbol, field="orderbook", result="failure").inc()
 
         try:
             await self._fetch_funding_rate(symbol, ccxt_sym)
+            metrics.data_fetch_total.labels(symbol=symbol, field="funding", result="success").inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "funding", e)
+            metrics.data_fetch_total.labels(symbol=symbol, field="funding", result="failure").inc()
 
         try:
             await self._fetch_oi(symbol, ccxt_sym)
+            metrics.data_fetch_total.labels(symbol=symbol, field="oi", result="success").inc()
         except Exception as e:
             cycle_failures += 1
             self._log_fetch_failure(symbol, "OI", e)
+            metrics.data_fetch_total.labels(symbol=symbol, field="oi", result="failure").inc()
 
         if cycle_failures == 0:
             self._failure_counts[symbol] = 0
             self._last_fetch_ts[symbol] = time.time()
+            metrics.data_age_seconds.labels(symbol=symbol).set(0.0)
+        else:
+            last_ts = self._last_fetch_ts.get(symbol)
+            if last_ts is not None:
+                metrics.data_age_seconds.labels(symbol=symbol).set(time.time() - last_ts)
 
     def _log_fetch_failure(self, symbol: str, field: str, error: Exception) -> None:
         """Log fetch failure with escalation after threshold consecutive misses."""
@@ -178,6 +192,14 @@ class MarketDataIngestor:
 
         self.orderbook_delta[symbol] = delta
         await self._publish(symbol, "orderbook_delta", str(round(delta, 6)))
+
+        # Cache mid price for shadow APM (SL/TP monitoring)
+        if bids and asks:
+            best_bid = Decimal(str(bids[0][0]))
+            best_ask = Decimal(str(asks[0][0]))
+            if best_bid > 0 and best_ask > 0:
+                mid = str((best_bid + best_ask) / 2)
+                await self._redis.set(f"shadow:price:{symbol}", mid, ex=300)
 
     async def _fetch_funding_rate(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch current funding rate.
@@ -226,6 +248,17 @@ class MarketDataIngestor:
         consumer.orderbook_delta.update(self.orderbook_delta)
         consumer.funding_rate.update(self.funding_rate)
         consumer.oi_change.update(self.oi_change)
+
+    def update_symbols(self, new_symbols: list[str]) -> None:
+        """Update symbol list at runtime. New symbols picked up on next poll cycle."""
+        added = set(new_symbols) - set(self._symbols)
+        removed = set(self._symbols) - set(new_symbols)
+        if added or removed:
+            logger.info(
+                f"MarketDataIngestor: universe update +{len(added)} -{len(removed)} "
+                f"({len(new_symbols)} total)"
+            )
+        self._symbols = list(new_symbols)
 
     def get_all(self, symbol: str) -> dict[str, float | None]:
         """Get all three data points for a symbol."""

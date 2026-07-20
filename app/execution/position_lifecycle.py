@@ -241,6 +241,11 @@ class CheckpointManager:
         pnl_usdt = float(pnl_pct * amount * entry)
         metrics.position_unrealized_pnl.labels(symbol=symbol).set(pnl_usdt)
 
+        # Expose SL price for dashboard
+        sl_price_str = pos.get("sl_price", "")
+        if sl_price_str:
+            metrics.position_sl_price.labels(symbol=symbol).set(float(sl_price_str))
+
         # HARD_FAIL checks
         if elapsed < 1800 and pnl_pct <= self.hard_fail_30min:  # 30 min
             logger.critical(f"HARD_FAIL 30min: {symbol} {side} pnl={pnl_pct:.4f}")

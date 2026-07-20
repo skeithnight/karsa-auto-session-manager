@@ -333,6 +333,10 @@ class BybitClient:
                 "contracts": _safe_decimal(p.get("size")),
                 "entry_price": _safe_decimal(p.get("avgPrice")),
                 "unrealized_pnl": _safe_decimal(p.get("unrealisedPnl")),
+                "stopLoss": _safe_decimal(p.get("stopLoss")),
+                "takeProfit": _safe_decimal(p.get("takeProfit")),
+                "trailingStop": _safe_decimal(p.get("trailingStop")),
+                "liquidationPrice": _safe_decimal(p.get("liqPrice")),
             }
             for p in result.get("list", [])
             if _safe_decimal(p.get("size")) > 0

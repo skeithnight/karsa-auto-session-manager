@@ -1,431 +1,675 @@
 {
-  "title": "ASM - Pipeline Funnel",
-  "tags": ["asm", "trading", "pipeline", "funnel"],
-  "timezone": "browser",
-  "refresh": "10s",
-  "time": {
-    "from": "now-24h",
-    "to": "now"
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
   },
-  "uid": "asm-pipeline-funnel",
+  "description": "Pipeline X-Ray — signal attrition across 6 stages: Universe → Data → Alpha → Router → Risk → SOR",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
   "panels": [
     {
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
       "id": 100,
-      "type": "row",
-      "title": "📊 Signal Funnel",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }
+      "title": "Macro Funnel",
+      "type": "row"
     },
     {
       "id": 1,
-      "title": "Signal Funnel (24h)",
+      "title": "Signal Funnel",
+      "description": "Volume of signals at each pipeline stage. Healthy funnel narrows gradually.",
       "type": "bargauge",
-      "gridPos": { "h": 10, "w": 12, "x": 0, "y": 1 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_regime_classified_total[24h]))",
-          "legendFormat": "1. Regime Classified",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total[24h]))",
-          "legendFormat": "2. Strategy Scored",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total[24h]))",
-          "legendFormat": "3. Confidence Passed",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(increase(karsa_risk_gate_pass_total[24h]))",
-          "legendFormat": "4. Risk Gate Passed",
-          "refId": "D"
-        },
-        {
-          "expr": "sum(increase(karsa_orders_placed_total[24h]))",
-          "legendFormat": "5. EXECUTED",
-          "refId": "E"
-        }
-      ],
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "continuous-GrYlRd" },
+          "mappings": [],
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "red", "value": null },
-              { "color": "orange", "value": 10 },
-              { "color": "green", "value": 50 }
+              { "color": "yellow", "value": 50 },
+              { "color": "green", "value": 200 }
             ]
-          }
-        }
+          },
+          "unit": "short"
+        },
+        "overrides": []
       },
       "options": {
         "orientation": "horizontal",
-        "showUnfilled": true,
-        "colorMode": "gradient",
-        "displayMode": "gradient"
-      }
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "displayMode": "gradient",
+        "showThresholdLabels": false,
+        "showThresholdMarkers": true
+      },
+      "gridPos": { "h": 8, "w": 14, "x": 0, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(karsa_signals_pipeline_attempted_total)",
+          "legendFormat": "Universe Attempted"
+        },
+        {
+          "expr": "sum(karsa_signals_entered_pipeline_total)",
+          "legendFormat": "Entered Pipeline"
+        },
+        {
+          "expr": "sum(karsa_signals_generated_total)",
+          "legendFormat": "Signals Generated"
+        },
+        {
+          "expr": "sum(karsa_signal_confidence_passed_total)",
+          "legendFormat": "Confidence Passed"
+        },
+        {
+          "expr": "sum(karsa_risk_gate_pass_total)",
+          "legendFormat": "Risk Gate Pass"
+        },
+        {
+          "expr": "sum(karsa_orders_placed_total)",
+          "legendFormat": "Orders Placed"
+        }
+      ]
     },
     {
       "id": 2,
-      "title": "Kill Reasons (Where Signals Die)",
-      "type": "piechart",
-      "gridPos": { "h": 10, "w": 12, "x": 12, "y": 1 },
+      "title": "Data Freshness Rate",
+      "description": "% of universe symbols with fresh data (age=0). Below 80% signals data pipeline issue.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 80 },
+              { "color": "green", "value": 95 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 1 },
       "targets": [
         {
-          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (reason)",
-          "legendFormat": "{{reason}}",
-          "refId": "A"
+          "expr": "count(karsa_data_age_seconds == 0) / count(karsa_data_age_seconds) * 100",
+          "legendFormat": "Fresh %"
         }
-      ],
-      "options": {
-        "pieType": "donut",
-        "tooltip": { "mode": "single" }
-      }
+      ]
     },
     {
       "id": 3,
-      "title": "Kill Stage Breakdown",
-      "type": "bargauge",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 11 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (stage)",
-          "legendFormat": "{{stage}}",
-          "refId": "A"
-        }
-      ],
+      "title": "Alpha Hit Rate",
+      "description": "% of pipeline symbols passing confidence gate. Low = alpha bridge too selective.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
       "fieldConfig": {
         "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "green", "value": 15 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 14, "y": 5 },
+      "targets": [
+        {
+          "expr": "sum(karsa_signal_confidence_passed_total) / (sum(karsa_signals_entered_pipeline_total) + 1) * 100",
+          "legendFormat": "Hit Rate"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "title": "Risk Gate Pass Rate",
+      "description": "% of signals approved by risk gate. Below 20% = risk params too tight.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 20 },
+              { "color": "green", "value": 40 }
+            ]
+          },
+          "unit": "percent",
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "gridPos": { "h": 4, "w": 5, "x": 19, "y": 1 },
+      "targets": [
+        {
+          "expr": "sum(karsa_risk_gate_pass_total) / (sum(karsa_risk_gate_pass_total) + sum(karsa_risk_gate_reject_total) + 1) * 100",
+          "legendFormat": "Pass Rate"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Top of Funnel",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 9 }
+    },
+    {
+      "id": 6,
+      "title": "Active Universe",
+      "description": "Current symbols in universe. Drops = scanner filtering harder.",
+      "type": "stat",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 10 },
+              { "color": "green", "value": 25 }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto",
+        "colorMode": "background"
+      },
+      "gridPos": { "h": 5, "w": 4, "x": 0, "y": 10 },
+      "targets": [
+        {
+          "expr": "sum(karsa_universe_size)",
+          "legendFormat": "Symbols"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "title": "Data Freshness per Symbol",
+      "description": "Seconds since last successful data fetch. Red spike = stale data.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "auto",
+            "pointSize": 3,
+            "spanNulls": false,
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisLabel": "seconds"
+          },
+          "unit": "s",
           "thresholds": {
             "mode": "absolute",
             "steps": [
               { "color": "green", "value": null },
-              { "color": "yellow", "value": 20 },
-              { "color": "red", "value": 50 }
+              { "color": "yellow", "value": 1 },
+              { "color": "red", "value": 2 }
             ]
           }
-        }
+        },
+        "overrides": []
       },
       "options": {
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "colorMode": "gradient"
-      }
-    },
-    {
-      "id": 4,
-      "title": "Risk Gate Pass vs Reject (24h)",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 11 },
+        "tooltip": { "mode": "multi", "sort": "desc" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] }
+      },
+      "gridPos": { "h": 10, "w": 10, "x": 4, "y": 10 },
       "targets": [
         {
-          "expr": "sum(increase(karsa_risk_gate_pass_total[24h]))",
-          "legendFormat": "Pass",
-          "refId": "A"
+          "expr": "karsa_data_age_seconds",
+          "legendFormat": "{{symbol}}"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "title": "Data Fetch Attempts",
+      "description": "Success vs failure rate per field (orderbook/funding/OI).",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 0,
+            "fillOpacity": 80,
+            "gradientMode": "opacity",
+            "stacking": { "mode": "normal" },
+            "axisBorderShow": false
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byRegexp", "options": ".*failure.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byRegexp", "options": ".*success.*" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean"] }
+      },
+      "gridPos": { "h": 10, "w": 10, "x": 14, "y": 10 },
+      "targets": [
+        {
+          "expr": "sum by (field, result) (rate(karsa_data_fetch_total[5m]))",
+          "legendFormat": "{{field}}/{{result}}"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "Alpha & Routing",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 20 }
+    },
+    {
+      "id": 10,
+      "title": "AI Confidence",
+      "description": "Latest AI Analyst confidence score per symbol.",
+      "type": "gauge",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.5 },
+              { "color": "green", "value": 0.7 }
+            ]
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showThresholdLabels": true,
+        "showThresholdMarkers": true,
+        "orientation": "auto",
+        "showValue": "auto",
+        "sizing": "auto"
+      },
+      "gridPos": { "h": 6, "w": 6, "x": 0, "y": 21 },
+      "targets": [
+        {
+          "expr": "karsa_ai_confidence",
+          "legendFormat": "{{symbol}}"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "title": "Pipeline Signal Volume",
+      "description": "Signals generated vs confidence-passed over time.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "never",
+            "axisBorderShow": false,
+            "axisLabel": "signals/sec"
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "gridPos": { "h": 6, "w": 9, "x": 6, "y": 21 },
+      "targets": [
+        {
+          "expr": "rate(karsa_signals_generated_total[5m])",
+          "legendFormat": "Generated"
         },
         {
-          "expr": "sum(increase(karsa_risk_gate_reject_total[24h]))",
-          "legendFormat": "Reject",
-          "refId": "B"
+          "expr": "rate(karsa_signal_confidence_passed_total[5m])",
+          "legendFormat": "Passed"
         }
-      ],
-      "options": { "textMode": "value_and_name", "colorMode": "value" }
+      ]
     },
     {
-      "id": 5,
-      "title": "Kill Reasons by Reason (detail)",
-      "type": "table",
-      "gridPos": { "h": 8, "w": 6, "x": 18, "y": 11 },
+      "id": 12,
+      "title": "Kill Reasons (Signal Skipped)",
+      "description": "Why signals were dropped before execution. Top reasons = levers to pull.",
+      "type": "barchart",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "axisLabel": "",
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "stacking": { "mode": "normal" },
+            "barWidth": 0.7
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "right" },
+        "orientation": "vertical",
+        "xTickLabelRotation": 0,
+        "showValue": "auto"
+      },
+      "gridPos": { "h": 6, "w": 9, "x": 15, "y": 21 },
       "targets": [
         {
-          "expr": "sum(increase(karsa_signals_killed_total[24h])) by (stage, reason)",
+          "expr": "sum by (reason) (karsa_signals_skipped_total)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "title": "Risk & Execution",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 27 }
+    },
+    {
+      "id": 14,
+      "title": "Risk Gate Pass/Reject",
+      "description": "Flow of signals through risk gate over time.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "stacking": { "mode": "normal" },
+            "axisBorderShow": false,
+            "axisLabel": "signals/sec"
+          },
+          "unit": "ops",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Reject" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "red", "mode": "fixed" } }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Pass" },
+            "properties": [
+              { "id": "color", "value": { "fixedColor": "green", "mode": "fixed" } }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 28 },
+      "targets": [
+        {
+          "expr": "rate(karsa_risk_gate_pass_total[5m])",
+          "legendFormat": "Pass"
+        },
+        {
+          "expr": "rate(karsa_risk_gate_reject_total[5m])",
+          "legendFormat": "Reject"
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "title": "Rejection Reasons",
+      "description": "Why trades were blocked by risk gate. Sorted by frequency.",
+      "type": "barchart",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "axisBorderShow": false,
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "stacking": { "mode": "normal" },
+            "barWidth": 0.7
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "right" },
+        "orientation": "vertical",
+        "xTickLabelRotation": 0,
+        "showValue": "auto"
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 28 },
+      "targets": [
+        {
+          "expr": "sum by (reason) (karsa_risk_gate_reject_total)",
+          "legendFormat": "{{reason}}"
+        }
+      ]
+    },
+    {
+      "id": 16,
+      "title": "SOR Execution Quality",
+      "description": "Slippage (bps) and latency (ms) for filled orders.",
+      "type": "timeseries",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "gradientMode": "none",
+            "showPoints": "auto",
+            "pointSize": 3,
+            "axisBorderShow": false,
+            "axisLabel": ""
+          },
+          "unit": "short",
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Slippage (bps)" },
+            "properties": [
+              { "id": "unit", "value": "short" },
+              { "id": "custom.axisLabel", "value": "bps" }
+            ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Latency (s)" },
+            "properties": [
+              { "id": "unit", "value": "s" },
+              { "id": "custom.axisLabel", "value": "seconds" }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 28 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(karsa_execution_slippage_bps_bucket[5m])))",
+          "legendFormat": "Slippage (bps)"
+        },
+        {
+          "expr": "histogram_quantile(0.50, sum(rate(karsa_execution_latency_seconds_bucket[5m])))",
+          "legendFormat": "Latency (s)"
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Controls & Debug",
+      "type": "row",
+      "collapsed": false,
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 }
+    },
+    {
+      "id": 18,
+      "title": "Parameter Thresholds",
+      "description": "Current active thresholds. Adjust to tune funnel behavior.",
+      "type": "table",
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "text", "value": null }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Value", "desc": true }]
+      },
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 37 },
+      "targets": [
+        {
+          "expr": "karsa_param_threshold",
+          "legendFormat": "{{name}}",
           "format": "table",
-          "instant": true,
-          "refId": "A"
+          "instant": true
         }
       ],
       "transformations": [
         {
           "id": "organize",
           "options": {
-            "excludeByName": { "Time": true },
-            "renameByName": {
-              "stage": "Stage",
-              "reason": "Reason",
-              "Value": "Count"
-            }
+            "excludeByName": { "Time": true, "__name__": true, "instance": true, "job": true },
+            "renameByName": { "name": "Parameter", "Value": "Current Value" }
           }
         }
       ]
     },
     {
-      "id": 200,
-      "type": "row",
-      "title": "📈 Regime Funnels",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 19 }
-    },
-    {
-      "id": 10,
-      "title": "CHOP Funnel",
-      "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 20 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_regime_classified_total{regime=\"CHOP\"}[24h]))",
-          "legendFormat": "Classified",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"CHOP\",score_bucket=\"85-100\"}[24h]))",
-          "legendFormat": "Score 85-100",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"CHOP\"}[24h]))",
-          "legendFormat": "Passed Gate",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(increase(karsa_orders_placed_total[24h]))",
-          "legendFormat": "Executed",
-          "refId": "D"
-        }
-      ],
-      "options": { "textMode": "value_and_name", "colorMode": "value" }
-    },
-    {
-      "id": 11,
-      "title": "TREND_BULL Funnel",
-      "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 20 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_regime_classified_total{regime=\"TREND_BULL\"}[24h]))",
-          "legendFormat": "Classified",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"TREND_BULL\",score_bucket=\"85-100\"}[24h]))",
-          "legendFormat": "Score 85-100",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BULL\"}[24h]))",
-          "legendFormat": "Passed Gate",
-          "refId": "C"
-        }
-      ],
-      "options": { "textMode": "value_and_name", "colorMode": "value" }
-    },
-    {
-      "id": 12,
-      "title": "RANGE Funnel",
-      "type": "stat",
-      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 20 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_regime_classified_total{regime=\"RANGE\"}[24h]))",
-          "legendFormat": "Classified",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{regime=\"RANGE\",score_bucket=\"85-100\"}[24h]))",
-          "legendFormat": "Score 85-100",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"RANGE\"}[24h]))",
-          "legendFormat": "Passed Gate",
-          "refId": "C"
-        }
-      ],
-      "options": { "textMode": "value_and_name", "colorMode": "value" }
-    },
-    {
-      "id": 300,
-      "type": "row",
-      "title": "🎲 Score Distributions",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 }
-    },
-    {
-      "id": 20,
-      "title": "Strategy Score Distribution",
-      "type": "histogram",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 27 },
-      "targets": [
-        {
-          "expr": "karsa_strategy_score",
-          "legendFormat": "{{regime}}",
-          "refId": "A"
-        }
-      ],
+      "id": 19,
+      "title": "Funnel Reference",
+      "description": "Quick reference for pipeline stages and expected behavior.",
+      "type": "text",
       "options": {
-        "bucketBound": "le",
-        "combine": false,
-        "fillOpacity": 20
-      }
-    },
-    {
-      "id": 21,
-      "title": "Signal Confidence Distribution",
-      "type": "histogram",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 27 },
-      "targets": [
-        {
-          "expr": "karsa_signal_confidence",
-          "legendFormat": "{{symbol}}",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "bucketBound": "le",
-        "combine": false,
-        "fillOpacity": 20
-      }
-    },
-    {
-      "id": 400,
-      "type": "row",
-      "title": "📉 Strategy Score Buckets by Regime",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }
-    },
-    {
-      "id": 30,
-      "title": "Score Buckets by Regime (24h)",
-      "type": "bargauge",
-      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"0-50\"}[24h])) by (regime)",
-          "legendFormat": "{{regime}} 0-50",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"50-65\"}[24h])) by (regime)",
-          "legendFormat": "{{regime}} 50-65",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"65-85\"}[24h])) by (regime)",
-          "legendFormat": "{{regime}} 65-85",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(increase(karsa_strategy_scored_total{score_bucket=\"85-100\"}[24h])) by (regime)",
-          "legendFormat": "{{regime}} 85-100",
-          "refId": "D"
-        }
-      ],
-      "options": {
-        "orientation": "horizontal",
-        "showUnfilled": true,
-        "colorMode": "gradient"
-      }
-    },
-    {
-      "id": 31,
-      "title": "Confidence Pass Rate by Regime (24h)",
-      "type": "stat",
-      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
-      "targets": [
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"CHOP\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"CHOP\"}[24h]))",
-          "legendFormat": "CHOP",
-          "refId": "A"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BULL\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"TREND_BULL\"}[24h]))",
-          "legendFormat": "TREND_BULL",
-          "refId": "B"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"TREND_BEAR\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"TREND_BEAR\"}[24h]))",
-          "legendFormat": "TREND_BEAR",
-          "refId": "C"
-        },
-        {
-          "expr": "sum(increase(karsa_signal_confidence_passed_total{regime=\"RANGE\"}[24h])) / sum(increase(karsa_strategy_scored_total{regime=\"RANGE\"}[24h]))",
-          "legendFormat": "RANGE",
-          "refId": "D"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "percentunit",
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 0.1 },
-              { "color": "green", "value": 0.3 }
-            ]
-          }
-        }
+        "mode": "markdown",
+        "content": "## Pipeline Stages\n\n| Stage | Metric | Healthy Range |\n|-------|--------|---------------|\n| Universe | `universe_size` | 20-40 |\n| Data Freshness | `data_age_seconds == 0` | >95% |\n| Alpha Generated | `signals_generated_total` | varies |\n| Confidence Passed | `signal_confidence_passed_total` | >10% of generated |\n| Risk Gate Pass | `risk_gate_pass_total` | >30% of inputs |\n| Orders Placed | `orders_placed_total` | >50% of risk-pass |\n\n**Debugging workflow:**\n1. Rejection Reasons (Row 4) → find top blocker\n2. AI Confidence (Row 3) → check if AI vetoing signals\n3. Kill Reasons (Row 3) → check early-stage drops\n4. Data Freshness (Row 2) → check for stale data"
       },
-      "options": { "textMode": "value_and_name", "colorMode": "value" }
-    },
-    {
-      "id": 500,
-      "type": "row",
-      "title": "⚡ Live Pipeline Status",
-      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 44 }
-    },
-    {
-      "id": 40,
-      "title": "Current Regime",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 45 },
-      "targets": [
-        {
-          "expr": "karsa_regime_state",
-          "legendFormat": "Regime",
-          "refId": "A"
-        }
-      ],
-      "options": { "textMode": "value_and_name", "colorMode": "background" }
-    },
-    {
-      "id": 41,
-      "title": "ADX",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 6, "y": 45 },
-      "targets": [
-        {
-          "expr": "karsa_regime_adx",
-          "legendFormat": "ADX",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 42,
-      "title": "Hurst",
-      "type": "stat",
-      "gridPos": { "h": 4, "w": 4, "x": 10, "y": 45 },
-      "targets": [
-        {
-          "expr": "karsa_regime_hurst",
-          "legendFormat": "Hurst",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 43,
-      "title": "Regime Classifications (5m)",
-      "type": "timeseries",
-      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 49 },
-      "targets": [
-        {
-          "expr": "sum(rate(karsa_regime_classified_total[5m])) by (regime)",
-          "legendFormat": "{{regime}}",
-          "refId": "A"
-        }
-      ],
-      "options": {
-        "tooltip": { "mode": "multi" }
-      }
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 37 }
     }
-  ]
+  ],
+  "refresh": "10s",
+  "schemaVersion": 39,
+  "tags": ["pipeline", "funnel", "karsa"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "",
+  "title": "ASM Pipeline Funnel",
+  "uid": "asm-pipeline-funnel",
+  "version": 1,
+  "weekStart": ""
 }

@@ -180,7 +180,7 @@ class MarketConsumer:
         prices = self._get_global_prices(exchange, symbol)
 
         # Run decision pipeline
-        signal = self._engine.evaluate(
+        signal = await self._engine.evaluate(
             symbol=symbol,
             candles=self._buffer.as_list(symbol),
             global_prices=prices,

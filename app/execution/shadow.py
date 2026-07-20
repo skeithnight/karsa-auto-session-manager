@@ -113,7 +113,7 @@ class ShadowExecutor:
 
     def _apply_slippage(self, price: Decimal, side: str) -> Decimal:
         """Apply slippage — worse fill for the trader."""
-        if side == "buy":
+        if side in ("buy", "LONG"):
             return (price * (1 + self._slippage)).quantize(
                 Decimal("0.00000001"), rounding=ROUND_DOWN
             )
@@ -431,6 +431,26 @@ class ShadowAPM:
         # Update peak for trailing stop logic
         await self._pos_store.update_peak(symbol, side, mid)
 
+        # --- $1 hard cap: if current SL would lose > $1, tighten SL to -$1 level ---
+        amount = Decimal(pos.get("amount", "0"))
+        if amount > 0 and virtual_sl > 0:
+            if side == "LONG":
+                sl_loss = (virtual_sl - entry_price) * amount
+            else:
+                sl_loss = (entry_price - virtual_sl) * amount
+            if sl_loss < -1:
+                # Current SL too loose — tighten to exactly -$1 loss
+                if side == "LONG":
+                    new_sl = entry_price - Decimal("1") / amount
+                else:
+                    new_sl = entry_price + Decimal("1") / amount
+                pos["virtual_sl"] = str(new_sl)
+                await self._redis.set(key, _json.dumps(pos))
+                logger.warning(
+                    f"SHADOW $1 CAP: {symbol} {side} SL tightened "
+                    f"from {virtual_sl} to {new_sl} (was ${sl_loss:.4f} loss)"
+                )
+
         # Stale position cleanup: no SL + older than 4h → auto-close
         if virtual_sl <= 0:
             try:
@@ -540,10 +560,10 @@ class ShadowAPM:
         entry_price = Decimal(pos.get("entry_price", "0"))
         notional = entry_price * amount
 
-        if side == "buy":
+        if side == "LONG":
             funding_fee = notional * funding_rate
         else:
-            funding_fee = notional * abs(funding_rate) * Decimal("-1")
+            funding_fee = notional * funding_rate * Decimal("-1")
 
         existing_fees = Decimal(pos.get("total_funding_fees", "0"))
         pos["total_funding_fees"] = str(existing_fees + funding_fee)
@@ -581,7 +601,7 @@ class ShadowAPM:
         entry_price = Decimal(pos.get("entry_price", "0"))
         amount = Decimal(pos.get("amount", "0"))
 
-        if side == "buy":
+        if side in ("buy", "LONG"):
             pnl = (exit_price - entry_price) * amount
         else:
             pnl = (entry_price - exit_price) * amount

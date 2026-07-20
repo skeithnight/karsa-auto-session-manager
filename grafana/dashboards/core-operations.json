@@ -1,0 +1,349 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "description": "Trader's Cockpit — wallet, system health, live positions, trade history",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "uid": "core-operations",
+  "title": "Core Operations",
+  "tags": ["asm", "operations", "trading"],
+  "version": 1,
+  "schemaVersion": 39,
+  "refresh": "10s",
+  "time": { "from": "now-24h", "to": "now" },
+
+  "panels": [
+
+    { "id": 100, "title": "Financial Pulse", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 }, "collapsed": false },
+
+    {
+      "id": 1,
+      "title": "Wallet Overview",
+      "description": "Total equity, available balance, and margin utilization",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "textMode": "auto" },
+      "targets": [
+        { "expr": "max(karsa_wallet_total_equity_usdt)", "legendFormat": "Total Equity (USDT)", "refId": "A" },
+        { "expr": "max(karsa_wallet_balance_usdt)", "legendFormat": "Available Balance (USDT)", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 100 }, { "color": "green", "value": 500 }] }, "unit": "currencyUSD" },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 2,
+      "title": "Margin Utilization",
+      "description": "Balance / Equity * 100. Near 100% = no new trades possible.",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 4, "x": 12, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "minVizWidth": 75, "minVizHeight": 75, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [
+        { "expr": "max(karsa_wallet_balance_usdt) / (max(karsa_wallet_total_equity_usdt) + 0.01) * 100", "legendFormat": "Margin Used %", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 70 }, { "color": "red", "value": 90 }] } },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 3,
+      "title": "PnL Summary",
+      "description": "Realized + Unrealized PnL and open position count",
+      "type": "stat",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 1 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "textMode": "auto" },
+      "targets": [
+        { "expr": "sum(karsa_position_unrealized_pnl_usdt)", "legendFormat": "Unrealized PnL", "refId": "A" },
+        { "expr": "sum(karsa_position_pnl_usd_sum)", "legendFormat": "Realized PnL", "refId": "B" },
+        { "expr": "count(karsa_position_size > 0)", "legendFormat": "Open Positions", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0 }, { "color": "green", "value": 1 }] }, "unit": "currencyUSD" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Open Positions" }, "properties": [{ "id": "unit", "value": "short" }, { "id": "decimals", "value": 0 }] }
+        ]
+      }
+    },
+
+    { "id": 101, "title": "System Health", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 6 }, "collapsed": false },
+
+    {
+      "id": 4,
+      "title": "Infrastructure Status",
+      "description": "VPN, Bybit API, Event Loop Lag, ASM Session",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 12, "x": 0, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "textMode": "auto" },
+      "targets": [
+        { "expr": "max(karsa_vpn_status)", "legendFormat": "VPN", "refId": "A" },
+        { "expr": "max(karsa_bybit_status)", "legendFormat": "Bybit API", "refId": "B" },
+        { "expr": "max(karsa_event_loop_lag_ms)", "legendFormat": "Event Loop (ms)", "refId": "C" },
+        { "expr": "max(karsa_asm_session_active)", "legendFormat": "ASM Active", "refId": "D" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "green", "value": 1 }] }, "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "VPN" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] }] },
+          { "matcher": { "id": "byName", "options": "Bybit API" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "DOWN", "color": "red" }, "1": { "text": "UP", "color": "green" } } }] }] },
+          { "matcher": { "id": "byName", "options": "Event Loop (ms)" }, "properties": [{ "id": "unit", "value": "ms" }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 100 }, { "color": "red", "value": 500 }] } }] },
+          { "matcher": { "id": "byName", "options": "ASM Active" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "IDLE", "color": "blue" }, "1": { "text": "LIVE", "color": "green" } } }] }] }
+        ]
+      }
+    },
+
+    {
+      "id": 5,
+      "title": "Regime State",
+      "description": "Current market regime + indicators",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 7 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "colorMode": "background", "graphMode": "none", "justifyMode": "auto", "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "textMode": "auto" },
+      "targets": [
+        { "expr": "max(karsa_regime_state)", "legendFormat": "Regime", "refId": "A" },
+        { "expr": "max(karsa_regime_adx)", "legendFormat": "ADX 1H", "refId": "B" },
+        { "expr": "max(karsa_regime_adx_4h)", "legendFormat": "ADX 4H", "refId": "C" },
+        { "expr": "max(karsa_regime_hurst)", "legendFormat": "Hurst", "refId": "D" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Regime" }, "properties": [{ "id": "mappings", "value": [{ "type": "value", "options": { "0": { "text": "CHOP", "color": "yellow" }, "1": { "text": "MR", "color": "purple" }, "2": { "text": "BEAR", "color": "red" }, "3": { "text": "BULL", "color": "green" } } }] }, { "id": "color", "value": { "mode": "fixed", "fixedColor": "auto" } }] },
+          { "matcher": { "id": "byName", "options": "ADX 1H" }, "properties": [{ "id": "unit", "value": "short" }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 20 }, { "color": "green", "value": 30 }] } }] },
+          { "matcher": { "id": "byName", "options": "ADX 4H" }, "properties": [{ "id": "unit", "value": "short" }] },
+          { "matcher": { "id": "byName", "options": "Hurst" }, "properties": [{ "id": "unit", "value": "short" }, { "id": "decimals", "value": 3 }] }
+        ]
+      }
+    },
+
+    {
+      "id": 6,
+      "title": "Watchdog & Network",
+      "description": "DMS pings, heartbeat age, circuit breaker",
+      "type": "timeseries",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 11 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "rate(karsa_dms_ping_success_total[5m])", "legendFormat": "DMS OK", "refId": "A" },
+        { "expr": "rate(karsa_dms_ping_failure_total[5m])", "legendFormat": "DMS Fail", "refId": "B" },
+        { "expr": "karsa_heartbeat_age_seconds", "legendFormat": "Heartbeat {{exchange}}", "refId": "C" },
+        { "expr": "sum(karsa_circuit_breaker_trips_total)", "legendFormat": "CB Trips", "refId": "D" },
+        { "expr": "sum(karsa_postgres_write_errors_total)", "legendFormat": "PG Errors", "refId": "E" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 1, "fillOpacity": 10 }, "unit": "ops" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Heartbeat bybit" }, "properties": [{ "id": "unit", "value": "s" }] }
+        ]
+      }
+    },
+
+    { "id": 102, "title": "Live Positions", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 16 }, "collapsed": false },
+
+    {
+      "id": 7,
+      "title": "Active Positions",
+      "description": "All open positions with entry, SL, PnL, duration",
+      "type": "table",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 17 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "showHeader": true },
+      "targets": [
+        { "expr": "karsa_position_size > 0", "legendFormat": "{{symbol}}", "refId": "A", "format": "table", "instant": true },
+        { "expr": "karsa_position_entry_price_usdt", "legendFormat": "{{symbol}}", "refId": "B", "format": "table", "instant": true },
+        { "expr": "karsa_position_unrealized_pnl_usdt", "legendFormat": "{{symbol}}", "refId": "D", "format": "table", "instant": true },
+        { "expr": "karsa_position_duration_seconds", "legendFormat": "{{symbol}}", "refId": "E", "format": "table", "instant": true }
+      ],
+      "transformations": [
+        { "id": "joinByField", "options": { "byField": "symbol", "mode": "outer" } },
+        { "id": "organize", "options": { "excludeByName": { "Time": true, "Time 1": true, "Time 2": true, "Time 3": true, "Time 4": true, "__name__": true, "__name__ 1": true, "__name__ 2": true, "__name__ 3": true, "__name__ 4": true, "job": true, "job 1": true, "job 2": true, "job 3": true, "job 4": true, "instance": true, "instance 1": true, "instance 2": true, "instance 3": true, "instance 4": true, "symbol 1": true, "symbol 2": true, "symbol 3": true, "symbol 4": true }, "renameByName": { "symbol": "Symbol", "Value #A": "Size", "Value #B": "Entry Price", "Value #D": "Unrealized PnL", "Value #E": "Duration (s)" } } }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "custom": { "align": "auto" } },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "Unrealized PnL" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "thresholds", "value": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 0 }, { "color": "green", "value": 1 }] } }, { "id": "custom.cellOptions", "value": { "type": "color-background" } }] },
+          { "matcher": { "id": "byName", "options": "Entry Price" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+          { "matcher": { "id": "byName", "options": "Stop Loss" }, "properties": [{ "id": "unit", "value": "currencyUSD" }, { "id": "decimals", "value": 2 }] },
+          { "matcher": { "id": "byName", "options": "Duration (s)" }, "properties": [{ "id": "unit", "value": "dtdurations" }] }
+        ]
+      }
+    },
+
+    {
+      "id": 8,
+      "title": "PnL Distribution",
+      "description": "Median and P95 realized PnL per trade (7d)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 0, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(karsa_position_pnl_usd_bucket[7d])))", "legendFormat": "Median PnL", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(karsa_position_pnl_usd_bucket[7d])))", "legendFormat": "P95 PnL", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 1, "fillOpacity": 10 }, "unit": "currencyUSD", "min": 0 },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 9,
+      "title": "Hold Time Distribution",
+      "description": "Median and P95 position hold time (7d)",
+      "type": "timeseries",
+      "gridPos": { "h": 6, "w": 12, "x": 12, "y": 24 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(karsa_position_lifecycle_duration_seconds_bucket[7d])))", "legendFormat": "Median Hold", "refId": "A" },
+        { "expr": "histogram_quantile(0.95, sum(rate(karsa_position_lifecycle_duration_seconds_bucket[7d])))", "legendFormat": "P95 Hold", "refId": "B" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 1, "fillOpacity": 10 }, "unit": "s" },
+        "overrides": []
+      }
+    },
+
+    { "id": 103, "title": "Trade History", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 30 }, "collapsed": false },
+
+    {
+      "id": 10,
+      "title": "Trade Activity",
+      "description": "Opened and closed positions (24h)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 8, "x": 0, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "colorMode": "background", "graphMode": "area", "justifyMode": "auto", "reduceOptions": { "values": false, "calcs": ["lastNotNull"], "fields": "" }, "textMode": "auto" },
+      "targets": [
+        { "expr": "sum(increase(karsa_positions_opened_total[24h]))", "legendFormat": "Opened (24h)", "refId": "A" },
+        { "expr": "sum(increase(karsa_positions_closed_total[24h]))", "legendFormat": "Closed (24h)", "refId": "B" },
+        { "expr": "sum(karsa_positions_flattened_total)", "legendFormat": "Flattened (all)", "refId": "C" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] }, "unit": "short" },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 11,
+      "title": "Win Rate (7d)",
+      "description": "Take Profit exits / total exits",
+      "type": "gauge",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "minVizWidth": 75, "minVizHeight": 75, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [
+        { "expr": "sum(increase(karsa_positions_closed_total{exit_reason=\"take_profit\"}[7d])) / (sum(increase(karsa_positions_closed_total[7d])) > 0) * 100", "legendFormat": "Win Rate %", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 55 }] } },
+        "overrides": []
+      }
+    },
+
+    {
+      "id": 12,
+      "title": "Exit Reasons",
+      "description": "Breakdown of exit types (7d)",
+      "type": "barchart",
+      "gridPos": { "h": 4, "w": 12, "x": 12, "y": 31 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "mode": "stacked", "orientation": "horizontal", "showValue": "auto", "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum by (exit_reason) (increase(karsa_positions_closed_total[7d]))", "legendFormat": "{{exit_reason}}", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" },
+        "overrides": []
+      }
+    },
+
+    { "id": 105, "title": "Shadow Mode", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 35 }, "collapsed": false },
+
+    {
+      "id": 14,
+      "title": "Shadow Adjustments",
+      "description": "Entries, exits, SL/TP hits, time exits — shadow virtual execution activity",
+      "type": "barchart",
+      "gridPos": { "h": 5, "w": 16, "x": 0, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "mode": "stacked", "orientation": "horizontal", "showValue": "auto", "tooltip": { "mode": "multi" } },
+      "targets": [
+        { "expr": "sum(karsa_shadow_orders_placed_total)", "legendFormat": "Entries", "refId": "A" },
+        { "expr": "sum(karsa_shadow_sl_hits_total)", "legendFormat": "SL Hits", "refId": "B" },
+        { "expr": "sum(karsa_shadow_tp_hits_total)", "legendFormat": "TP Hits", "refId": "C" },
+        { "expr": "sum(karsa_shadow_time_exits_total)", "legendFormat": "Time Exits", "refId": "D" }
+      ],
+      "fieldConfig": {
+        "defaults": { "color": { "mode": "palette-classic" }, "unit": "short" },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "SL Hits" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "red" } }] },
+          { "matcher": { "id": "byName", "options": "TP Hits" }, "properties": [{ "id": "color", "value": { "mode": "fixed", "fixedColor": "green" } }] }
+        ]
+      }
+    },
+
+    {
+      "id": 15,
+      "title": "Shadow Win Rate",
+      "description": "TP hits / (TP + SL + time) — win rate of shadow execution",
+      "type": "gauge",
+      "gridPos": { "h": 5, "w": 8, "x": 16, "y": 36 },
+      "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+      "options": { "minVizWidth": 75, "minVizHeight": 75, "showThresholdLabels": false, "showThresholdMarkers": true },
+      "targets": [
+        { "expr": "sum(karsa_shadow_tp_hits_total) / (sum(karsa_shadow_tp_hits_total) + sum(karsa_shadow_sl_hits_total) + sum(karsa_shadow_time_exits_total) > 0) * 100", "legendFormat": "Win Rate %", "refId": "A" }
+      ],
+      "fieldConfig": {
+        "defaults": { "unit": "percent", "min": 0, "max": 100, "thresholds": { "mode": "absolute", "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 40 }, { "color": "green", "value": 55 }] } },
+        "overrides": []
+      }
+    },
+
+    { "id": 104, "title": "Debug", "type": "row", "gridPos": { "h": 1, "w": 24, "x": 0, "y": 41 }, "collapsed": true,
+
+      "panels": [
+        {
+          "id": 13,
+          "title": "All Karsa Metrics",
+          "description": "Raw metric browser for debugging",
+          "type": "timeseries",
+          "gridPos": { "h": 8, "w": 24, "x": 0, "y": 42 },
+          "datasource": { "type": "prometheus", "uid": "PBFA97CFB590B2093" },
+          "options": { "legend": { "displayMode": "table", "placement": "right" }, "tooltip": { "mode": "multi" } },
+          "targets": [
+            { "expr": "{__name__=~\"karsa_.*\"}", "legendFormat": "{{__name__}}", "refId": "A" }
+          ],
+          "fieldConfig": {
+            "defaults": { "color": { "mode": "palette-classic" }, "custom": { "drawStyle": "line", "lineInterpolation": "smooth", "lineWidth": 1, "fillOpacity": 10 } },
+            "overrides": []
+          }
+        }
+      ]
+    }
+  ]
+}

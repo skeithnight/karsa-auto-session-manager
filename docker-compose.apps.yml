@@ -94,4 +94,5 @@ services:
 
 networks:
   karsa-backend:
+    name: karsa-auto-session-manager_karsa-backend
     external: true

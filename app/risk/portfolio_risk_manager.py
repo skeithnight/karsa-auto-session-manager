@@ -56,6 +56,12 @@ class PortfolioRiskManager:
         self._sector_mapping = sector_mapping
         self._bybit_client = bybit_client
 
+        from app.core.config import get_settings
+        _s = get_settings()
+        self._max_gross_pct = Decimal(_s.max_gross_exposure_pct)
+        self._max_net_pct = Decimal(_s.max_net_exposure_pct)
+        self._max_single_pct = Decimal(_s.max_single_position_pct)
+
     async def check(self, signal: object) -> PRMResult:
         """Run all portfolio risk checks. Fail-safe: exception → BLOCK."""
         try:
@@ -138,14 +144,8 @@ class PortfolioRiskManager:
     async def _check_exposure_limits(self, signal: object) -> CheckResult:
         """Check gross/net exposure against equity thresholds.
 
-        Thresholds pending team ratification — using conservative defaults.
+        Thresholds loaded from .env via Settings (fallback to conservative defaults).
         """
-        from decimal import Decimal
-
-        # Pending team ratification — conservative defaults
-        PRM_MAX_GROSS_EXPOSURE_PCT = Decimal("0.50")  # 50% of equity
-        PRM_MAX_NET_EXPOSURE_PCT = Decimal("0.30")  # 30% of equity
-        PRM_MAX_SINGLE_POSITION_PCT = Decimal("0.40")  # 40% equity per position
 
         try:
             wallet = await self._bybit_client.get_wallet_balance()  # type: ignore[attr-defined]
@@ -177,22 +177,22 @@ class PortfolioRiskManager:
                 signal_notional = Decimal(str(signal_entry)) * Decimal(
                     str(signal_amount)
                 )
-                max_single = equity * PRM_MAX_SINGLE_POSITION_PCT
+                max_single = equity * self._max_single_pct
                 if signal_notional > max_single:
                     return CheckResult(
                         passed=False,
-                        reason=f"position notional {signal_notional:.2f} > {PRM_MAX_SINGLE_POSITION_PCT * 100}% of equity {equity:.2f}",
+                        reason=f"position notional {signal_notional:.2f} > {self._max_single_pct * 100}% of equity {equity:.2f}",
                     )
 
-            if gross_notional > equity * PRM_MAX_GROSS_EXPOSURE_PCT:
+            if gross_notional > equity * self._max_gross_pct:
                 return CheckResult(
                     passed=False,
-                    reason=f"gross exposure {gross_notional:.0f} > {PRM_MAX_GROSS_EXPOSURE_PCT * 100}% of equity {equity:.0f}",
+                    reason=f"gross exposure {gross_notional:.0f} > {self._max_gross_pct * 100}% of equity {equity:.0f}",
                 )
-            if abs(net_notional) > equity * PRM_MAX_NET_EXPOSURE_PCT:
+            if abs(net_notional) > equity * self._max_net_pct:
                 return CheckResult(
                     passed=False,
-                    reason=f"net exposure {abs(net_notional):.0f} > {PRM_MAX_NET_EXPOSURE_PCT * 100}% of equity {equity:.0f}",
+                    reason=f"net exposure {abs(net_notional):.0f} > {self._max_net_pct * 100}% of equity {equity:.0f}",
                 )
             return CheckResult(passed=True)
 
@@ -285,7 +285,7 @@ class PortfolioRiskManager:
 
         while True:
             try:
-                await asyncio.sleep(300)  # Check every 5 minutes
+                await asyncio.sleep(15)  # Check every 15 seconds
                 if not self._redis or not self._trade_store:
                     continue
 
@@ -297,10 +297,20 @@ class PortfolioRiskManager:
                 # Assuming `get_recent_trades` exists:
                 trades = await self._trade_store.get_recent_trades(limit=100)  # type: ignore
 
+                # Sort by exit_time ascending so consecutive loss streak is counted correctly
+                # (newest last — so the counter reflects the most recent sequence of trades)
+                def _parse_time(t: dict) -> datetime:
+                    try:
+                        return datetime.fromisoformat(t.get("exit_time", "2000-01-01T00:00:00"))
+                    except Exception:
+                        return datetime.min
+
+                trades_sorted = sorted(trades, key=_parse_time)
+
                 daily_pnl = Decimal("0")
                 consecutive_losses = 0
 
-                for t in trades:
+                for t in trades_sorted:
                     # Filter for today
                     t_time = datetime.fromisoformat(t.get("exit_time", now.isoformat()))
                     if t_time >= start_of_day:

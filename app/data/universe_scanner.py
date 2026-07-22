@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import math
 from datetime import UTC, datetime
 from typing import Any
 
@@ -27,10 +28,10 @@ REDIS_SCANNER_STATUS_KEY = "system:universe:scanner:status"
 
 DEFAULT_TOP_N = 40
 DEFAULT_MIN_VOLUME_USD = 500_000.0
-DEFAULT_REFRESH_INTERVAL_S = 4 * 3600  # 4 hours
+DEFAULT_REFRESH_INTERVAL_S = 10 * 60  # 10 minutes
 ATR_PERIOD = 14
 ATR_CANDLE_LIMIT = 50
-ATR_CAP_CANDIDATES = 80  # max symbols to fetch OHLCV for
+ATR_CAP_CANDIDATES = 150  # max symbols to fetch OHLCV for
 
 
 def compute_atr(
@@ -184,18 +185,22 @@ class DynamicUniverseScanner:
             try:
                 cand["atr"] = await self._compute_symbol_atr(cand["symbol"])
             except Exception:
-                logger.debug("UniverseScanner: ATR failed for %s", cand["symbol"])
+                logger.debug("UniverseScanner: ATR failed for {}", cand["symbol"])
                 cand["atr"] = 0.0
         for cand in sort_by_vol[ATR_CAP_CANDIDATES:]:
             cand["atr"] = 0.0
 
         # 4. Compute composite score: 40% volume + 30% ATR + 30% gainer/momentum
-        max_vol = max(c["volume_usd"] for c in candidates) or 1.0
+        # Use log scale for volume to prevent BTC/ETH from squashing altcoins to 0.0
+        for cand in candidates:
+            cand["log_vol"] = math.log1p(cand["volume_usd"])
+
+        max_log_vol = max(c["log_vol"] for c in candidates) or 1.0
         max_atr = max(c.get("atr", 0) for c in candidates) or 1.0
         max_pct = max(abs(c.get("percentage", 0)) for c in candidates) or 1.0
 
         for cand in candidates:
-            norm_vol = cand["volume_usd"] / max_vol
+            norm_vol = cand["log_vol"] / max_log_vol
             norm_atr = cand.get("atr", 0) / max_atr if max_atr > 0 else 0.0
 
             # Use absolute percentage for momentum, but penalize negative moves slightly
@@ -205,7 +210,14 @@ class DynamicUniverseScanner:
             if pct < 0:
                 norm_pct *= 0.7  # Prefer gainers over losers
 
-            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3
+            # Hyper-Momentum Boost: Force Top Gainers into the top ranks
+            momentum_boost = 0.0
+            if pct > 15.0:
+                momentum_boost = 1.0  # +1.0 ensures it beats slow high-volume coins
+            elif pct > 10.0:
+                momentum_boost = 0.5
+
+            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + momentum_boost
 
         # 5. Sort by composite score, take top N
         candidates.sort(key=lambda c: c["score"], reverse=True)

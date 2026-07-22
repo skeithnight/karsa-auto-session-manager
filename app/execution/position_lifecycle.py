@@ -637,26 +637,32 @@ class CheckpointManager:
                         if entry_price * amount
                         else Decimal("0")
                     )
-                    if pnl > 0:
+
+                    # Deduct ~0.11% round-trip fee so Breakeven doesn't show $0.00
+                    fee_cost = (entry_price * amount) * Decimal("0.0011")
+                    net_pnl = pnl - fee_cost
+                    net_pnl_pct = pnl_pct - Decimal("0.11")
+
+                    if net_pnl > 0:
                         await self.alert_service.send(
                             format_tp_alert(
                                 symbol,
                                 side,
                                 float(entry_price),
                                 float(exit_price),
-                                float(pnl),
-                                float(pnl_pct),
+                                float(net_pnl),
+                                float(net_pnl_pct),
                             )
                         )
-                    elif pnl < 0:
+                    elif net_pnl < 0:
                         await self.alert_service.send(
                             format_sl_alert(
                                 symbol,
                                 side,
                                 float(entry_price),
                                 float(exit_price),
-                                float(pnl),
-                                float(pnl_pct),
+                                float(net_pnl),
+                                float(net_pnl_pct),
                             )
                         )
                     else:
@@ -666,8 +672,8 @@ class CheckpointManager:
                                 side,
                                 float(entry_price),
                                 float(exit_price),
-                                float(pnl),
-                                float(pnl_pct),
+                                float(net_pnl),
+                                float(net_pnl_pct),
                             )
                         )
                 except Exception as ae:

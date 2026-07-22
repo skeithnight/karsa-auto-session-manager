@@ -320,17 +320,17 @@ class BacktestOrchestrator:
                 ):  # batch query to avoid massive IN clauses
                     chunk = job_ids[chunk_idx : chunk_idx + 50]
                     rows = await conn.execute(
-                        text(f"""
+                        text("""
                             SELECT job_id, symbol, direction, regime, score,
                                    entry_price, exit_price, exit_reason,
                                    sl_price, tp_price, amount, size_multiplier,
                                    pnl_gross, pnl_net, total_fees, total_funding,
                                    bars_held, entry_time, exit_time
                             FROM backtest_results
-                            WHERE job_id IN ({",".join([":j" + str(i) for i in range(len(chunk))])})
+                            WHERE job_id = ANY(:job_ids)
                             ORDER BY entry_time ASC
                         """),
-                        {f"j{i}": jid for i, jid in enumerate(chunk)},
+                        {"job_ids": chunk},
                     )
 
                     for row in rows:

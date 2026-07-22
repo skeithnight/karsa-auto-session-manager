@@ -109,15 +109,10 @@ class BacktestEngine:
             or funding_rate is not None
             or oi_change is not None
         )
-        effective_gate = (
-            self._gate if has_microstructure else self._gate * 0.45
-        )  # 65 → 29.25
-        if not has_microstructure:
-            logger.debug(
-                f"BacktestEngine: {symbol} — no microstructure data, lowered gate to {effective_gate:.1f}"
-            )
+        base_gate = float(self._gate)
 
         idx = 50  # minimum candles for RegimeClassifier
+        atr_array = self._calculate_atr_array(arr)
 
         while idx < len(arr):
             context = arr[: idx + 1]
@@ -133,7 +128,15 @@ class BacktestEngine:
                     orderbook_delta=orderbook_delta,
                     funding_rate=funding_rate,
                     oi_change=oi_change,
+                    symbol=symbol,
                 )
+
+                # Calculate effective gate matching the live decision engine
+                effective_gate = base_gate * float(vol_factor)
+
+                # Artificially simulate live global sync bonus for TREND when historical data is missing
+                if not has_microstructure and regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
+                    effective_gate -= 20.0
 
                 if score >= effective_gate:
                     report = self._simulate_trade(
@@ -143,6 +146,7 @@ class BacktestEngine:
                         score=score,
                         entry_candle_idx=idx,
                         candles=arr,
+                        atr=Decimal(str(round(atr_array[idx], 8))),
                     )
                     reports.append(report)
                     idx += max(report.bars_held, 1) + 1
@@ -199,13 +203,12 @@ class BacktestEngine:
         score: float,
         entry_candle_idx: int,
         candles: np.ndarray,
+        atr: Decimal,
     ) -> BacktestReport:
         """Simulate a single trade candle-by-candle from entry to exit."""
         profile = self._risk_gate.get_profile(regime)
         entry_candle = candles[entry_candle_idx]
         entry_price = self._compute_entry_price(entry_candle, direction)
-
-        atr = self._calculate_atr(candles[: entry_candle_idx + 1])
         sl_price = self._compute_sl_price(
             entry_price, direction, atr, profile.sl_atr_buffer
         )
@@ -453,6 +456,29 @@ class BacktestEngine:
             risk_profile=profile,
             trade_taken=True,
         )
+
+    @staticmethod
+    def _calculate_atr_array(candles: np.ndarray, period: int = 14) -> np.ndarray:
+        n = len(candles)
+        atr_array = np.zeros(n, dtype=float)
+        if n < period + 1:
+            return atr_array
+        highs, lows, closes = candles[:, 2], candles[:, 3], candles[:, 4]
+
+        tr = np.zeros(n, dtype=float)
+        tr[1:] = np.maximum(
+            highs[1:] - lows[1:],
+            np.maximum(
+                np.abs(highs[1:] - closes[:-1]),
+                np.abs(lows[1:] - closes[:-1])
+            )
+        )
+
+        atr_array[period] = np.mean(tr[1 : period + 1])
+        for i in range(period + 1, n):
+            atr_array[i] = (atr_array[i - 1] * (period - 1) + tr[i]) / period
+
+        return atr_array
 
     @staticmethod
     def _calculate_atr(candles: np.ndarray, period: int = 14) -> Decimal:

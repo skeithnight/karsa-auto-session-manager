@@ -25,9 +25,15 @@ class Settings(BaseSettings):
 
     # ── Shadow Mode ────────────────────────────────────────────
     shadow_mode_enabled: bool = False
+    shadow_initial_balance: str = "100.0"
     shadow_slippage_pct: str = "0.0005"
     shadow_taker_fee_pct: str = "0.00055"
     shadow_maker_fee_pct: str = "0.0002"
+
+    # ── Portfolio Risk Limits ──────────────────────────────────
+    max_gross_exposure_pct: str = "0.50"
+    max_net_exposure_pct: str = "0.30"
+    max_single_position_pct: str = "0.40"
 
     # ── PostgreSQL ─────────────────────────────────────────────
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"
@@ -38,6 +44,10 @@ class Settings(BaseSettings):
     # ── Telegram alerts ────────────────────────────────────────
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""
+
+    # ── Commander ──────────────────────────────────────────────
+    commander_bulk_backtest_interval_hours: int = 24
+    commander_feedback_interval_hours: int = 1
 
     # ── Trading ────────────────────────────────────────────────
     symbols: list[str] = [

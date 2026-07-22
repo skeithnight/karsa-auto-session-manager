@@ -345,7 +345,7 @@ class TestShadowPositionStoreKey:
         mock_redis = AsyncMock()
         store = ShadowPositionStore(mock_redis)
         key = store._key("BTC/USDT", "buy")
-        assert key == "shadow:position:BTC/USDT:buy"
+        assert key == "shadow:position:BTC/USDT:LONG"
 
     def test_key_isolation_from_live(self):
         """Shadow keys must not collide with live keys (karsa:position:*)."""

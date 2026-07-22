@@ -12,16 +12,22 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import signal
 import sys
 from typing import Any
 
+from app.alpha.lead_lag_buffer import LeadLagBuffer
 from app.alpha.regime import RegimeEngine
 from app.core import metrics
 from app.core.config import get_settings
 from app.core.dependencies import get_pool, get_redis, shutdown, startup
+from app.core.redis_client import RedisClient
 from app.core.session import AutonomousSessionManager
 from app.core.telemetry import TelemetryEmitter
+from app.data.ccxt_manager import CCXTManager
+from app.data.filters import BadTickFilter
+from app.data.normalizer import Normalizer
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.data_engine.exchange_connector import ExchangeConnector
 from app.data_engine.postgres_cacher import bulk_upsert
@@ -133,6 +139,113 @@ async def _poll_and_publish(  # noqa: PLR0913
         await asyncio.sleep(_POLL_INTERVAL_S)
 
 
+async def _stream_orderbook(
+    symbol: str,
+    exchange_id: str,
+    ccxt_manager: CCXTManager,
+    normalizer: Normalizer,
+    bad_tick_filter: BadTickFilter,
+    redis_client: RedisClient,
+    lead_lag_buffer: LeadLagBuffer,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Stream orderbook for a single (symbol, exchange) pair. Runs until shutdown."""
+    logger.info(f"Starting stream {exchange_id}/{symbol}")
+    retries = 0
+    while not shutdown_event.is_set():
+        try:
+            orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
+            retries = 0  # reset backoff on success
+            metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
+            await redis_client.set_exchange_heartbeat(exchange_id)
+            exchange_data = normalizer.normalize_orderbook(
+                orderbook, exchange_id, symbol
+            )
+            exchange_data = bad_tick_filter.filter_orderbook(exchange_data)
+            if exchange_data.is_stale:
+                metrics.bad_tick_rejected.labels(
+                    exchange=exchange_id, symbol=symbol
+                ).inc()
+            metrics.orderbook_normalized.labels(
+                exchange=exchange_id, symbol=symbol
+            ).inc()
+
+            # Feed lead-lag buffer with mid price
+            best_bid = (
+                max(exchange_data.bids, key=lambda x: x[0])[0]
+                if exchange_data.bids
+                else None
+            )
+            best_ask = (
+                min(exchange_data.asks, key=lambda x: x[0])[0]
+                if exchange_data.asks
+                else None
+            )
+            if best_bid and best_ask:
+                mid = (float(best_bid) + float(best_ask)) / 2
+                lead_lag_buffer.update(symbol, exchange_id, mid)
+
+            if not exchange_data.is_stale:
+                global_state = normalizer.build_global_state(symbol, [exchange_data])
+                if global_state:
+                    await redis_client.set_global_state(
+                        symbol,
+                        {
+                            "global_vwap": str(global_state.global_vwap),
+                            "aggregate_skew": global_state.aggregate_skew,
+                            "best_bid": (
+                                str(global_state.best_bid)
+                                if global_state.best_bid
+                                else None
+                            ),
+                            "best_ask": (
+                                str(global_state.best_ask)
+                                if global_state.best_ask
+                                else None
+                            ),
+                            "total_volume": (
+                                str(global_state.total_volume)
+                                if global_state.total_volume
+                                else None
+                            ),
+                            "updated_at": global_state.updated_at.isoformat(),
+                        },
+                    )
+                    metrics.global_state_written.labels(symbol=symbol).inc()
+                    if global_state.global_vwap is not None:
+                        metrics.vwap_value.labels(symbol=symbol).set(
+                            float(global_state.global_vwap)
+                        )
+                    if global_state.aggregate_skew is not None:
+                        metrics.skew_value.labels(symbol=symbol).set(
+                            float(global_state.aggregate_skew)
+                        )
+        except asyncio.CancelledError:
+            logger.info(f"Stream {exchange_id}/{symbol} cancelled")
+            raise
+        except Exception as e:
+            retries += 1
+            metrics.orderbook_errors.labels(
+                exchange=exchange_id, symbol=symbol, error_type=type(e).__name__
+            ).inc()
+            logger.warning(
+                f"Stream {exchange_id}/{symbol} error (attempt {retries}): {e}"
+            )
+            if retries >= 10:
+                logger.error(
+                    f"Stream {exchange_id}/{symbol} gave up after {retries} retries"
+                )
+                break
+            # Exponential backoff with jitter to prevent thundering herd
+            delay = min(2 ** min(retries, 6), 30) + random.random()
+            logger.info(
+                f"Stream {exchange_id}/{symbol} retry {retries} in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+    logger.debug(f"Stream {exchange_id}/{symbol} exiting")
+
+
+
 async def _regime_metrics_loop(
     ohlcv_fetcher: OHLCVFetcher,
     shutdown_event: asyncio.Event,
@@ -193,6 +306,106 @@ async def _asm_session_loop(
     await session_manager.run_loop()
 
 
+async def _live_equity_monitor_loop(
+    redis: Any,
+    bybit_client: Any,
+    shutdown_event: asyncio.Event,
+    interval_s: int = 5,
+) -> None:
+    """Monitor total live equity (Balance + uPnL) and trigger KILL on -2% drawdown."""
+    while not shutdown_event.is_set():
+        try:
+            if not bybit_client:
+                await asyncio.sleep(interval_s)
+                continue
+
+            wallet = await bybit_client.get_wallet_balance()
+            balance = Decimal(str(wallet.get("balance", "0")))
+            if balance <= 0:
+                await asyncio.sleep(interval_s)
+                continue
+
+            import json as _json
+            keys = await redis.keys("karsa:position:*")
+            upnl = Decimal("0")
+
+            for k in keys:
+                raw = await redis.get(k)
+                if raw:
+                    pos = _json.loads(raw)
+                    entry_price = Decimal(str(pos.get("entry_price", "0")))
+                    amount = Decimal(str(pos.get("amount", "0")))
+                    side = pos.get("side", "LONG")
+                    symbol = pos.get("symbol", "")
+
+                    if entry_price > 0 and amount > 0:
+                        state_raw = await redis.get(f"global:state:{symbol}")
+                        if state_raw:
+                            state = _json.loads(state_raw)
+                            best_bid = Decimal(str(state.get("best_bid", "0")))
+                            best_ask = Decimal(str(state.get("best_ask", "0")))
+                            if best_bid > 0 and best_ask > 0:
+                                live_price = (best_bid + best_ask) / 2
+                                if side == "LONG":
+                                    upnl += (live_price - entry_price) * amount
+                                else:
+                                    upnl += (entry_price - live_price) * amount
+
+            start_balance_raw = await redis.get("karsa:metrics:daily_start_balance")
+            start_balance = Decimal(str(start_balance_raw)) if start_balance_raw else balance
+
+            if not start_balance_raw:
+                await redis.set("karsa:metrics:daily_start_balance", str(balance))
+                start_balance = balance
+
+            if start_balance > 0:
+                live_equity = balance + upnl
+                drawdown = (live_equity - start_balance) / start_balance
+
+                if drawdown <= Decimal("-0.02"):
+                    logger.critical(
+                        f"🚨 LIVE EQUITY DRAWDOWN TRIGGERED: Drawdown is {drawdown:.2%}! "
+                        f"Live Equity = {live_equity:.2f}, Start = {start_balance:.2f}. "
+                        "INITIATING EMERGENCY FLATTEN."
+                    )
+                    # Flatten all positions
+                    for k in keys:
+                        raw = await redis.get(k)
+                        if raw:
+                            pos = _json.loads(raw)
+                            symbol = pos.get("symbol", "")
+                            side = pos.get("side", "LONG")
+                            amount_str = str(pos.get("amount", "0"))
+                            if Decimal(amount_str) > 0 and symbol:
+                                try:
+                                    api_side = "sell" if side == "LONG" else "buy"
+                                    bybit_symbol = symbol.replace("/", "")
+                                    await bybit_client.create_order(
+                                        symbol=bybit_symbol,
+                                        side=api_side,
+                                        order_type="Market",
+                                        qty=amount_str,
+                                        reduce_only=True,
+                                    )
+                                    logger.critical(f"Flattened {symbol} {side} due to drawdown.")
+                                    # Clear from redis
+                                    await redis.delete(k)
+                                except Exception as e:
+                                    logger.error(f"Failed to flatten {symbol}: {e}")
+
+                    # Disable trading
+                    await redis.set("karsa:auto:state:active", "0")
+                    await redis.set("karsa:auto:drawdown_triggered", "1")
+                    logger.critical("TRADING DISABLED DUE TO DAILY DRAWDOWN LIMIT.")
+        except Exception as e:
+            logger.debug(f"Live equity monitor error: {e}")
+
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
+        except TimeoutError:
+            pass
+
+
 async def _run_engine(
     settings: Any,
     emitter: TelemetryEmitter | None = None,
@@ -208,6 +421,8 @@ async def _run_engine(
     """
     pool = get_pool()
     redis = get_redis()
+    redis_client = RedisClient()
+    redis_client.redis = redis
     publisher = RedisPublisher(redis)
 
     # Determine which exchanges to connect (testnet routing via BYBIT_TESTNET env)
@@ -247,6 +462,13 @@ async def _run_engine(
     bybit_connector = exchanges[0] if exchanges else None
     regime_fetcher = OHLCVFetcher(bybit_connector.exchange) if bybit_connector else None
 
+    # Initialize streaming dependencies
+    ccxt_manager = CCXTManager()
+    await ccxt_manager.start(testnet=settings.bybit_testnet)
+    normalizer = Normalizer()
+    bad_tick_filter = BadTickFilter()
+    lead_lag_buffer = LeadLagBuffer()
+
     extra_tasks: list[asyncio.Task] = []
     if regime_fetcher:
         extra_tasks.append(
@@ -260,6 +482,21 @@ async def _run_engine(
             _asm_session_loop(redis, shutdown_event), name="asm-session"
         )
     )
+
+    if settings.bybit_api_key:
+        try:
+            from app.execution.bybit_client import BybitClient
+            bybit_client = BybitClient()
+            await bybit_client.connect()
+            extra_tasks.append(
+                asyncio.create_task(
+                    _live_equity_monitor_loop(redis, bybit_client, shutdown_event),
+                    name="live-equity-monitor",
+                )
+            )
+            logger.info("Live Equity Monitor started.")
+        except Exception as e:
+            logger.warning(f"Failed to start Live Equity Monitor: {e}")
 
     # Wait for first scan to complete
     await asyncio.sleep(2)
@@ -289,6 +526,7 @@ async def _run_engine(
 
     # Track active poll tasks: key = "exchange:symbol", value = Task
     active_tasks: dict[str, asyncio.Task] = {}
+    stream_tasks: dict[str, asyncio.Task] = {}
     for connector in exchanges:
         for symbol in initial_symbols:
             key = f"{connector.exchange_id}:{symbol}"
@@ -298,8 +536,22 @@ async def _run_engine(
                 ),
                 name=key,
             )
+            # Start websocket stream task
+            stream_tasks[key] = asyncio.create_task(
+                _stream_orderbook(
+                    symbol,
+                    connector.exchange_id,
+                    ccxt_manager,
+                    normalizer,
+                    bad_tick_filter,
+                    redis_client,
+                    lead_lag_buffer,
+                    shutdown_event,
+                ),
+                name=f"stream-{key}",
+            )
 
-    logger.info("started %d poll tasks", len(active_tasks))
+    logger.info("started %d poll tasks and %d stream tasks", len(active_tasks), len(stream_tasks))
 
     # Universe management loop — checks every 5 minutes for symbol changes
     universe_check_interval_s = 300
@@ -324,6 +576,10 @@ async def _run_engine(
                     if task and not task.done():
                         task.cancel()
                         logger.info("cancelled poll task for %s", key)
+                    s_task = stream_tasks.pop(key, None)
+                    if s_task and not s_task.done():
+                        s_task.cancel()
+                        logger.info("cancelled stream task for %s", key)
 
                 # Start tasks for new symbols
                 added = current_symbols - active_symbols
@@ -347,7 +603,20 @@ async def _run_engine(
                         ),
                         name=key,
                     )
-                    logger.info("started poll task for new symbol %s", key)
+                    stream_tasks[key] = asyncio.create_task(
+                        _stream_orderbook(
+                            symbol,
+                            connector.exchange_id,
+                            ccxt_manager,
+                            normalizer,
+                            bad_tick_filter,
+                            redis_client,
+                            lead_lag_buffer,
+                            shutdown_event,
+                        ),
+                        name=f"stream-{key}",
+                    )
+                    logger.info("started poll and stream task for new symbol %s", key)
 
             if len(active_tasks) != len(active_symbols):
                 logger.info(
@@ -365,6 +634,11 @@ async def _run_engine(
                 task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*active_tasks.values())
+        for task in stream_tasks.values():
+            if not task.done():
+                task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*stream_tasks.values())
         for task in extra_tasks:
             if not task.done():
                 task.cancel()

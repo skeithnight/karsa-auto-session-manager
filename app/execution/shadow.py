@@ -264,9 +264,10 @@ class ShadowExchangeClient:
                 raw = await self._redis.get(f"global:state:{symbol}")
                 if raw:
                     data = _json.loads(raw)
-                    bid = Decimal(str(data.get("bid", "0")))
-                    ask = Decimal(str(data.get("ask", "0")))
-                    last = Decimal(str(data.get("last", "0")))
+                    bid = Decimal(str(data.get("best_bid", "0")))
+                    ask = Decimal(str(data.get("best_ask", "0")))
+                    # use mid price for last
+                    last = (bid + ask) / 2 if bid and ask else Decimal("0")
                     if bid > 0 and ask > 0:
                         result[symbol] = {"bid": bid, "ask": ask, "last": last}
         except Exception as e:
@@ -336,6 +337,7 @@ class ShadowAPM:
         self._pos_store = position_store
         self._trade_store = trade_store
         self._regime_shift_counts: dict[str, int] = {}
+        self._log = logger
 
     async def run(self) -> None:
         """Main monitoring loop — 2s interval."""
@@ -351,6 +353,51 @@ class ShadowAPM:
             except Exception:
                 logger.exception("ShadowAPM: error in monitoring loop")
                 await asyncio.sleep(5)
+
+    async def _manage_time_exit(
+        self,
+        pos: dict[str, Any],
+        entry_time: datetime,
+        max_minutes: int,
+        live_price: Decimal,
+        entry_price: Decimal,
+        side: str,
+        r_mult: Decimal = Decimal("0"),
+    ) -> None:
+        held_mins = (datetime.now(UTC) - entry_time).total_seconds() / 60
+        if max_minutes > 0 and held_mins > max_minutes:
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: time exit {symbol} after {held_mins:.0f}min")
+            await self._close_shadow_position(pos, live_price, f"time_exit_{held_mins:.0f}min")
+            return
+
+        is_hyper = str(pos.get("regime", "")).startswith("HYPER")
+        quick_profit_mins = 3 if is_hyper else 5
+        quick_profit_r = Decimal("1.0") if is_hyper else Decimal("2.0")
+        stag_mins = 5 if is_hyper else 10
+        stag_r = Decimal("0.5") if is_hyper else Decimal("0.2")
+
+        # Quick Profit Exit
+        if held_mins <= quick_profit_mins and r_mult >= quick_profit_r:
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._close_shadow_position(pos, live_price, f"quick_profit_exit_R{r_mult:.1f}")
+            return
+
+        # Stagnation Exit
+        if held_mins >= stag_mins and r_mult < stag_r:
+            symbol = pos.get("symbol", "")
+            self._log.warning(f"ShadowAPM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            await self._close_shadow_position(pos, live_price, f"stagnation_exit_{held_mins:.0f}min")
+            return
+
+        # Underwater Stale Exit (15 mins)
+        if held_mins >= 15:
+            is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
+            if is_underwater:
+                symbol = pos.get("symbol", "")
+                self._log.warning(f"ShadowAPM: stale underwater exit {symbol} after {held_mins:.0f}min")
+                await self._close_shadow_position(pos, live_price, f"stale_exit_{held_mins:.0f}min")
 
     async def _manage_shadow_position(self, pos: dict) -> None:
         """Dispatch: pending fills first, then open position management."""
@@ -500,11 +547,52 @@ class ShadowAPM:
 
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
 
+        is_hyper = str(entry_regime).startswith("HYPER")
+        wick_long = Decimal("-0.015") if is_hyper else Decimal("-0.03")
+        wick_short = Decimal("0.015") if is_hyper else Decimal("0.03")
+        be_lock_r = Decimal("0.3") if is_hyper else APM_BREAKEVEN_LOCK_R
+        step_r = Decimal("0.1") if is_hyper else Decimal("0.2")
+        step_activate_r = Decimal("0.5") if is_hyper else Decimal("1.2")
+
+        # Time management
+        try:
+            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
+            max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
+            entered_at = pos.get("entered_at", "")
+            if entered_at:
+                await self._manage_time_exit(
+                    pos,
+                    datetime.fromisoformat(entered_at),
+                    max_hold_mins,
+                    mid,
+                    entry_price,
+                    side,
+                    r_multiple
+                )
+        except Exception:
+            pass
+
+        # Flash-Crash Micro-Circuit Breaker (Wick Guard)
+        _raw_last_tick = pos.get("last_tick_price", pos.get("worst_price_seen", "0")) or "0"
+        last_tick_price = Decimal(str(_raw_last_tick))
+        if last_tick_price > 0 and mid > 0:
+            tick_delta = (mid - last_tick_price) / last_tick_price
+            if (side == "LONG" and tick_delta <= wick_long) or (side == "SHORT" and tick_delta >= wick_short):
+                logger.critical(
+                    f"SHADOW WICK GUARD: {symbol} {side} dropped/spiked {tick_delta:.2%} instantly! "
+                    f"live={mid} last={last_tick_price}. FRONT-RUNNING CASCADE!"
+                )
+                await self._close_shadow_position(pos, mid, f"wick_guard_{tick_delta:.2%}")
+                return
+
+        pos["last_tick_price"] = str(mid)
+
         # --- +1R Breakeven Lock ---
-        if not pos.get("moved_to_breakeven") and r_multiple >= APM_BREAKEVEN_LOCK_R:
+        if not pos.get("moved_to_breakeven") and r_multiple >= be_lock_r:
             if side == "LONG":
                 new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
             else:
+                # SHORT: SL must be BELOW entry to lock in breakeven
                 new_sl = entry_price - entry_price * APM_BREAKEVEN_FEE_PCT
             pos["virtual_sl"] = str(new_sl)
             pos["moved_to_breakeven"] = True
@@ -512,6 +600,22 @@ class ShadowAPM:
             logger.info(
                 f"SHADOW BREAKEVEN LOCK: {symbol} {side} SL moved to {new_sl} (R={r_multiple:.2f})"
             )
+
+        # --- HFT Step-Trailing Stop ---
+        if pos.get("moved_to_breakeven") and initial_risk > 0 and r_multiple >= step_activate_r:
+            floored_r = (r_multiple // step_r) * step_r
+            trail_r = floored_r - (step_activate_r - step_r)
+            if trail_r > 0:
+                if side == "LONG":
+                    new_step_sl = entry_price + (initial_risk * trail_r)
+                else:
+                    new_step_sl = entry_price - (initial_risk * trail_r)
+
+                sl_tighter = (side == "LONG" and new_step_sl > virtual_sl) or (side == "SHORT" and (new_step_sl < virtual_sl or virtual_sl == 0))
+                if sl_tighter:
+                    pos["virtual_sl"] = str(new_step_sl)
+                    virtual_sl = new_step_sl
+                    logger.info(f"SHADOW STEP-TRAILING: {symbol} {side} SL amended to {new_step_sl} (+{trail_r}R)")
 
         # --- Trend Trailing Stop (Chandelier ATR) ---
         if (
@@ -542,8 +646,6 @@ class ShadowAPM:
         await self._redis.set(key, _json.dumps(pos))
 
         # --- $5 hard cap: if current SL would lose > $5, tighten SL to -$5 level ---
-        # Raised from $1 to $5 — small-cap tokens with large position sizes
-        # were getting SL tightened too aggressively, causing instant exits.
         amount = Decimal(pos.get("amount", "0"))
         if amount > 0 and virtual_sl > 0:
             if side == "LONG":
@@ -568,7 +670,7 @@ class ShadowAPM:
             try:
                 entered_at = pos.get("entered_at", "")
                 if entered_at:
-                    from datetime import UTC, datetime
+
 
                     entered = datetime.fromisoformat(entered_at)
                     if entered.tzinfo is None:
@@ -633,27 +735,6 @@ class ShadowAPM:
                 ).inc()
                 await self._close_shadow_position(pos, virtual_tp, "tp_hit")
                 return
-
-        # Time exit
-        try:
-            risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
-            max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
-            if max_hold_mins > 0:
-                entered_at = pos.get("entered_at", "")
-                if entered_at:
-                    entered = datetime.fromisoformat(entered_at)
-                    elapsed_mins = (datetime.now(UTC) - entered).total_seconds() / 60
-                    if elapsed_mins >= max_hold_mins:
-                        logger.info(
-                            f"SHADOW TIME EXIT: {symbol} {side} held {elapsed_mins:.0f}m >= {max_hold_mins}m"
-                        )
-                        metrics.karsa_shadow_time_exits_total.labels(
-                            symbol=symbol, side=side
-                        ).inc()
-                        await self._close_shadow_position(pos, mid, "time_exit")
-                        return
-        except Exception:
-            pass
 
     # --- Refinement 3: Funding rate drag ---
 
@@ -758,15 +839,6 @@ class ShadowAPM:
         metrics.karsa_shadow_fees_total_usdt.inc(float(total_fees))
 
         try:
-            await self._trade_store.record_entry(
-                symbol=symbol,
-                side=side,
-                entry_price=entry_price,
-                amount=amount,
-                ai_confidence=int(float(pos.get("entry_confidence", 0))),
-                regime=pos.get("regime", ""),
-                risk_profile_json=pos.get("risk_profile_json", ""),
-            )
             await self._trade_store.close_trade(
                 symbol=symbol,
                 exit_price=exit_price,
@@ -774,6 +846,6 @@ class ShadowAPM:
                 pnl=net_pnl,
             )
         except Exception as e:
-            logger.error(f"ShadowAPM: failed to record shadow trade: {e}")
+            logger.error(f"ShadowAPM: failed to close shadow trade: {e}")
 
         await self._pos_store.remove(symbol, side)

@@ -16,6 +16,7 @@ RiskProfile fields (from docs/architecture/adaptive_multi_strategy.md §5.1):
 
 from __future__ import annotations
 
+import dataclasses
 import json
 from dataclasses import asdict, dataclass
 from decimal import Decimal
@@ -29,7 +30,7 @@ TREND_SIZE_MULT = Decimal("1.0")
 RANGE_SIZE_MULT = Decimal("0.7")
 CHOP_SIZE_MULT = Decimal("0.3")
 
-TREND_MAX_HOLD_MINS = 1440
+TREND_MAX_HOLD_MINS = 2880
 RANGE_MAX_HOLD_MINS = 240
 CHOP_MAX_HOLD_MINS = 30
 
@@ -87,6 +88,26 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         trail_atr_mult=Decimal("3.0"),
         sl_atr_buffer=Decimal("1.5"),
     ),
+    MarketRegime.HYPER_BULL: RiskProfile(
+        regime="HYPER_BULL",
+        size_multiplier=Decimal("0.5"),
+        take_profit_type="SCALP",
+        stop_loss_type="MICRO",
+        max_hold_time_mins=15,
+        use_post_only=False,
+        trail_atr_mult=Decimal("0.5"),  # Tightened from 1.0
+        sl_atr_buffer=Decimal("0.5"),   # Tightened from 0.8
+    ),
+    MarketRegime.HYPER_BEAR: RiskProfile(
+        regime="HYPER_BEAR",
+        size_multiplier=Decimal("0.5"),
+        take_profit_type="SCALP",
+        stop_loss_type="MICRO",
+        max_hold_time_mins=15,
+        use_post_only=False,
+        trail_atr_mult=Decimal("0.5"),  # Tightened from 1.0
+        sl_atr_buffer=Decimal("0.5"),   # Tightened from 0.8
+    ),
     MarketRegime.RANGE: RiskProfile(
         regime="RANGE",
         size_multiplier=RANGE_SIZE_MULT,
@@ -95,7 +116,7 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         max_hold_time_mins=RANGE_MAX_HOLD_MINS,
         use_post_only=True,
         trail_atr_mult=Decimal("2.0"),
-        sl_atr_buffer=Decimal("1.5"),  # widened from 1.0 — volatile tokens hit 1.0 ATR SL immediately
+        sl_atr_buffer=Decimal("1.2"),  # tighter for mean-reversion — invalidated if trends
     ),
     MarketRegime.CHOP: RiskProfile(
         regime="CHOP",
@@ -113,6 +134,14 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
 class DynamicRiskGate:
     """Regime → RiskProfile lookup. No state, no LLM."""
 
+    def __init__(
+        self,
+        override_sl_buffer: Decimal | None = None,
+        override_trail_mult: Decimal | None = None,
+    ) -> None:
+        self.override_sl_buffer = override_sl_buffer
+        self.override_trail_mult = override_trail_mult
+
     def get_profile(self, regime: MarketRegime) -> RiskProfile:
         """Get the risk profile for a given market regime."""
         profile = _PROFILES.get(regime)
@@ -120,5 +149,14 @@ class DynamicRiskGate:
             logger.warning(
                 f"DynamicRiskGate: unknown regime {regime}, using CHOP profile"
             )
-            return _PROFILES[MarketRegime.CHOP]
+            profile = _PROFILES[MarketRegime.CHOP]
+
+        if self.override_sl_buffer is not None or self.override_trail_mult is not None:
+            updates = {}
+            if self.override_sl_buffer is not None:
+                updates["sl_atr_buffer"] = self.override_sl_buffer
+            if self.override_trail_mult is not None:
+                updates["trail_atr_mult"] = self.override_trail_mult
+            return dataclasses.replace(profile, **updates)
+
         return profile

@@ -24,7 +24,8 @@ class ShadowPositionStore(PositionStore):
     """Redis-backed position tracking with shadow: prefix."""
 
     def _key(self, symbol: str, side: str) -> str:
-        return f"shadow:position:{symbol}:{side}"
+        from app.core.position_store import _normalize_side
+        return f"shadow:position:{symbol}:{_normalize_side(side)}"
 
     async def list_all(self) -> list[dict[str, Any]]:
         """List all active shadow positions (shadow: prefix)."""

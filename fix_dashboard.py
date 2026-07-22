@@ -1,6 +1,6 @@
 import json
 
-with open("grafana/dashboards/asm-core-operations.json", "r") as f:
+with open("grafana/dashboards/asm-core-operations.json") as f:
     dashboard = json.load(f)
 
 # Find the Analysis Result panel

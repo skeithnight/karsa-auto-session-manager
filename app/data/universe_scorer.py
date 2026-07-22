@@ -22,6 +22,7 @@ VOLUME_MAX = Decimal("30")  # 0-30
 MOMENTUM_MAX = Decimal("40")  # 0-40
 SQUEEZE_MAX = Decimal("30")  # 0-30
 OVEREXTENSION_MAX = Decimal("40")  # penalty -40 to 0
+FUNDING_MAX = Decimal("50")  # 0-50 (massive boost for extreme funding)
 
 # Selection thresholds
 DEFAULT_TOP_N = 40
@@ -54,6 +55,11 @@ class UniverseScorer:
 
     async def score_symbol(self, symbol: str) -> dict | None:
         """Score a single symbol. Returns dict or None if data unavailable."""
+        # ─── PROFITABILITY FIX: TOXIC TICKER BLACKLIST ───
+        toxic_tickers = {"HEMI/USDT", "BANK/USDT", "ZEST/USDT", "SOL/USDT", "ACE/USDT"}
+        if symbol in toxic_tickers:
+            return None
+
         state = await self.redis.get_global_state(symbol)
         if not state:
             return None
@@ -116,7 +122,11 @@ class UniverseScorer:
         else:
             squeeze_score = Decimal("0")
 
-        total = volume_score + momentum_score + overextension_penalty + squeeze_score
+        # Funding Rate Liquidation Hunt
+        funding_rate = await self.fetcher.fetch_funding_rate(symbol)
+        funding_score = min(abs(funding_rate) * Decimal("50000"), FUNDING_MAX)
+
+        total = volume_score + momentum_score + overextension_penalty + squeeze_score + funding_score
 
         return {
             "symbol": symbol,
@@ -124,6 +134,7 @@ class UniverseScorer:
             "momentum_score": round(momentum_score, 2),
             "overextension_penalty": round(overextension_penalty, 2),
             "squeeze_score": round(squeeze_score, 2),
+            "funding_score": round(funding_score, 2),
             "total_score": round(total, 2),
             "sector": get_sector(symbol),
         }

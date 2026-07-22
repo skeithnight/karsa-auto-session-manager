@@ -25,7 +25,7 @@ class TestGetProfile:
         p = gate.get_profile(MarketRegime.TREND_BULL)
         assert p.size_multiplier == TREND_SIZE_MULT == Decimal("1.0")
         assert p.use_post_only is False
-        assert p.max_hold_time_mins == TREND_MAX_HOLD_MINS == 1440
+        assert p.max_hold_time_mins == TREND_MAX_HOLD_MINS == 2880
         assert p.take_profit_type == "TRAILING"
         assert p.stop_loss_type == "WIDE"
 

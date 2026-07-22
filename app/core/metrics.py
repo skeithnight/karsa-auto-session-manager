@@ -602,6 +602,27 @@ karsa_shadow_stale_cleanups_total = Counter(
     ["symbol", "side"],
 )
 
+# ── Observability & Correlation ────────────────────────────────
+shadow_live_entry_divergence_seconds = Histogram(
+    "karsa_shadow_live_entry_divergence_seconds",
+    "Time difference between shadow entry and live entry",
+    ["symbol"],
+    buckets=[0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0],
+)
+
+shadow_live_slippage_bps = Histogram(
+    "karsa_shadow_live_slippage_bps",
+    "Difference in execution price between shadow simulation and live fill in basis points",
+    ["symbol", "side"],
+    buckets=[-50, -20, -10, -5, -2, 0, 2, 5, 10, 20, 50],
+)
+
+circuit_breaker_state = Gauge(
+    "karsa_circuit_breaker_state",
+    "State of the circuit breaker: 0=Closed (Safe), 1=Half-Open, 2=Open (Blocked)",
+    ["symbol", "reason"],
+)
+
 
 def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
     """Helper to sum prometheus metric values across all labels via Prometheus API."""

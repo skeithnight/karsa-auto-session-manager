@@ -264,21 +264,39 @@ async def get_all_services_health(redis_client: object) -> dict[str, ServiceHeal
 
 
 def format_health_summary(services: dict[str, ServiceHealth]) -> str:
-    """Build HTML summary block for the Commander dashboard."""
+    """Build summary block for the Commander dashboard."""
     if not services:
         return "No telemetry data."
 
     lines: list[str] = []
+    name_map = {
+        "commander": "CMDR",
+        "data-engine": "DATA",
+        "live": "LIVE",
+        "shadow": "SHDW",
+    }
+
     for name, h in sorted(services.items()):
-        icon = {"fresh": "✅", "stale": "⚠️", "dead": "❌", "unknown": "❓"}.get(
-            h.status, "❓"
+        icon = {"fresh": "🟢", "stale": "🟡", "dead": "🔴", "unknown": "⚪"}.get(
+            h.status, "⚪"
         )
-        mem = f"{h.memory_mb:.0f} MB" if h.memory_mb else "N/A"
+        mem = f"{h.memory_mb:.0f}M" if h.memory_mb else "N/A"
+
+        last_candle_str = "—"
+        if h.last_candle_ts:
+            try:
+                # Convert milliseconds to seconds if needed
+                ts = float(h.last_candle_ts)
+                if ts > 1e11:  # likely in milliseconds
+                    ts /= 1000.0
+                dt = datetime.fromtimestamp(ts, UTC)
+                last_candle_str = dt.strftime("%H:%M")
+            except (ValueError, TypeError):
+                last_candle_str = str(h.last_candle_ts)[:5]
+
+        short_name = name_map.get(name.lower(), name.upper()[:4])
+
         lines.append(
-            f"{icon} <b>{name}</b>\n"
-            f"    Status: {h.status.upper()}  │  Mem: {mem}  │  "
-            f"Orders: {h.orders_placed}  │  Candles: {h.candles_ingested}\n"
-            f"    Positions: {h.positions_open}  │  "
-            f"Last candle: {h.last_candle_ts or '—'}\n"
+            f"{short_name:<4} {icon} {mem:>4} │ O:{h.orders_placed} P:{h.positions_open} │ C:{h.candles_ingested} ({last_candle_str})"
         )
     return "\n".join(lines)

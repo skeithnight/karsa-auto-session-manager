@@ -106,6 +106,8 @@ class TestTradeTakenVsNotTaken:
     @pytest.mark.asyncio
     async def test_trade_taken_in_strong_uptrend(self, engine: BacktestEngine):
         """Strong uptrend with global sync should produce at least one LONG entry."""
+        from app.alpha.regime_classifier import MarketRegime
+        engine._classifier.classify = lambda *a, **kw: MarketRegime.TREND_BULL
         candles = _make_uptrend_candles(200)
         global_prices = {"binance": 1000.0, "okx": 1001.0}
         reports = await engine.run("BTCUSDT", candles, "job-up", global_prices=global_prices)
@@ -121,6 +123,8 @@ class TestWorstPriceSeen:
     @pytest.mark.asyncio
     async def test_long_sl_hit_on_wick_below_close(self, engine: BacktestEngine):
         """Candle wick dips below SL but close recovers — must still trigger SL."""
+        from app.alpha.regime_classifier import MarketRegime
+        engine._classifier.classify = lambda *a, **kw: MarketRegime.TREND_BULL
         candles = _make_uptrend_candles(60, start=100.0)
         candles.append([1000000 + 60 * 3600000, 160.0, 162.0, 140.0, 159.0, 5000.0])
         for i in range(61, 90):

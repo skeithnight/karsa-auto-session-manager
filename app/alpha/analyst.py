@@ -216,7 +216,11 @@ class CryptoAnalyst:
                 reasoning = text[:500]
 
                 text_upper = text.upper()
-                if re.search(r"\b(LONG|BULLISH|BUY)\b", text_upper):
+                # Check for negation patterns before direction keywords
+                has_negation = re.search(r"\b(NOT|DON'T|DONT|AVOID|AGAINST|NO)\b.*\b(LONG|BULLISH|BUY|SHORT|BEARISH|SELL)\b", text_upper)
+                if has_negation:
+                    direction = "FLAT"
+                elif re.search(r"\b(LONG|BULLISH|BUY)\b", text_upper):
                     direction = "LONG"
                 elif re.search(r"\b(SHORT|BEARISH|SELL)\b", text_upper):
                     direction = "SHORT"

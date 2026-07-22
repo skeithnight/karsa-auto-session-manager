@@ -32,13 +32,16 @@ logger = logging.getLogger("karsa.shadow")
 
 
 def _configure_logging() -> None:
+    from app.core.context import TraceIdFilter
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
         logging.Formatter(
             '{"ts":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","msg":"%(message)s"}'
+            '"logger":"%(name)s","trace_id":"%(trace_id)s","msg":"%(message)s"}'
         )
     )
+    handler.addFilter(TraceIdFilter())
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
 
@@ -52,8 +55,12 @@ async def _on_signal_shadow(
     crypto_analyst: Any | None = None,
     risk_manager: Any | None = None,
     engine: Any | None = None,
+    redis: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
+
+    from app.core.context import trace_id_ctx
+    trace_id_ctx.set(signal.trace_id or "")
 
     Checks:
     1. No duplicate shadow position open.
@@ -76,18 +83,37 @@ async def _on_signal_shadow(
         logger.info("shadow skip %s — consecutive loss block", symbol)
         return
 
+    # Slot checking
+    positions = await shadow_pos_store.list_all()
+    total_open = len(positions)
+    hyper_open = sum(1 for p in positions if str(p.get("regime", "")).startswith("HYPER"))
+
+    if redis:
+        max_positions = int(await redis.get("karsa:settings:max_positions") or 5)
+        max_hyper_slots = int(await redis.get("karsa:settings:max_hyper_slots") or 2)
+    else:
+        max_positions = 5
+        max_hyper_slots = 2
+
+    is_hyper = signal.regime.value.startswith("HYPER")
+
+    if is_hyper:
+        if hyper_open >= max_hyper_slots:
+            logger.info("shadow skip %s — HYPER slots full (%d/%d)", symbol, hyper_open, max_hyper_slots)
+            return
+    elif total_open >= max_positions:
+        logger.info("shadow skip %s — all slots full (%d/%d)", symbol, total_open, max_positions)
+        return
+
     # AI Analyst gate — skip for high-confidence signals (score >= 75) and CHOP regime
     # CHOP has inherently conflicting indicators, so the AI systematically rejects
     # CHOP signals. Bypass AI entirely for CHOP to get clean signal data.
     AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
-    from app.alpha.regime_classifier import MarketRegime
 
-    is_chop = signal.regime in (MarketRegime.CHOP, MarketRegime.RANGE)
     if (
         crypto_analyst
         and signal.score >= 40.0
         and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
-        and not is_chop
     ):
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         analyst_result = await crypto_analyst.analyze(
@@ -110,11 +136,17 @@ async def _on_signal_shadow(
             return
 
     # PortfolioRiskManager gate
-    if risk_manager:
-        from app.risk.portfolio_risk_manager import PRMResult
+    if risk_manager is None:
+        logger.error(
+            "shadow skip %s - PortfolioRiskManager is uninitialized! Blocking trade for safety.",
+            symbol,
+        )
+        return
 
-        result: PRMResult = await risk_manager.check(signal)
-        if not result.approved:
+    from app.risk.portfolio_risk_manager import PRMResult
+
+    result: PRMResult = await risk_manager.check(signal)
+    if not result.approved:
             from app.core import metrics
 
             metrics.risk_gate_reject.labels(
@@ -281,7 +313,7 @@ async def _build_shadow_components(
         position_store=pos_store,
         trade_store=trade_store,
     )
-    return pos_store, trade_store, executor, apm
+    return db_engine, pos_store, trade_store, executor, apm
 
 
 async def main() -> None:
@@ -340,13 +372,14 @@ async def main() -> None:
 
     # Set wallet balance for shadow mode — use config-based balance
     # so position sizing uses proper risk calculations instead of fallback
-    SHADOW_WALLET_BALANCE = Decimal("100.0")  # $100 simulated equity
+    SHADOW_WALLET_BALANCE = Decimal(settings.shadow_initial_balance)
     engine.set_wallet_balance(SHADOW_WALLET_BALANCE)
     logger.info("shadow wallet balance set to %s", SHADOW_WALLET_BALANCE)
 
     # Build shadow-specific stores and executor
     try:
         (
+            db_engine,
             shadow_pos_store,
             shadow_trade_store,
             shadow_executor,
@@ -402,7 +435,9 @@ async def main() -> None:
             bybit_client=bybit_client,
         )
     except Exception as e:
-        logger.warning(f"Could not initialize PortfolioRiskManager in shadow loop: {e}")
+        logger.error(f"Could not initialize PortfolioRiskManager in shadow loop: {e}")
+        await shutdown()
+        return
 
     # Wire signal handler
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
@@ -416,6 +451,7 @@ async def main() -> None:
             crypto_analyst,
             risk_manager,
             engine,
+            redis,
         )
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)

@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from decimal import Decimal
 
+import numpy as np
+
 
 def calculate_ema(closes: list[Decimal], period: int = 200) -> Decimal | None:
     """Exponential Moving Average."""
@@ -139,3 +141,97 @@ def calculate_atr(
         atr = (atr * (period - 1) + tr) / period
 
     return Decimal(str(round(atr, 8)))
+
+def calculate_vpvr(arr: np.ndarray, bins: int = 50) -> tuple[float, float, float] | None:
+    """Volume Profile Visible Range (VPVR).
+
+    Args:
+        arr: Numpy array with columns [ts, open, high, low, close, volume]
+        bins: Number of price bins
+
+    Returns:
+        (POC, VAH, VAL) as floats. Returns None if insufficient data.
+    """
+    if len(arr) < 2:
+        return None
+
+    highs = arr[:, 2]
+    lows = arr[:, 3]
+    volumes = arr[:, 5]
+
+    min_price = np.min(lows)
+    max_price = np.max(highs)
+
+    if min_price == max_price:
+        return float(min_price), float(min_price), float(min_price)
+
+    # Create bin edges
+    bin_edges = np.linspace(min_price, max_price, bins + 1)
+    bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+    profile = np.zeros(bins)
+
+    # Distribute volume proportionally
+    for i in range(len(arr)):
+        h = highs[i]
+        l = lows[i]
+        v = volumes[i]
+
+        if h == l:
+            idx = int(np.searchsorted(bin_edges, l, side='right')) - 1
+            idx = np.clip(idx, 0, bins - 1)
+            profile[idx] += v
+        else:
+            start_idx = int(np.searchsorted(bin_edges, l, side='right')) - 1
+            end_idx = int(np.searchsorted(bin_edges, h, side='right')) - 1
+            start_idx = np.clip(start_idx, 0, bins - 1)
+            end_idx = np.clip(end_idx, 0, bins - 1)
+
+            if start_idx == end_idx:
+                profile[start_idx] += v
+            else:
+                vol_per_price = v / (h - l)
+                for b in range(start_idx, end_idx + 1):
+                    bin_low = bin_edges[b]
+                    bin_high = bin_edges[b+1]
+                    overlap_low = max(l, bin_low)
+                    overlap_high = min(h, bin_high)
+                    if overlap_high > overlap_low:
+                        profile[b] += vol_per_price * (overlap_high - overlap_low)
+
+    # Find POC
+    poc_idx = int(np.argmax(profile))
+    poc = bin_centers[poc_idx]
+
+    # Calculate Value Area (70% of total volume)
+    total_vol = np.sum(profile)
+    va_vol_target = total_vol * 0.70
+
+    va_vol = profile[poc_idx]
+    lower_idx = poc_idx
+    upper_idx = poc_idx
+
+    while va_vol < va_vol_target and (lower_idx > 0 or upper_idx < bins - 1):
+        vol_lower = profile[lower_idx - 1] if lower_idx > 0 else -1
+        vol_upper = profile[upper_idx + 1] if upper_idx < bins - 1 else -1
+
+        if vol_lower > vol_upper:
+            lower_idx -= 1
+            va_vol += profile[lower_idx]
+        elif vol_upper > vol_lower:
+            upper_idx += 1
+            va_vol += profile[upper_idx]
+        elif lower_idx > 0 and upper_idx < bins - 1:
+            lower_idx -= 1
+            upper_idx += 1
+            va_vol += profile[lower_idx] + profile[upper_idx]
+        elif lower_idx > 0:
+            lower_idx -= 1
+            va_vol += profile[lower_idx]
+        elif upper_idx < bins - 1:
+            upper_idx += 1
+            va_vol += profile[upper_idx]
+
+    val = bin_centers[lower_idx]
+    vah = bin_centers[upper_idx]
+
+    return float(poc), float(vah), float(val)

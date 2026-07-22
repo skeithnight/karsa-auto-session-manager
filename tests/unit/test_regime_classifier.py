@@ -111,12 +111,12 @@ class TestDecisionTree:
         )
         assert result == MarketRegime.RANGE
 
-    def test_fallback_range(self) -> None:
-        """ADX between 20-25, hurst > 0.45 → fallback RANGE."""
+    def test_adx_transitional_bear(self) -> None:
+        """ADX between 20-25, hurst > 0.45 → transitional TREND_BEAR."""
         result = RegimeClassifier._decision_tree(
             adx=22.0, hurst=0.5, atr_pct=50.0, close=100.0, sma20=100.0
         )
-        assert result == MarketRegime.RANGE
+        assert result == MarketRegime.TREND_BEAR
 
     # --- Boundary tests ---
 
@@ -127,12 +127,12 @@ class TestDecisionTree:
         )
         assert result == MarketRegime.TREND_BULL
 
-    def test_adx_24_9_is_not_trend(self) -> None:
-        """ADX 24.9 → not TREND, falls to RANGE."""
+    def test_adx_24_9_is_transitional_bull(self) -> None:
+        """ADX 24.9 → transitional TREND_BULL."""
         result = RegimeClassifier._decision_tree(
             adx=24.9, hurst=0.5, atr_pct=50.0, close=105.0, sma20=100.0
         )
-        assert result == MarketRegime.RANGE
+        assert result == MarketRegime.TREND_BULL
 
     def test_hurst_0_45_is_not_range_from_hurst(self) -> None:
         """Hurst 0.45 is NOT < 0.45, so priority 4 doesn't fire."""

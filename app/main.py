@@ -487,7 +487,13 @@ async def alpha_bridge_task(
                                 STRATEGY_GATE_THRESHOLD,
                             )
 
-                            effective_gate = STRATEGY_GATE_THRESHOLD * vol_factor
+                            # CHOP regime requires higher confluence (85) because the OI
+                            # component fires on noise. Require near-perfect 3/4 components.
+                            regime_gate = (
+                                85.0 if regime == "CHOP"
+                                else float(STRATEGY_GATE_THRESHOLD)
+                            )
+                            effective_gate = regime_gate * vol_factor
                             if strategy_score < effective_gate:
                                 metrics.signals_skipped.labels(
                                     symbol=symbol,
@@ -512,6 +518,11 @@ async def alpha_bridge_task(
                     # funding_float + oi_change already fetched above for StrategyRouter
 
                     metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
+
+                    # Anti-Whipsaw Cooldown: skip if this symbol recently took a loss
+                    if trade_memory and await trade_memory.is_in_cooldown(symbol, cooldown_mins=45):
+                        metrics.signals_skipped.labels(symbol=symbol, reason="whipsaw_cooldown").inc()
+                        continue
 
                     # Data freshness gate — skip scoring if micro-structure data is stale
                     if alpha_metrics.is_stale(symbol):
@@ -563,8 +574,8 @@ async def alpha_bridge_task(
                                     ).inc()
                                     continue
 
-                        # AI analyst — ambiguous confidence zone (0.40-0.85)
-                        if crypto_analyst and signal.confidence >= 0.40:
+                        # AI analyst — ambiguous confidence zone (0.55-0.85)
+                        if crypto_analyst and signal.confidence >= 0.55:
                             logger.info(f"AI Analyst validating {signal.symbol} signal")
                             trade_ctx = (
                                 await trade_memory.get_prompt_context(
@@ -960,10 +971,23 @@ async def executor_task(
         # Max open positions check (from Telegram settings)
         try:
             max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
+            max_hyper = int(await redis_client.get("karsa:settings:max_hyper_slots") or 2)
         except Exception:
             max_pos = 5
+            max_hyper = 2
+
         open_positions = await position_store.list_all()
-        if len(open_positions) >= max_pos:
+        total_open = len(open_positions)
+        hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+
+        is_hyper = signal.regime.value.startswith("HYPER")
+
+        if is_hyper:
+            if hyper_open >= max_hyper:
+                logger.warning(f"HYPER slots full ({hyper_open}/{max_hyper}), skipping {signal.symbol}")
+                metrics.signals_skipped.labels(symbol=signal.symbol, reason="max_hyper_slots").inc()
+                continue
+        elif total_open >= max_pos:
             logger.warning(
                 f"Max positions ({max_pos}) reached, skipping {signal.symbol}"
             )
@@ -1033,6 +1057,30 @@ async def executor_task(
         )
 
         try:
+            atr_val = getattr(signal, "atr", None)
+
+            # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
+            initial_risk_per_unit = None
+            risk_profile_json = None
+            if risk_profile is not None and atr_val is not None:
+                initial_risk_per_unit = (
+                    Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
+                )
+                risk_profile_json = risk_profile.to_json()
+            elif risk_profile is not None:
+                # No ATR — fall back to 1% of entry price as risk estimate
+                initial_risk_per_unit = price * Decimal("0.01")
+                risk_profile_json = risk_profile.to_json()
+
+            # Absolute fallback to ensure APM tracks the position
+            if initial_risk_per_unit is None or initial_risk_per_unit <= Decimal("0"):
+                initial_risk_per_unit = price * Decimal("0.01")
+
+            # Calculate total dollar risk for Bybit stop loss placement
+            max_loss_usd = Decimal("1.00")
+            if initial_risk_per_unit is not None:
+                max_loss_usd = initial_risk_per_unit * amount
+
             exec_start = time.time()
             result = await sor.execute(
                 symbol=signal.symbol,
@@ -1042,6 +1090,7 @@ async def executor_task(
                 price_tick=bybit_client._price_ticks.get(
                     signal.symbol, Decimal("0.01")
                 ),
+                max_loss_usd=max_loss_usd,
             )
             exec_latency_ms = int((time.time() - exec_start) * 1000)
 
@@ -1067,33 +1116,18 @@ async def executor_task(
                         regime = str(raw_regime_data)
 
                 # Save position to Redis
-                atr_val = getattr(signal, "atr", None)
-                # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
-                initial_risk_per_unit = None
-                risk_profile_json = None
-                if risk_profile is not None and atr_val is not None:
-                    initial_risk_per_unit = (
-                        Decimal(str(atr_val)) * risk_profile.sl_atr_buffer
-                    )
-                    risk_profile_json = risk_profile.to_json()
-                elif risk_profile is not None:
-                    # No ATR — fall back to 1% of entry price as risk estimate
-                    initial_risk_per_unit = price * Decimal("0.01")
-                    risk_profile_json = risk_profile.to_json()
 
                 await position_store.save(
                     symbol=signal.symbol,
                     side=side_str,
                     entry_price=price,
                     amount=amount,
-                    sl_order_id=result.get("sl_order_id"),
+                    sl_order_id=result.get("sl_order_id", ""),
                     atr=atr_val,
                     entry_confidence=signal.confidence,
                     regime=regime,
                     entry_regime=regime,
-                    initial_risk_per_unit=str(initial_risk_per_unit)
-                    if initial_risk_per_unit is not None
-                    else None,
+                    initial_risk_per_unit=str(initial_risk_per_unit),
                     risk_profile_json=risk_profile_json,
                 )
                 await trade_store.record_entry(
@@ -1318,9 +1352,27 @@ async def main() -> None:
 
     bybit_client = BybitClient()
     await bybit_client.connect()
+
+    # CRITICAL FIX: Sync precise tick and lot sizes from CCXT to BybitClient
+    # to prevent catastrophic 0.01 fallbacks if Bybit API rate limits on startup
+    if "bybit" in ccxt_manager.markets_loaded:
+        bybit_exchange = ccxt_manager.exchanges["bybit"]
+        for sym, market in bybit_exchange.markets.items():
+            if market.get("linear"):
+                base_sym = sym.split(":")[0]  # HEMI/USDT:USDT -> HEMI/USDT
+                price_tick = market.get("precision", {}).get("price")
+                amount_tick = market.get("precision", {}).get("amount")
+                min_qty = market.get("limits", {}).get("amount", {}).get("min")
+                if price_tick:
+                    bybit_client._price_ticks[base_sym] = Decimal(str(price_tick))
+                if amount_tick:
+                    bybit_client._lot_sizes[base_sym] = Decimal(str(amount_tick))
+                if min_qty:
+                    bybit_client._min_qty[base_sym] = Decimal(str(min_qty))
+
     metrics.bybit_status.set(1)  # Bybit connected
     alert_service = AlertService(settings.telegram_chat_id)
-    sor = SmartOrderRouter(bybit_client, alert_service=alert_service)
+    sor = SmartOrderRouter(bybit_client, alert_service=alert_service, redis_client=redis_client)
     circuit_breaker = CircuitBreaker(
         alert_service=alert_service, redis_client=redis_client
     )
@@ -1358,6 +1410,7 @@ async def main() -> None:
     active_position_manager = ActivePositionManager(
         bybit_client=bybit_client,
         position_store=position_store,
+        redis_client=redis_client,
         regime_classifier=regime_classifier,
         alert_service=alert_service,
     )

@@ -50,6 +50,8 @@ def _make_apm() -> tuple:
     store = AsyncMock()
     regime = AsyncMock()
     alert = AsyncMock()
+    redis = AsyncMock()
+    redis.get = AsyncMock(return_value=None)
     store.list_all = AsyncMock(return_value=[])
     store.remove = AsyncMock()
     store.update_sl = AsyncMock()
@@ -63,27 +65,21 @@ def _make_apm() -> tuple:
     client.place_take_profit = AsyncMock(return_value={"orderId": "TP-001"})
     client.set_trading_stop = AsyncMock()
     client.reduce_position = AsyncMock(return_value={"orderId": "RED-001"})
-    apm = ActivePositionManager(client, store, regime, alert)
+    apm = ActivePositionManager(client, store, redis, regime, alert)
     return apm, client, store, regime, alert
 
 
 class TestRMultiple:
     def test_long_profit(self) -> None:
-        r = ActivePositionManager._calculate_r_multiple(
-            "LONG", Decimal("100"), Decimal("105"), Decimal("5")
-        )
+        r = ActivePositionManager._calculate_r_multiple("LONG", Decimal("100"), Decimal("105"), Decimal("5"))
         assert r == Decimal("1")
 
     def test_short_profit(self) -> None:
-        r = ActivePositionManager._calculate_r_multiple(
-            "SHORT", Decimal("100"), Decimal("95"), Decimal("5")
-        )
+        r = ActivePositionManager._calculate_r_multiple("SHORT", Decimal("100"), Decimal("95"), Decimal("5"))
         assert r == Decimal("1")
 
     def test_zero_risk(self) -> None:
-        r = ActivePositionManager._calculate_r_multiple(
-            "LONG", Decimal("100"), Decimal("105"), Decimal("0")
-        )
+        r = ActivePositionManager._calculate_r_multiple("LONG", Decimal("100"), Decimal("105"), Decimal("0"))
         assert r == Decimal("0")
 
 
@@ -152,23 +148,27 @@ class TestForceClose:
             {"id": "SL-001", "symbol": "SOL/USDT"},
             {"id": "TP-002", "symbol": "SOL/USDT"},
         ]
+        client.create_market_order.return_value = {
+            "orderId": "CLOSE-001",
+            "avgPrice": "102.5",
+        }
         pos = _make_pos()
         await apm._force_close_position(pos, "test")
         assert client.cancel_order.call_count == 2
-        client.create_market_order.assert_called_once_with(
-            "SOL/USDT", "SELL", Decimal("0.1"), {"reduceOnly": True}
-        )
+        client.create_market_order.assert_called_once_with("SOL/USDT", "SELL", Decimal("0.1"), {"reduceOnly": True})
         store.remove.assert_called_once_with("SOL/USDT", "buy")
 
     @pytest.mark.asyncio
     async def test_force_close_short_side(self) -> None:
         apm, client, store, regime, alert = _make_apm()
         client.fetch_open_orders.return_value = []
+        client.create_market_order.return_value = {
+            "orderId": "CLOSE-002",
+            "avgPrice": "98.0",
+        }
         pos = _make_pos(side="SHORT")
         await apm._force_close_position(pos, "test")
-        client.create_market_order.assert_called_once_with(
-            "SOL/USDT", "BUY", Decimal("0.1"), {"reduceOnly": True}
-        )
+        client.create_market_order.assert_called_once_with("SOL/USDT", "BUY", Decimal("0.1"), {"reduceOnly": True})
         store.remove.assert_called_once_with("SOL/USDT", "sell")
 
 
@@ -182,9 +182,7 @@ class TestReconciliation:
                 {"symbol": "ADA/USDT", "side": "buy"},
             ]
         )
-        client.fetch_positions = AsyncMock(
-            return_value=[{"symbol": "SOL/USDT"}]
-        )
+        client.fetch_positions = AsyncMock(return_value=[{"symbol": "SOL/USDT"}])
         client.fetch_open_orders = AsyncMock(return_value=[])
         await apm._reconcile_positions()
         store.remove.assert_called_once_with("ADA/USDT", "buy")
@@ -192,12 +190,8 @@ class TestReconciliation:
     @pytest.mark.asyncio
     async def test_no_ghosts_no_removal(self) -> None:
         apm, client, store, regime, alert = _make_apm()
-        store.list_all = AsyncMock(
-            return_value=[{"symbol": "SOL/USDT", "side": "buy"}]
-        )
-        client.fetch_positions = AsyncMock(
-            return_value=[{"symbol": "SOL/USDT"}]
-        )
+        store.list_all = AsyncMock(return_value=[{"symbol": "SOL/USDT", "side": "buy"}])
+        client.fetch_positions = AsyncMock(return_value=[{"symbol": "SOL/USDT"}])
         client.fetch_open_orders = AsyncMock(return_value=[])
         await apm._reconcile_positions()
         store.remove.assert_not_called()
@@ -207,23 +201,21 @@ class TestReconciliation:
         """When SL is missing, re-attach via set_trading_stop."""
         apm, client, store, regime, alert = _make_apm()
         store.list_all = AsyncMock(
-            return_value=[{
-                "symbol": "SOL/USDT",
-                "side": "buy",
-                "sl_order_id": "SL-GONE",
-                "entry_price": "100.0",
-                "amount": "1.0",
-                "initial_risk_per_unit": "5.0",
-            }]
+            return_value=[
+                {
+                    "symbol": "SOL/USDT",
+                    "side": "buy",
+                    "sl_order_id": "SL-GONE",
+                    "entry_price": "100.0",
+                    "amount": "1.0",
+                    "initial_risk_per_unit": "5.0",
+                }
+            ]
         )
-        client.fetch_positions = AsyncMock(
-            return_value=[{"symbol": "SOL/USDT"}]
-        )
+        client.fetch_positions = AsyncMock(return_value=[{"symbol": "SOL/USDT"}])
         client.set_trading_stop = AsyncMock()
         await apm._reconcile_positions()
-        client.set_trading_stop.assert_called_once_with(
-            "SOL/USDT", "buy", stop_loss=Decimal("95.0")
-        )
+        client.set_trading_stop.assert_called_once_with("SOL/USDT", "buy", stop_loss=Decimal("95.0"))
 
 
 class TestTakeProfit:
@@ -239,7 +231,7 @@ class TestTakeProfit:
         apm, client, store, regime, alert = _make_apm()
         pos = _make_pos(entry_regime="TREND_BULL", moved_to_be=False)
         await apm._manage_single_position(pos)
-        client.set_trading_stop.assert_any_call('SOL/USDT', 'buy', take_profit=Decimal('104.00'))
+        client.set_trading_stop.assert_any_call("SOL/USDT", "buy", take_profit=Decimal("104.00"))
 
     @pytest.mark.asyncio
     async def test_tp_not_replaced_once_placed(self) -> None:

@@ -22,12 +22,14 @@ CHOP scoring — granular confluence (max 100, gate 65):
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Any
 
 import numpy as np
 from loguru import logger
 
 from app.alpha.regime_classifier import MarketRegime
+from app.alpha.ta_tools import calculate_ema, calculate_vpvr
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.2) ---
 TREND_SCORE_BREAKOUT: int = 30
@@ -43,9 +45,7 @@ CHOP_SCORE_WICK_SNAPBACK: int = 20
 CHOP_SCORE_FUNDING_CONF: int = 30
 CHOP_SCORE_OI_DROP: int = 30
 
-STRATEGY_GATE_THRESHOLD: int = (
-    40  # ponytail: raised from 25, restore to 65 when confident
-)
+STRATEGY_GATE_THRESHOLD: int = 65
 # Cross-asset volatility normalization: ATR as % of price reference point
 VOLATILITY_REFERENCE_ATR_PCT: float = 2.0  # typical BTC ATR_pct
 VOLATILITY_FACTOR_MIN: float = 0.7  # low-vol bonus (lower gate)
@@ -67,6 +67,7 @@ class StrategyRouter:
         orderbook_delta: float | None = None,
         funding_rate: float | None = None,
         oi_change: float | None = None,
+        symbol: str = "UNKNOWN",
     ) -> float:
         """Score a signal 0-100 based on regime and market data.
 
@@ -98,9 +99,23 @@ class StrategyRouter:
         )
 
         if regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
-            score = self._score_trend_strategy(candles, direction, global_prices)
+            score = self._score_trend_strategy(
+                candles, direction, global_prices, orderbook_delta, oi_change, funding_rate
+            )
+        elif regime in (MarketRegime.HYPER_BULL, MarketRegime.HYPER_BEAR):
+            # ─── PROFITABILITY FIX: EXCLUDE MASSIVE-CAPS FROM HYPER ───
+            # BTC and ETH lack the micro-volatility required for the 15m scalp HYPER strategy
+            if symbol in ("BTC/USDT", "ETH/USDT"):
+                logger.info(f"StrategyRouter: {symbol} rejected from HYPER (massive-cap)")
+                score = 0.0
+            else:
+                score = self._score_hyper_strategy(
+                    candles, direction, orderbook_delta, funding_rate
+                )
         elif regime == MarketRegime.RANGE:
-            score = self._score_range_strategy(candles, direction)
+            score = self._score_range_strategy(
+                candles, direction, orderbook_delta, funding_rate
+            )
         elif regime == MarketRegime.CHOP:
             score = self._score_chop_strategy(
                 candles, direction, orderbook_delta, funding_rate, oi_change
@@ -142,6 +157,9 @@ class StrategyRouter:
         candles: np.ndarray[Any, Any],
         direction: str,
         global_prices: dict[str, float] | None,
+        orderbook_delta: float | None = None,
+        oi_change: float | None = None,
+        funding_rate: float | None = None,
     ) -> int:
         score = 0
         closes = candles[:, 4].astype(float)
@@ -174,17 +192,151 @@ class StrategyRouter:
             binance_price = global_prices.get("binance")
             okx_price = global_prices.get("okx")
             bybit_price = global_prices.get("bybit", last_close)
-            if binance_price is not None and okx_price is not None:
-                if (
-                    direction == "LONG"
-                    and binance_price > bybit_price
-                    and okx_price > bybit_price
-                ) or (
-                    direction == "SHORT"
-                    and binance_price < bybit_price
-                    and okx_price < bybit_price
-                ):
-                    score += TREND_SCORE_GLOBAL_SYNC
+            synced = 0
+            if binance_price is not None:
+                if (direction == "LONG" and binance_price > bybit_price) or \
+                   (direction == "SHORT" and binance_price < bybit_price):
+                    synced += 1
+            if okx_price is not None:
+                if (direction == "LONG" and okx_price > bybit_price) or \
+                   (direction == "SHORT" and okx_price < bybit_price):
+                    synced += 1
+            score += synced * 20  # 20 per exchange (max 40 if both)
+
+        # Microstructure Enhancements
+
+        # 1. Macro Trend Alignment (EMA-200)
+        # Prevent trading against the macro trend
+        if len(closes) >= 200:
+            ema_200_dec = calculate_ema([Decimal(str(c)) for c in closes], period=200)
+            if ema_200_dec is not None:
+                ema_200 = float(ema_200_dec)
+                if direction == "LONG" and last_close < ema_200:
+                    score -= 20  # Penalty: Fighting macro downtrend
+                elif direction == "SHORT" and last_close > ema_200:
+                    score -= 20  # Penalty: Fighting macro uptrend
+
+        # 2. Orderbook Delta Validation
+        # Prevent fakeouts by ensuring limit orders agree with the breakout
+        if orderbook_delta is not None:
+            if direction == "LONG":
+                if orderbook_delta < -0.2:
+                    score -= 20  # Heavy sell walls absorbing the breakout
+                elif orderbook_delta > 0.1:
+                    score += 10  # Buy walls supporting the breakout
+            elif direction == "SHORT":
+                if orderbook_delta > 0.2:
+                    score -= 20  # Heavy buy walls absorbing the breakdown
+                elif orderbook_delta < -0.1:
+                    score += 10  # Sell walls pressing the breakdown
+
+        # 3. Open Interest (OI) Confirmation
+        # True trends need new money (rising OI), not just liquidations (squeeze)
+        if oi_change is not None:
+            if oi_change > 0.01:
+                score += 10  # New money entering, strong trend
+            elif oi_change < -0.01:
+                score -= 20  # OI dropping during breakout = squeeze/fakeout
+
+        # 4. VPVR (Volume Profile Visible Range) POC Validation
+        vpvr_res = calculate_vpvr(candles)
+        if vpvr_res:
+            poc, vah, val = vpvr_res
+            if direction == "LONG":
+                if last_close < poc:
+                    score = int(score * 0.7)  # Penalty: Trapped under POC (heavy resistance)
+                elif last_close > vah:
+                    score = int(score * 1.2)  # Bonus: Free breakout above Value Area
+            elif direction == "SHORT":
+                if last_close > poc:
+                    score = int(score * 0.7)  # Penalty: Trapped above POC (heavy support)
+                elif last_close < val:
+                    score = int(score * 1.2)  # Bonus: Free breakdown below Value Area
+
+        # 5. Funding Rate Squeeze Hunting
+        # Trend is strongly bullish, but funding is highly negative (heavy shorts getting trapped)
+        if funding_rate is not None:
+            if direction == "LONG" and funding_rate < -0.0005:
+                score += 30  # Massive squeeze confluence
+            elif direction == "SHORT" and funding_rate > 0.0005:
+                score += 30  # Massive long-squeeze confluence
+
+        return score
+
+    # ------------------------------------------------------------------
+    # HYPER scoring
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _score_hyper_strategy(
+        candles: np.ndarray[Any, Any],
+        direction: str,
+        orderbook_delta: float | None = None,
+        funding_rate: float | None = None,
+    ) -> int:
+        """Hyper-Momentum strategy: Dual Mode (Momentum Surfing vs Pullback)."""
+        score = 0
+        closes = candles[:, 4].astype(float)
+        highs = candles[:, 2].astype(float)
+        lows = candles[:, 3].astype(float)
+        volumes = candles[:, 5].astype(float)
+        last_close = closes[-1]
+        last_open = candles[-1, 1].astype(float)
+
+        if len(closes) < 20:
+            return 0
+
+        # EMA20 for pullback reference
+        ema_20_dec = calculate_ema([Decimal(str(c)) for c in closes], period=20)
+        if ema_20_dec is None:
+            return 0
+        ema_20 = float(ema_20_dec)
+
+        dist_to_ema = (last_close - ema_20) / ema_20
+
+        # Mode A: Momentum Surfing (Harga sedang terbang)
+        is_surfing = False
+        if direction == "LONG" and dist_to_ema > 0.03 or direction == "SHORT" and dist_to_ema < -0.03:
+            is_surfing = True
+
+        if is_surfing:
+            # Momentum Surfing: Requires strong orderbook + volume + safe RSI
+            if orderbook_delta is not None:
+                if direction == "LONG" and orderbook_delta > 0.15 or direction == "SHORT" and orderbook_delta < -0.15:
+                    score += 40
+
+            vol_sma = float(np.mean(volumes[-21:-1])) if len(volumes) > 20 else float(np.mean(volumes[:-1]))
+            if vol_sma > 0 and volumes[-1] > 2.0 * vol_sma:
+                score += 30
+
+            rsi = StrategyRouter._calculate_rsi(closes, period=14)
+            if direction == "LONG" and rsi < 85 or direction == "SHORT" and rsi > 15:
+                score += 20
+
+        else:
+            # Mode B: Anti-Breakout (Mean Reversion inside a trend)
+            if direction == "LONG":
+                if -0.02 < dist_to_ema < 0.01:
+                    score += 50  # Golden pullback zone (near or slightly below EMA)
+            elif direction == "SHORT":
+                if -0.01 < dist_to_ema < 0.02:
+                    score += 50
+
+            # Wick Rejection (Pin Bar off the EMA)
+            body = abs(last_close - last_open)
+            if direction == "LONG":
+                lower_wick = min(last_close, last_open) - lows[-1]
+                if lower_wick > body * 1.5:
+                    score += 30  # Strong rejection / bounce
+            elif direction == "SHORT":
+                upper_wick = highs[-1] - max(last_close, last_open)
+                if upper_wick > body * 1.5:
+                    score += 30
+
+            # Orderbook Support
+            if orderbook_delta is not None:
+                if direction == "LONG" and orderbook_delta > 0.1 or direction == "SHORT" and orderbook_delta < -0.1:
+                    score += 20
 
         return score
 
@@ -193,7 +345,12 @@ class StrategyRouter:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _score_range_strategy(candles: np.ndarray[Any, Any], direction: str) -> int:
+    def _score_range_strategy(
+        candles: np.ndarray[Any, Any],
+        direction: str,
+        orderbook_delta: float | None = None,
+        funding_rate: float | None = None,
+    ) -> int:
         score = 0
         closes = candles[:, 4].astype(float)
         highs = candles[:, 2].astype(float)
@@ -203,11 +360,11 @@ class StrategyRouter:
         last_high = highs[-1]
         last_low = lows[-1]
 
-        # Bollinger Bands at 2.5 std dev
+        # Bollinger Bands at 2.0 std dev
         sma = float(np.mean(closes[-20:]))
         std = float(np.std(closes[-20:], ddof=1))
-        upper_band = sma + 2.5 * std
-        lower_band = sma - 2.5 * std
+        upper_band = sma + 2.0 * std
+        lower_band = sma - 2.0 * std
 
         # BB edge: price pierced band
         if (
@@ -233,6 +390,35 @@ class StrategyRouter:
         rsi = StrategyRouter._calculate_rsi(closes, period=14)
         if direction == "SHORT" and rsi > 75 or direction == "LONG" and rsi < 25:
             score += RANGE_SCORE_RSI
+
+        # Microstructure Enhancements
+
+        # 1. Funding Rate Squeeze Bonus
+        # Shorting resistance is more profitable if everyone is extremely long and paying funding
+        if funding_rate is not None:
+            if direction == "SHORT" and funding_rate > 0.0005 or direction == "LONG" and funding_rate < -0.0005:  # Extremely positive funding
+                score += 15
+
+        # 2. Orderbook Absorption Bonus
+        # If we short the top of the range, we want sell walls (negative delta) waiting there
+        if orderbook_delta is not None:
+            if direction == "SHORT" and orderbook_delta < -0.1 or direction == "LONG" and orderbook_delta > 0.1:
+                score += 15
+
+        # 3. VPVR Value Area Sniper Bonus
+        vpvr_res = calculate_vpvr(candles)
+        if vpvr_res:
+            poc, vah, val = vpvr_res
+            range_span = vah - val
+            if range_span > 0:
+                if direction == "LONG":
+                    dist_to_val = abs(last_close - val) / range_span
+                    if dist_to_val < 0.1:  # Within 10% of VAL
+                        score += 20  # Sniper bonus
+                elif direction == "SHORT":
+                    dist_to_vah = abs(last_close - vah) / range_span
+                    if dist_to_vah < 0.1:  # Within 10% of VAH
+                        score += 20  # Sniper bonus
 
         return score
 

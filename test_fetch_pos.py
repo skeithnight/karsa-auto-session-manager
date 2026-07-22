@@ -1,5 +1,7 @@
 import asyncio
+
 from app.execution.bybit_client import BybitClient
+
 
 async def main():
     client = BybitClient()

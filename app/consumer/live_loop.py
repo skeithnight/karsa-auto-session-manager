@@ -13,6 +13,7 @@ import json
 import logging
 import signal
 import sys
+from datetime import UTC
 from decimal import Decimal
 from typing import Any
 
@@ -34,13 +35,16 @@ logger = logging.getLogger("karsa.live")
 
 
 def _configure_logging() -> None:
+    from app.core.context import TraceIdFilter
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
         logging.Formatter(
             '{"ts":"%(asctime)s","level":"%(levelname)s",'
-            '"logger":"%(name)s","msg":"%(message)s"}'
+            '"logger":"%(name)s","trace_id":"%(trace_id)s","msg":"%(message)s"}'
         )
     )
+    handler.addFilter(TraceIdFilter())
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
 
@@ -91,9 +95,7 @@ async def _wallet_metrics_loop(
                 pos.get("side", "LONG")
                 entry = float(pos.get("entry_price", 0))
                 amount = float(pos.get("amount", 0))
-                sl_price = float(
-                    pos.get("sl_price", 0) or pos.get("virtual_sl", 0) or 0
-                )
+                sl_price = float(pos.get("sl_price", 0) or pos.get("virtual_sl", 0) or 0)
 
                 metrics.position_size.labels(symbol=sym).set(amount)
                 metrics.position_entry_price.labels(symbol=sym).set(entry)
@@ -136,8 +138,12 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     risk_manager: Any,
     trade_store: TradeStore,
     engine: Any | None = None,
+    crypto_analyst: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a real order on Bybit.
+
+    from app.core.context import trace_id_ctx
+    trace_id_ctx.set(signal.trace_id or "")
 
     Checks:
     1. No duplicate position already open.
@@ -149,18 +155,12 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     # ASM gate — fail-closed: must be explicitly "1" to allow trade.
     # If key is missing, Redis is down, or any exception → block (never open).
     try:
-        _asm_raw = (
-            await engine._redis.get("karsa:auto:state:active")
-            if engine and engine._redis
-            else None
-        )
+        _asm_raw = await engine._redis.get("karsa:auto:state:active") if engine and engine._redis else None
         if str(_asm_raw or "").strip() != "1":
             logger.debug("skip %s — ASM not active (state=%r)", symbol, _asm_raw)
             return
     except Exception:
-        logger.warning(
-            "skip %s — ASM state check failed (fail-closed), blocking trade", symbol
-        )
+        logger.warning("skip %s — ASM state check failed (fail-closed), blocking trade", symbol)
         return
 
     # Check Auto-Adjustment Regime Overrides
@@ -187,15 +187,30 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — position already open", symbol)
         return
 
-    # Max positions check (ponytail: read from Redis if set, default 3)
+    # Slot checking
     open_positions = await position_store.list_all()
-    max_pos = 3  # ponytail: hardcoded default, Redis override available
-    if len(open_positions) >= max_pos:
+    total_open = len(open_positions)
+    hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+
+    try:
+        max_pos = int(await position_store.redis.get("karsa:settings:max_positions") or 5)
+        max_hyper = int(await position_store.redis.get("karsa:settings:max_hyper_slots") or 2)
+    except Exception:
+        max_pos = 5
+        max_hyper = 2
+
+    is_hyper = signal.regime.value.startswith("HYPER")
+
+    if is_hyper:
+        if hyper_open >= max_hyper:
+            logger.info("skip %s — HYPER slots full (%d/%d)", symbol, hyper_open, max_hyper)
+            return
+    elif total_open >= max_pos:
         logger.info(
-            "skip %s — max positions %d reached (%d open)",
+            "skip %s — all slots full (%d/%d)",
             symbol,
+            total_open,
             max_pos,
-            len(open_positions),
         )
         return
 
@@ -204,14 +219,66 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — consecutive loss block", symbol)
         return
 
-    # PortfolioRiskManager gate (mandatory, no bypass)
-    if risk_manager is not None:
-        from app.risk.portfolio_risk_manager import PRMResult
-
-        result: PRMResult = await risk_manager.check(signal)
-        if not result.approved:
-            logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
+    # AI Analyst gate
+    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
+    if (
+        crypto_analyst
+        and signal.score >= 40.0
+        and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
+    ):
+        logger.info(f"AI Analyst validating {symbol} signal")
+        analyst_result = await crypto_analyst.analyze(
+            symbol=symbol,
+            direction=signal.direction,
+            confidence=signal.score,
+            regime=signal.regime.value,
+            spread_pct=0.0,
+            funding_rate=0.0,
+            oi_change=0.0,
+            price=signal.entry_price,
+            recent_trades="",
+        )
+        if not analyst_result or analyst_result.direction != signal.direction:
+            from app.core import metrics
+            reason = "unavailable" if not analyst_result else "direction_mismatch"
+            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+            logger.info("skip %s - AI analyst rejected (%s)", symbol, reason)
             return
+
+    # PortfolioRiskManager gate (mandatory, no bypass)
+    if risk_manager is None:
+        logger.error(
+            "skip %s - PortfolioRiskManager is uninitialized! Blocking trade for safety.",
+            symbol,
+        )
+        return
+
+    from app.risk.portfolio_risk_manager import PRMResult
+
+    result: PRMResult = await risk_manager.check(signal)
+    if not result.approved:
+        from app.core import metrics
+        metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
+        logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
+        return
+
+    from app.core import metrics
+    metrics.risk_gate_pass.labels(symbol=symbol).inc()
+
+    # Pre-check: can we place an SL for this symbol?
+    try:
+        bybit = getattr(executor, "client", None)
+        if bybit and hasattr(bybit, "fetch_open_orders"):
+            open_orders = await bybit.fetch_open_orders(symbol=symbol)
+            stop_count = sum(1 for o in open_orders
+                             if o.get("type") in ("stop", "stoporder", "stop")
+                             or o.get("stopOrderType"))
+            if stop_count >= 9:  # Leave room for at least 1 new SL
+                logger.warning("skip %s — %d stop orders already on exchange (limit 10)", symbol, stop_count)
+                return
+    except Exception as e:
+        logger.debug("SL pre-check failed for %s: %s", symbol, e)
+        pass  # Don't block entry if check fails
 
     # Execute via SmartOrderRouter
     result = await executor.execute(
@@ -227,17 +294,37 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         return
 
     # Bybit V5 returns avgPrice, SOR returns average or price
-    fill_price = Decimal(
-        str(result.get("average", result.get("avgPrice", result.get("price", 0))))
-    )
+    fill_price = Decimal(str(result.get("average", result.get("avgPrice", result.get("price", 0)))))
+
+    # Guard: reject zero-price fill
+    if fill_price <= 0:
+        logger.error("REJECTING trade %s — fill_price is 0, fetching from order history", symbol)
+        # Try to get actual fill price from Bybit
+        try:
+            await asyncio.sleep(1.0)
+            if hasattr(executor, "client") and hasattr(executor.client, "fetch_my_trades"):
+                trades = await executor.client.fetch_my_trades(symbol, limit=1)
+                if trades:
+                    fill_price = Decimal(str(trades[-1].get("price", 0)))
+        except Exception:
+            pass
+        if fill_price <= 0:
+            logger.critical("ABORTING entry %s — cannot determine fill price", symbol)
+            # Cannot track without fill_price, bail out (ideally we should market close here too,
+            # but since we couldn't fetch order history, Bybit API is likely degraded)
+            return
 
     # Compute initial_risk_per_unit from actual fill price and signal SL.
     # This is the CRITICAL field APM uses for breakeven/trailing/SL placement.
     # Without it, APM bails out on every cycle and leaves position unprotected.
     initial_risk_per_unit = abs(fill_price - signal.sl_price)
-    if initial_risk_per_unit <= Decimal("0"):
+    # If the fill price exactly equals SL price (or is weirdly zero), fallback to ATR to guarantee APM protection
+    if initial_risk_per_unit <= Decimal("0") or initial_risk_per_unit < (signal.atr * Decimal("0.1")):
         # Fallback: derive from ATR and RiskProfile sl_atr_buffer
         initial_risk_per_unit = signal.atr * signal.risk_profile.sl_atr_buffer
+        # Absolute hard floor if ATR is also completely busted
+        if initial_risk_per_unit <= Decimal("0"):
+            initial_risk_per_unit = fill_price * Decimal("0.01")  # 1% fallback
 
     # Save position — all APM-critical fields must be present here
     await position_store.save(
@@ -245,6 +332,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         side=signal.direction,
         entry_price=fill_price,
         amount=signal.amount,
+        sl_order_id=result.get("sl_order_id", ""),  # Guarantee sl_order_id isn't dropped
         atr=signal.atr,
         entry_confidence=signal.score,
         regime=signal.regime.value,
@@ -252,6 +340,37 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         initial_risk_per_unit=str(initial_risk_per_unit),
         risk_profile_json=signal.risk_profile.to_json(),
     )
+
+    # Phase 2: Shadow vs. Live Divergence Metrics
+    try:
+        import json
+        from datetime import UTC, datetime
+
+        shadow_key = f"shadow:position:{symbol}:{signal.direction}"
+        shadow_raw = await position_store.redis.get(shadow_key)
+        if shadow_raw:
+            shadow_pos = json.loads(shadow_raw)
+            shadow_entry_time_str = shadow_pos.get("entered_at")
+            shadow_entry_price_str = shadow_pos.get("entry_price")
+
+            if shadow_entry_time_str:
+                shadow_dt = datetime.fromisoformat(shadow_entry_time_str)
+                divergence_secs = (datetime.now(UTC) - shadow_dt).total_seconds()
+                from app.core import metrics
+
+                metrics.shadow_live_entry_divergence_seconds.labels(symbol=symbol).observe(divergence_secs)
+
+            if shadow_entry_price_str:
+                shadow_entry_price = float(shadow_entry_price_str)
+                if shadow_entry_price > 0:
+                    diff_bps = ((float(fill_price) - shadow_entry_price) / shadow_entry_price) * 10000
+                    if signal.direction == "SHORT":
+                        diff_bps = -diff_bps  # Positive means better fill for short
+                    from app.core import metrics
+
+                    metrics.shadow_live_slippage_bps.labels(symbol=symbol, side=signal.direction).observe(diff_bps)
+    except Exception as e:
+        logger.debug("Failed to calculate shadow divergence for %s: %s", symbol, e)
 
     # Record trade
     if trade_store:
@@ -325,9 +444,7 @@ def _start_ingestor(
     return ingestor, asyncio.create_task(_sync_loop(), name="live-ingestor")
 
 
-async def _universe_refresh_loop(
-    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400
-) -> None:
+async def _universe_refresh_loop(redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400) -> None:
     """Periodically refresh symbol list from DynamicUniverseScanner."""
     while True:
         await asyncio.sleep(interval_s)
@@ -342,6 +459,8 @@ async def _position_exit_loop(
     trade_store: TradeStore | None,
     alert_service: AlertService | None,
     interval_s: int = 15,
+    trade_memory: Any = None,
+    redis: Any = None,
 ) -> None:
     """Poll Bybit positions, detect closures, send TP/SL alerts."""
     if not bybit or not alert_service:
@@ -380,65 +499,122 @@ async def _position_exit_loop(
                 entry_price = float(pos.get("entry_price", 0))
                 amount = float(pos.get("amount", 0))
 
-                # Fetch recent closed order to get exit price
-                exit_price = 0.0
-                exit_reason = "unknown"
-                try:
-                    orders = (
-                        await bybit.fetch_closed_orders(symbol)
-                        if hasattr(bybit, "fetch_closed_orders")
-                        else []
-                    )
-                    if orders:
-                        last = orders[0]
-                        exit_price = float(last.get("average", last.get("price", 0)))
-                except Exception:
-                    pass
+                # Check if exit price was already stored by APM (most reliable — no API delay)
+                exit_price = float(pos.get("exit_price", 0))
+                exit_reason = pos.get("exit_reason", "unknown")
+
+                # Fallback: fetch from Bybit closed PnL records
+                net_pnl = None
+                if exit_price <= 0:
+                    for attempt, delay in enumerate([(1.5, "1st"), (3.0, "2nd"), (5.0, "3rd")]):
+                        await asyncio.sleep(delay[0])
+                        try:
+                            if hasattr(bybit, "get_closed_pnl"):
+                                pnl_result = await bybit.get_closed_pnl(symbol=symbol, limit=5)
+                                pnl_records = pnl_result.get("closed_pnl", [])
+                                if pnl_records:
+                                    last_record = pnl_records[0]
+                                    exit_price = float(last_record.get("avgExitPrice", last_record.get("avgPrice", 0)))
+                                    net_pnl = float(last_record.get("closedPnl", 0))
+                                    if exit_price > 0:
+                                        if net_pnl > 0:
+                                            exit_reason = "tp"
+                                        elif net_pnl < 0:
+                                            exit_reason = "sl"
+                                        break
+                        except Exception as e:
+                            logger.debug("get_closed_pnl failed for %s on attempt %d: %s", symbol, attempt + 1, e)
+
+                        # Fallback: try fetch_closed_orders
+                        if exit_price <= 0:
+                            try:
+                                orders = (
+                                    await bybit.fetch_closed_orders(symbol) if hasattr(bybit, "fetch_closed_orders") else []
+                                )
+                                if orders:
+                                    last = orders[0]
+                                    exit_price = float(last.get("average", last.get("price", 0)))
+                            except Exception:
+                                pass
+
+                        # Fallback: try fetch_my_trades for actual fill price
+                        if exit_price <= 0:
+                            try:
+                                trades = (
+                                    await bybit.fetch_my_trades(symbol, limit=5) if hasattr(bybit, "fetch_my_trades") else []
+                                )
+                                if trades:
+                                    last_trade = trades[-1]  # most recent trade
+                                    exit_price = float(last_trade.get("price", 0))
+                            except Exception:
+                                pass
+
+                        if exit_price > 0:
+                            break
 
                 if exit_price <= 0:
                     # Fallback: use entry_price as exit_price to close the loop
                     exit_price = entry_price
                     exit_reason = "closed_unknown"
-                    logger.warning(
-                        "exit_price unknown for %s — using entry_price as fallback",
-                        symbol,
+                    logger.error(
+                        "exit_price STILL unknown for %s after 3 retries — using entry_price fallback", symbol
                     )
 
-                # Calculate PnL
-                if side == "LONG":
-                    pnl = (exit_price - entry_price) * amount
+                # Calculate Net PnL (including fees)
+                if net_pnl is not None:
+                    pnl = net_pnl
                 else:
-                    pnl = (entry_price - exit_price) * amount
+                    if side == "LONG":
+                        pnl = (exit_price - entry_price) * amount
+                    else:
+                        pnl = (entry_price - exit_price) * amount
 
-                if side == "LONG":
-                    pnl_pct = (
-                        ((exit_price - entry_price) / entry_price * 100)
-                        if entry_price > 0
-                        else 0
-                    )
-                else:
-                    pnl_pct = (
-                        ((entry_price - exit_price) / entry_price * 100)
-                        if entry_price > 0
-                        else 0
-                    )
+                    # Deduct estimated Bybit Taker Fees (0.06% average per side)
+                    fee_pct = 0.0006
+                    entry_fee = entry_price * amount * fee_pct
+                    exit_fee = exit_price * amount * fee_pct
+                    pnl -= (entry_fee + exit_fee)
+
+                entry_value = entry_price * amount
+                pnl_pct = (pnl / entry_value * 100) if entry_value > 0 else 0
 
                 # Determine exit reason by price comparison
                 if pnl > 0:
                     exit_reason = "tp"
-                    msg = format_tp_alert(
-                        symbol, side, entry_price, exit_price, pnl, pnl_pct
-                    )
-                elif pnl < -0.5:
+                    msg = format_tp_alert(symbol, side, entry_price, exit_price, pnl, pnl_pct)
+                elif pnl < -0.15:
                     exit_reason = "sl"
-                    msg = format_sl_alert(
-                        symbol, side, entry_price, exit_price, pnl, pnl_pct
-                    )
+                    msg = format_sl_alert(symbol, side, entry_price, exit_price, pnl, pnl_pct)
                 else:
                     exit_reason = "breakeven"
-                    msg = format_breakeven_alert(
-                        symbol, side, entry_price, exit_price, pnl, pnl_pct
-                    )
+                    msg = format_breakeven_alert(symbol, side, entry_price, exit_price, pnl, pnl_pct)
+
+                # ─── DEDUP GUARD ─────────────────────────────────────────────────
+                # The exit loop polls every 15s. Without this guard, the same
+                # closed position fires the alert on every cycle until remove() finishes.
+                dedup_key = f"karsa:exit_alerted:{symbol}:{side}"
+                already_sent = False
+                if redis:
+                    try:
+                        already_sent = await redis.get(dedup_key) is not None
+                    except Exception:
+                        pass
+
+                if already_sent:
+                    # Alert already sent for this exit — just clean up Redis position
+                    try:
+                        await position_store.remove(symbol, side)
+                    except Exception:
+                        pass
+                    continue
+
+                if redis:
+                    try:
+                        # Mark as sent for 60 seconds — gives position_store.remove() time to fire
+                        await redis.setex(dedup_key, 60, "1")
+                    except Exception:
+                        pass
+                # ─── END DEDUP GUARD ──────────────────────────────────────────────
 
                 try:
                     await alert_service.send(msg)
@@ -463,6 +639,37 @@ async def _position_exit_loop(
                 except Exception:
                     pass
 
+                # Record in TradeMemory for Anti-Whipsaw Cooldown tracking
+                if trade_memory:
+                    try:
+                        hold_min = 0
+                        entry_time_str = pos.get("entry_time")
+                        if entry_time_str:
+                            try:
+                                if isinstance(entry_time_str, str):
+                                    from datetime import datetime
+                                    et = datetime.fromisoformat(entry_time_str)
+                                    if et.tzinfo is None:
+                                        et = et.replace(tzinfo=UTC)
+                                    now = datetime.now(UTC)
+                                    hold_min = int((now - et).total_seconds() / 60)
+                            except Exception:
+                                pass
+
+                        regime = pos.get("entry_regime", "UNKNOWN")
+                        conf = float(pos.get("entry_confidence", 0.0))
+
+                        await trade_memory.store(
+                            symbol=symbol,
+                            pnl_pct=Decimal(str(pnl_pct)),
+                            hold_duration_min=hold_min,
+                            regime=regime,
+                            exit_reason=exit_reason,
+                            entry_confidence=Decimal(str(conf)),
+                        )
+                    except Exception as e:
+                        logger.warning("failed to store trade memory in live_loop for %s: %s", symbol, e)
+
                 logger.info(
                     "exit detected: %s %s pnl=%.2f reason=%s",
                     symbol,
@@ -474,9 +681,7 @@ async def _position_exit_loop(
                 # Prometheus: count closed position
                 from app.core import metrics
 
-                metrics.positions_closed.labels(
-                    symbol=symbol, side=side, exit_reason=exit_reason
-                ).inc()
+                metrics.positions_closed.labels(symbol=symbol, side=side, exit_reason=exit_reason).inc()
 
         except asyncio.CancelledError:
             raise
@@ -488,6 +693,7 @@ async def _status_update_loop(
     bybit: Any,
     position_store: PositionStore,
     alert_service: AlertService | None,
+    redis: Any,
     interval_s: int = 900,
 ) -> None:
     """Send 15-minute position status update to Telegram."""
@@ -501,23 +707,25 @@ async def _status_update_loop(
             if not internal:
                 continue
 
-            # Fetch live prices
-            tickers = (
-                await bybit.fetch_tickers() if hasattr(bybit, "fetch_tickers") else []
-            )
+            # Fetch live prices from Redis instead of Bybit API
             price_map: dict[str, float] = {}
-            for t in tickers:
-                sym = (t.get("symbol") or "").replace("/", "")
-                last = t.get("last") or t.get("close")
-                if sym and last:
-                    price_map[sym] = float(last)
+            for pos in internal:
+                sym = pos.get("symbol", "")
+                if sym:
+                    import json
+                    raw = await redis.get(f"global:state:{sym}")
+                    if raw:
+                        try:
+                            state = json.loads(raw)
+                            if state and state.get("best_bid") and state.get("best_ask"):
+                                bid = float(str(state["best_bid"]))
+                                ask = float(str(state["best_ask"]))
+                                price_map[sym.replace("/", "")] = (bid + ask) / 2
+                        except Exception:
+                            pass
 
             try:
-                bybit_positions = (
-                    await bybit.fetch_positions()
-                    if hasattr(bybit, "fetch_positions")
-                    else []
-                )
+                bybit_positions = await bybit.fetch_positions() if hasattr(bybit, "fetch_positions") else []
             except Exception as e:
                 logger.error(f"status_update: Bybit fetch failed: {e}")
                 bybit_positions = []
@@ -540,19 +748,13 @@ async def _status_update_loop(
                     mark = float(pos.get("markPrice", pos.get("current_price", entry)))
 
                     if entry > 0 and mark > 0 and leverage > 0:
-                        raw_pct = (
-                            ((mark - entry) / entry)
-                            if side in ("BUY", "LONG")
-                            else ((entry - mark) / entry)
-                        )
+                        raw_pct = ((mark - entry) / entry) if side in ("BUY", "LONG") else ((entry - mark) / entry)
                         pnl_pct = raw_pct * leverage * 100
                     else:
                         pnl_pct = 0.0
 
                     arrow = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
-                    lines.append(
-                        f"{arrow} <b>{symbol}</b> {side} | ${pnl:+.2f} ({pnl_pct:+.2f}%)"
-                    )
+                    lines.append(f"{arrow} <b>{symbol}</b> {side} | ${pnl:+.2f} ({pnl_pct:+.2f}%)")
             else:
                 for pos in internal:
                     symbol = pos.get("symbol", "")
@@ -568,23 +770,13 @@ async def _status_update_loop(
                         pnl = (entry_price - live_price) * amount
 
                     if side == "LONG":
-                        pnl_pct = (
-                            ((live_price - entry_price) / entry_price * 100)
-                            if entry_price > 0
-                            else 0
-                        )
+                        pnl_pct = ((live_price - entry_price) / entry_price * 100) if entry_price > 0 else 0
                     else:
-                        pnl_pct = (
-                            ((entry_price - live_price) / entry_price * 100)
-                            if entry_price > 0
-                            else 0
-                        )
+                        pnl_pct = ((entry_price - live_price) / entry_price * 100) if entry_price > 0 else 0
                     total_pnl += pnl
 
                     arrow = "\U0001f7e2" if pnl >= 0 else "\U0001f534"
-                    lines.append(
-                        f"{arrow} <b>{symbol}</b> {side} | ${pnl:+.2f} ({pnl_pct:+.2f}%)"
-                    )
+                    lines.append(f"{arrow} <b>{symbol}</b> {side} | ${pnl:+.2f} ({pnl_pct:+.2f}%)")
 
             lines.append(f"\n⚖️ <b>Unrealized: ${total_pnl:+.2f}</b>")
 
@@ -627,9 +819,7 @@ async def _redis_health_check_loop(
                     )
                     if alert_service:
                         try:
-                            await alert_service.send(
-                                "✅ Redis recovered — connection restored."
-                            )
+                            await alert_service.send("✅ Redis recovered — connection restored.")
                         except Exception:
                             pass
                 _consecutive_redis_failures = 0
@@ -691,25 +881,18 @@ async def _redis_health_check_loop(
                         )
 
                 except _json.JSONDecodeError:
-                    logger.error(
-                        "redis_health: purging corrupt (non-JSON) key %s", key_str
-                    )
+                    logger.error("redis_health: purging corrupt (non-JSON) key %s", key_str)
                     await redis.delete(key_str)
                     malformed += 1
                 except Exception as key_err:
-                    logger.warning(
-                        "redis_health: error inspecting key %s: %s", key_str, key_err
-                    )
+                    logger.warning("redis_health: error inspecting key %s: %s", key_str, key_err)
 
             if malformed:
-                logger.warning(
-                    "redis_health: purged %d malformed position keys", malformed
-                )
+                logger.warning("redis_health: purged %d malformed position keys", malformed)
                 if alert_service:
                     try:
                         await alert_service.send(
-                            f"⚠️ Redis health: purged {malformed} malformed position key(s). "
-                            "Check logs for details."
+                            f"⚠️ Redis health: purged {malformed} malformed position key(s). " "Check logs for details."
                         )
                     except Exception:
                         pass
@@ -824,11 +1007,7 @@ async def main() -> None:  # noqa: PLR0915
         except Exception:
             logger.warning("telegram bot init failed — alerts disabled")
 
-    executor = (
-        SmartOrderRouter(bybit, alert_service=alert_service)
-        if bybit is not None
-        else None
-    )
+    executor = SmartOrderRouter(bybit, alert_service=alert_service) if bybit is not None else None
 
     # APM — manages open positions: breakeven, trailing, time exit, regime kill switch
     from app.execution.position_manager import ActivePositionManager
@@ -839,6 +1018,8 @@ async def main() -> None:  # noqa: PLR0915
             position_store=position_store,
             regime_classifier=classifier,
             alert_service=alert_service,
+            trade_memory=trade_memory,
+            redis_client=redis,
             logger_=logger,
         )
         if bybit is not None
@@ -846,6 +1027,20 @@ async def main() -> None:  # noqa: PLR0915
     )
 
     from app.risk.portfolio_risk_manager import PortfolioRiskManager
+
+    try:
+        from app.alpha.analyst import CryptoAnalyst
+        from app.core.ai_client import AIClient
+
+        ai_client = AIClient(
+            router_url=settings.nine_router_base_url,
+            auth_token=settings.nine_router_auth_token,
+            model=settings.nine_router_model,
+        )
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+    except Exception as e:
+        crypto_analyst = None
+        logger.warning(f"Could not initialize CryptoAnalyst in live loop: {e}")
 
     trade_store = None
     try:
@@ -876,9 +1071,7 @@ async def main() -> None:  # noqa: PLR0915
 
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
-        await _on_signal_live(
-            symbol, sig, position_store, executor, risk_manager, trade_store, engine
-        )
+        await _on_signal_live(symbol, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst)
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 
@@ -889,9 +1082,7 @@ async def main() -> None:  # noqa: PLR0915
         if universe_symbols
         else (settings.watchlist.split(",") if settings.watchlist else settings.symbols)
     )
-    logger.info(
-        f"live universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}"
-    )
+    logger.info(f"live universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}")
 
     # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
     try:
@@ -902,9 +1093,7 @@ async def main() -> None:  # noqa: PLR0915
                 if candles:
                     for c in candles:
                         consumer._buffer.append(sym, c)
-                logger.info(
-                    f"live pre-filled buffer for {sym} with {len(candles or [])} candles"
-                )
+                logger.info(f"live pre-filled buffer for {sym} with {len(candles or [])} candles")
             except Exception as e:
                 logger.warning(f"failed to pre-fill {sym}: {e}")
     except Exception as e:
@@ -944,9 +1133,7 @@ async def main() -> None:  # noqa: PLR0915
                 exchange_map: dict[str, dict] = {}
                 for p in exchange_positions:
                     sym = (p.get("symbol") or "").replace("/", "")
-                    side = p.get(
-                        "side", ""
-                    )  # already "buy"/"sell" from fetch_positions
+                    side = p.get("side", "")  # already "buy"/"sell" from fetch_positions
                     exchange_map[f"{sym}:{side}"] = p
 
                 # Check which exchange positions are NOT in Redis
@@ -954,9 +1141,7 @@ async def main() -> None:  # noqa: PLR0915
                 existing: set[str] = set()
                 for key in existing_keys:
                     try:
-                        raw = await position_store.redis.get(
-                            key if isinstance(key, str) else key.decode()
-                        )
+                        raw = await position_store.redis.get(key if isinstance(key, str) else key.decode())
                         if raw:
                             pos = json.loads(raw)
                             p_sym = (pos.get("symbol") or "").replace("/", "")
@@ -985,9 +1170,7 @@ async def main() -> None:  # noqa: PLR0915
                 for key_str in stale_keys:
                     await position_store.redis.delete(key_str)
                 if stale_keys:
-                    logger.warning(
-                        "stale_cleanup: removed %d stale Redis keys", len(stale_keys)
-                    )
+                    logger.warning("stale_cleanup: removed %d stale Redis keys", len(stale_keys))
 
                 # Save exchange positions missing from Redis
                 synced = 0
@@ -995,11 +1178,7 @@ async def main() -> None:  # noqa: PLR0915
                     if ex_key not in existing:
                         # Convert buy/sell back to LONG/SHORT for position_store
                         ccxt_sym = (p.get("symbol") or "").replace("/", "")
-                        ccxt_sym_fmt = (
-                            ccxt_sym[:-4] + "/" + ccxt_sym[-4:]
-                            if len(ccxt_sym) > 4
-                            else ccxt_sym
-                        )
+                        ccxt_sym_fmt = ccxt_sym[:-4] + "/" + ccxt_sym[-4:] if len(ccxt_sym) > 4 else ccxt_sym
                         side_long = "LONG" if p.get("side") == "buy" else "SHORT"
                         entry_price = Decimal(str(p.get("entry_price", 0)))
                         amount = Decimal(str(p.get("contracts", 0)))
@@ -1022,11 +1201,7 @@ async def main() -> None:  # noqa: PLR0915
 
                         initial_risk = Decimal("0")
                         try:
-                            rp = (
-                                risk_gate.get_profile(MarketRegime(entry_regime))
-                                if entry_regime
-                                else None
-                            )
+                            rp = risk_gate.get_profile(MarketRegime(entry_regime)) if entry_regime else None
                             if rp and atr_val > 0:
                                 initial_risk = atr_val * rp.sl_atr_buffer
                         except Exception:
@@ -1049,9 +1224,7 @@ async def main() -> None:  # noqa: PLR0915
                                 pos_data = json.loads(raw)
                                 pos_data["entry_regime"] = entry_regime
                                 pos_data["initial_risk_per_unit"] = str(initial_risk)
-                                await position_store.redis.set(
-                                    key, json.dumps(pos_data)
-                                )
+                                await position_store.redis.set(key, json.dumps(pos_data))
                         except Exception:
                             pass
                         synced += 1
@@ -1074,12 +1247,8 @@ async def main() -> None:  # noqa: PLR0915
         logger.exception("reconciliation_failed — continuing startup")
 
     # Market data ingestor — feeds orderbook/funding/OI to CHOP scorer
-    ingestor, ingestor_task = _start_ingestor(
-        settings, redis, consumer, initial_symbols
-    )
-    universe_task = asyncio.create_task(
-        _universe_refresh_loop(redis, ingestor), name="live-universe"
-    )
+    ingestor, ingestor_task = _start_ingestor(settings, redis, consumer, initial_symbols)
+    universe_task = asyncio.create_task(_universe_refresh_loop(redis, ingestor), name="live-universe")
 
     # Fetch balance once before starting consumer — prevents over-allocation on first signal
     if bybit:
@@ -1096,33 +1265,21 @@ async def main() -> None:  # noqa: PLR0915
 
     # Position exit monitor + 15-min status update + APM
     exit_task = asyncio.create_task(
-        _position_exit_loop(bybit, position_store, trade_store, alert_service),
+        _position_exit_loop(bybit, position_store, trade_store, alert_service, trade_memory=trade_memory, redis=redis),
         name="live-exit-monitor",
     )
     status_task = asyncio.create_task(
-        _status_update_loop(bybit, position_store, alert_service),
+        _status_update_loop(bybit, position_store, alert_service, redis),
         name="live-status-update",
     )
-    apm_task = (
-        asyncio.create_task(apm.start_monitoring(), name="live-apm") if apm else None
-    )
+    apm_task = asyncio.create_task(apm.start_monitoring(), name="live-apm") if apm else None
     # APM health check: every 60s, detect + auto-repair positions with missing fields
     apm_health_task = (
-        asyncio.create_task(
-            apm.start_health_check_loop(interval_s=60), name="live-apm-health"
-        )
-        if apm
-        else None
+        asyncio.create_task(apm.start_health_check_loop(interval_s=60), name="live-apm-health") if apm else None
     )
     # Redis health check: every 30s, verify connectivity and alert on degradation
-    redis_health_task = asyncio.create_task(
-        _redis_health_check_loop(redis, alert_service), name="live-redis-health"
-    )
-    balance_task = (
-        asyncio.create_task(_balance_refresh_loop(bybit, engine), name="live-balance")
-        if bybit
-        else None
-    )
+    redis_health_task = asyncio.create_task(_redis_health_check_loop(redis, alert_service), name="live-redis-health")
+    balance_task = asyncio.create_task(_balance_refresh_loop(bybit, engine), name="live-balance") if bybit else None
     wallet_metrics_task = asyncio.create_task(
         _wallet_metrics_loop(bybit, position_store, redis, shutdown_event),
         name="live-wallet-metrics",
@@ -1165,7 +1322,9 @@ async def main() -> None:  # noqa: PLR0915
             await wallet_metrics_task
         await ingestor.stop()
         await emitter.stop()
-        await exchange.close()
+        if "exchange" in locals() and exchange is not None:
+            with contextlib.suppress(Exception):
+                await exchange.close()
         await db_engine.dispose()
         await shutdown()
         logger.info("karsa-live stopped")

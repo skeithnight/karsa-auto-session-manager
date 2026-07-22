@@ -1,0 +1,883 @@
+diff --git a/app/alpha/strategy_router.py b/app/alpha/strategy_router.py
+index 7a51aa4..037c857 100644
+--- a/app/alpha/strategy_router.py
++++ b/app/alpha/strategy_router.py
+@@ -29,7 +29,7 @@ import numpy as np
+ from loguru import logger
+ 
+ from app.alpha.regime_classifier import MarketRegime
+-from app.alpha.ta_tools import calculate_bollinger_bands, calculate_ema, calculate_vpvr
++from app.alpha.ta_tools import calculate_ema, calculate_vpvr
+ 
+ # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.2) ---
+ TREND_SCORE_BREAKOUT: int = 30
+@@ -204,7 +204,7 @@ class StrategyRouter:
+             score += synced * 20  # 20 per exchange (max 40 if both)
+ 
+         # Microstructure Enhancements
+-        
++
+         # 1. Macro Trend Alignment (EMA-200)
+         # Prevent trading against the macro trend
+         if len(closes) >= 200:
+@@ -215,7 +215,7 @@ class StrategyRouter:
+                     score -= 20  # Penalty: Fighting macro downtrend
+                 elif direction == "SHORT" and last_close > ema_200:
+                     score -= 20  # Penalty: Fighting macro uptrend
+-                
++
+         # 2. Orderbook Delta Validation
+         # Prevent fakeouts by ensuring limit orders agree with the breakout
+         if orderbook_delta is not None:
+@@ -229,7 +229,7 @@ class StrategyRouter:
+                     score -= 20  # Heavy buy walls absorbing the breakdown
+                 elif orderbook_delta < -0.1:
+                     score += 10  # Sell walls pressing the breakdown
+-                    
++
+         # 3. Open Interest (OI) Confirmation
+         # True trends need new money (rising OI), not just liquidations (squeeze)
+         if oi_change is not None:
+@@ -291,34 +291,28 @@ class StrategyRouter:
+         if ema_20_dec is None:
+             return 0
+         ema_20 = float(ema_20_dec)
+-        
++
+         dist_to_ema = (last_close - ema_20) / ema_20
+-        
++
+         # Mode A: Momentum Surfing (Harga sedang terbang)
+         is_surfing = False
+-        if direction == "LONG" and dist_to_ema > 0.03:
+-            is_surfing = True
+-        elif direction == "SHORT" and dist_to_ema < -0.03:
++        if direction == "LONG" and dist_to_ema > 0.03 or direction == "SHORT" and dist_to_ema < -0.03:
+             is_surfing = True
+-            
++
+         if is_surfing:
+             # Momentum Surfing: Requires strong orderbook + volume + safe RSI
+             if orderbook_delta is not None:
+-                if direction == "LONG" and orderbook_delta > 0.15:
+-                    score += 40
+-                elif direction == "SHORT" and orderbook_delta < -0.15:
++                if direction == "LONG" and orderbook_delta > 0.15 or direction == "SHORT" and orderbook_delta < -0.15:
+                     score += 40
+-            
++
+             vol_sma = float(np.mean(volumes[-21:-1])) if len(volumes) > 20 else float(np.mean(volumes[:-1]))
+             if vol_sma > 0 and volumes[-1] > 2.0 * vol_sma:
+                 score += 30
+-                
++
+             rsi = StrategyRouter._calculate_rsi(closes, period=14)
+-            if direction == "LONG" and rsi < 85:
+-                score += 20
+-            elif direction == "SHORT" and rsi > 15:
++            if direction == "LONG" and rsi < 85 or direction == "SHORT" and rsi > 15:
+                 score += 20
+-                
++
+         else:
+             # Mode B: Anti-Breakout (Mean Reversion inside a trend)
+             if direction == "LONG":
+@@ -327,7 +321,7 @@ class StrategyRouter:
+             elif direction == "SHORT":
+                 if -0.01 < dist_to_ema < 0.02:
+                     score += 50
+-                    
++
+             # Wick Rejection (Pin Bar off the EMA)
+             body = abs(last_close - last_open)
+             if direction == "LONG":
+@@ -338,12 +332,10 @@ class StrategyRouter:
+                 upper_wick = highs[-1] - max(last_close, last_open)
+                 if upper_wick > body * 1.5:
+                     score += 30
+-                    
++
+             # Orderbook Support
+             if orderbook_delta is not None:
+-                if direction == "LONG" and orderbook_delta > 0.1:
+-                    score += 20
+-                elif direction == "SHORT" and orderbook_delta < -0.1:
++                if direction == "LONG" and orderbook_delta > 0.1 or direction == "SHORT" and orderbook_delta < -0.1:
+                     score += 20
+ 
+         return score
+@@ -354,7 +346,7 @@ class StrategyRouter:
+ 
+     @staticmethod
+     def _score_range_strategy(
+-        candles: np.ndarray[Any, Any], 
++        candles: np.ndarray[Any, Any],
+         direction: str,
+         orderbook_delta: float | None = None,
+         funding_rate: float | None = None,
+@@ -400,23 +392,19 @@ class StrategyRouter:
+             score += RANGE_SCORE_RSI
+ 
+         # Microstructure Enhancements
+-        
++
+         # 1. Funding Rate Squeeze Bonus
+         # Shorting resistance is more profitable if everyone is extremely long and paying funding
+         if funding_rate is not None:
+-            if direction == "SHORT" and funding_rate > 0.0005:  # Extremely positive funding
+-                score += 15
+-            elif direction == "LONG" and funding_rate < -0.0005:  # Extremely negative funding
++            if direction == "SHORT" and funding_rate > 0.0005 or direction == "LONG" and funding_rate < -0.0005:  # Extremely positive funding
+                 score += 15
+-                
++
+         # 2. Orderbook Absorption Bonus
+         # If we short the top of the range, we want sell walls (negative delta) waiting there
+         if orderbook_delta is not None:
+-            if direction == "SHORT" and orderbook_delta < -0.1:
++            if direction == "SHORT" and orderbook_delta < -0.1 or direction == "LONG" and orderbook_delta > 0.1:
+                 score += 15
+-            elif direction == "LONG" and orderbook_delta > 0.1:
+-                score += 15
+-                
++
+         # 3. VPVR Value Area Sniper Bonus
+         vpvr_res = calculate_vpvr(candles)
+         if vpvr_res:
+diff --git a/app/alpha/ta_tools.py b/app/alpha/ta_tools.py
+index 0459dce..4614471 100644
+--- a/app/alpha/ta_tools.py
++++ b/app/alpha/ta_tools.py
+@@ -7,6 +7,7 @@ Internal float math for speed. Used by analyst.py and position_judge.py.
+ from __future__ import annotations
+ 
+ from decimal import Decimal
++
+ import numpy as np
+ 
+ 
+@@ -143,38 +144,38 @@ def calculate_atr(
+ 
+ def calculate_vpvr(arr: np.ndarray, bins: int = 50) -> tuple[float, float, float] | None:
+     """Volume Profile Visible Range (VPVR).
+-    
++
+     Args:
+         arr: Numpy array with columns [ts, open, high, low, close, volume]
+         bins: Number of price bins
+-        
++
+     Returns:
+         (POC, VAH, VAL) as floats. Returns None if insufficient data.
+     """
+     if len(arr) < 2:
+         return None
+-        
++
+     highs = arr[:, 2]
+     lows = arr[:, 3]
+     volumes = arr[:, 5]
+-    
++
+     min_price = np.min(lows)
+     max_price = np.max(highs)
+-    
++
+     if min_price == max_price:
+         return float(min_price), float(min_price), float(min_price)
+-        
++
+     # Create bin edges
+     bin_edges = np.linspace(min_price, max_price, bins + 1)
+     bin_centers = (bin_edges[:-1] + bin_edges[1:]) / 2
+     profile = np.zeros(bins)
+-    
++
+     # Distribute volume proportionally
+     for i in range(len(arr)):
+         h = highs[i]
+         l = lows[i]
+         v = volumes[i]
+-        
++
+         if h == l:
+             idx = int(np.searchsorted(bin_edges, l, side='right')) - 1
+             idx = np.clip(idx, 0, bins - 1)
+@@ -184,7 +185,7 @@ def calculate_vpvr(arr: np.ndarray, bins: int = 50) -> tuple[float, float, float
+             end_idx = int(np.searchsorted(bin_edges, h, side='right')) - 1
+             start_idx = np.clip(start_idx, 0, bins - 1)
+             end_idx = np.clip(end_idx, 0, bins - 1)
+-            
++
+             if start_idx == end_idx:
+                 profile[start_idx] += v
+             else:
+@@ -196,42 +197,41 @@ def calculate_vpvr(arr: np.ndarray, bins: int = 50) -> tuple[float, float, float
+                     overlap_high = min(h, bin_high)
+                     if overlap_high > overlap_low:
+                         profile[b] += vol_per_price * (overlap_high - overlap_low)
+-                        
++
+     # Find POC
+     poc_idx = int(np.argmax(profile))
+     poc = bin_centers[poc_idx]
+-    
++
+     # Calculate Value Area (70% of total volume)
+     total_vol = np.sum(profile)
+     va_vol_target = total_vol * 0.70
+-    
++
+     va_vol = profile[poc_idx]
+     lower_idx = poc_idx
+     upper_idx = poc_idx
+-    
++
+     while va_vol < va_vol_target and (lower_idx > 0 or upper_idx < bins - 1):
+         vol_lower = profile[lower_idx - 1] if lower_idx > 0 else -1
+         vol_upper = profile[upper_idx + 1] if upper_idx < bins - 1 else -1
+-        
++
+         if vol_lower > vol_upper:
+             lower_idx -= 1
+             va_vol += profile[lower_idx]
+         elif vol_upper > vol_lower:
+             upper_idx += 1
+             va_vol += profile[upper_idx]
+-        else:
+-            if lower_idx > 0 and upper_idx < bins - 1:
+-                lower_idx -= 1
+-                upper_idx += 1
+-                va_vol += profile[lower_idx] + profile[upper_idx]
+-            elif lower_idx > 0:
+-                lower_idx -= 1
+-                va_vol += profile[lower_idx]
+-            elif upper_idx < bins - 1:
+-                upper_idx += 1
+-                va_vol += profile[upper_idx]
+-                
++        elif lower_idx > 0 and upper_idx < bins - 1:
++            lower_idx -= 1
++            upper_idx += 1
++            va_vol += profile[lower_idx] + profile[upper_idx]
++        elif lower_idx > 0:
++            lower_idx -= 1
++            va_vol += profile[lower_idx]
++        elif upper_idx < bins - 1:
++            upper_idx += 1
++            va_vol += profile[upper_idx]
++
+     val = bin_centers[lower_idx]
+     vah = bin_centers[upper_idx]
+-    
++
+     return float(poc), float(vah), float(val)
+diff --git a/app/alpha/trade_memory.py b/app/alpha/trade_memory.py
+index 227cf7b..d879aca 100644
+--- a/app/alpha/trade_memory.py
++++ b/app/alpha/trade_memory.py
+@@ -131,21 +131,21 @@ class TradeMemory:
+         Requires at least 10 trades to judge fairly.
+         """
+         trades = await self.get_recent(symbol, count=10)
+-        
++
+         # If fewer than 10 trades, we don't have enough statistical significance, default to 1.0
+         if len(trades) < 10:
+             return 1.0
+-            
++
+         wins = sum(1 for t in trades if t.get("pnl_pct", 0) > 0.0)
+         win_rate = wins / len(trades)
+-        
++
+         if win_rate < 0.30:
+             logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 0.7x penalty.")
+             return 0.7
+         elif win_rate > 0.60:
+             logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 1.2x bonus.")
+             return 1.2
+-            
++
+         return 1.0
+ 
+     def format_prompt(self, symbol: str, trades: list[dict]) -> str:
+diff --git a/app/backtest/engine.py b/app/backtest/engine.py
+index f7fbacf..f44d32b 100644
+--- a/app/backtest/engine.py
++++ b/app/backtest/engine.py
+@@ -110,7 +110,7 @@ class BacktestEngine:
+             or oi_change is not None
+         )
+         base_gate = float(self._gate)
+-        
++
+         idx = 50  # minimum candles for RegimeClassifier
+         atr_array = self._calculate_atr_array(arr)
+ 
+diff --git a/app/backtest/optimizer.py b/app/backtest/optimizer.py
+index 3782767..83c780f 100644
+--- a/app/backtest/optimizer.py
++++ b/app/backtest/optimizer.py
+@@ -7,9 +7,9 @@ from decimal import Decimal
+ 
+ from loguru import logger
+ 
+-from app.backtest.engine import BacktestEngine
+ from app.alpha.regime_classifier import RegimeClassifier
+ from app.alpha.strategy_router import StrategyRouter
++from app.backtest.engine import BacktestEngine
+ from app.risk.dynamic_risk_gate import DynamicRiskGate
+ 
+ 
+@@ -30,7 +30,7 @@ class GridSearchOptimizer:
+         self.sl_buffers = sl_buffers
+         self.trail_mults = trail_mults
+         self.results: dict[tuple[Decimal, Decimal], OptimizationResult] = {}
+-        
++
+         for sl in sl_buffers:
+             for trail in trail_mults:
+                 self.results[(sl, trail)] = OptimizationResult(
+@@ -41,7 +41,7 @@ class GridSearchOptimizer:
+                     win_rate=0.0,
+                     net_pnl=Decimal("0")
+                 )
+-                
++
+         self.classifier = RegimeClassifier()
+         self.router = StrategyRouter()
+ 
+@@ -49,16 +49,16 @@ class GridSearchOptimizer:
+         """Process a single symbol against all parameter combinations."""
+         if not candles:
+             return
+-            
++
+         logger.debug(f"Optimizing {symbol} across {len(self.sl_buffers) * len(self.trail_mults)} combinations...")
+-        
++
+         for sl in self.sl_buffers:
+             for trail in self.trail_mults:
+                 gate = DynamicRiskGate(override_sl_buffer=sl, override_trail_mult=trail)
+                 engine = BacktestEngine(self.classifier, self.router, gate)
+-                
++
+                 reports = await engine.run(symbol, candles)
+-                
++
+                 res = self.results[(sl, trail)]
+                 for r in reports:
+                     if r.trade_taken:
+@@ -74,6 +74,6 @@ class GridSearchOptimizer:
+             if res.total_trades > 0:
+                 res.win_rate = (res.total_wins / res.total_trades) * 100
+             final_results.append(res)
+-            
++
+         final_results.sort(key=lambda x: x.net_pnl, reverse=True)
+         return final_results
+diff --git a/app/bot/handlers.py b/app/bot/handlers.py
+index c369bd2..60d8ce2 100644
+--- a/app/bot/handlers.py
++++ b/app/bot/handlers.py
+@@ -25,7 +25,7 @@ from decimal import Decimal
+ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+ from telegram.ext import ContextTypes
+ 
+-from app.bot.utils.format import HTML, bold, code, fmt, italic, pre
++from app.bot.utils.format import HTML, bold, fmt, italic, pre
+ from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
+ from app.core.config import get_settings
+ 
+@@ -2093,13 +2093,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+             except Exception as exc:
+                 logger.warning("auto_launch_read_max_pos_failed", extra={"error": str(exc)})
+                 max_pos = 5
+-                
++
+             try:
+                 risk_pct = int(await r.get("karsa:settings:risk_pct") or 10)
+             except Exception as exc:
+                 logger.warning("auto_launch_read_risk_pct_failed", extra={"error": str(exc)})
+                 risk_pct = 10
+-                
++
+             try:
+                 await session_mgr.start_session(
+                     duration_min=0,
+diff --git a/app/core/telemetry.py b/app/core/telemetry.py
+index 4918337..011dfba 100644
+--- a/app/core/telemetry.py
++++ b/app/core/telemetry.py
+@@ -275,13 +275,13 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
+         "live": "LIVE",
+         "shadow": "SHDW",
+     }
+-    
++
+     for name, h in sorted(services.items()):
+         icon = {"fresh": "🟢", "stale": "🟡", "dead": "🔴", "unknown": "⚪"}.get(
+             h.status, "⚪"
+         )
+         mem = f"{h.memory_mb:.0f}M" if h.memory_mb else "N/A"
+-        
++
+         last_candle_str = "—"
+         if h.last_candle_ts:
+             try:
+@@ -295,7 +295,7 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
+                 last_candle_str = str(h.last_candle_ts)[:5]
+ 
+         short_name = name_map.get(name.lower(), name.upper()[:4])
+-        
++
+         lines.append(
+             f"{short_name:<4} {icon} {mem:>4} │ O:{h.orders_placed} P:{h.positions_open} │ C:{h.candles_ingested} ({last_candle_str})"
+         )
+diff --git a/app/data/universe_scanner.py b/app/data/universe_scanner.py
+index ae72c9d..35d71af 100644
+--- a/app/data/universe_scanner.py
++++ b/app/data/universe_scanner.py
+@@ -216,7 +216,7 @@ class DynamicUniverseScanner:
+                 momentum_boost = 1.0  # +1.0 ensures it beats slow high-volume coins
+             elif pct > 10.0:
+                 momentum_boost = 0.5
+-            
++
+             cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + momentum_boost
+ 
+         # 5. Sort by composite score, take top N
+diff --git a/app/data/universe_scorer.py b/app/data/universe_scorer.py
+index 2141ee6..f297d72 100644
+--- a/app/data/universe_scorer.py
++++ b/app/data/universe_scorer.py
+@@ -125,7 +125,7 @@ class UniverseScorer:
+         # Funding Rate Liquidation Hunt
+         funding_rate = await self.fetcher.fetch_funding_rate(symbol)
+         funding_score = min(abs(funding_rate) * Decimal("50000"), FUNDING_MAX)
+-        
++
+         total = volume_score + momentum_score + overextension_penalty + squeeze_score + funding_score
+ 
+         return {
+diff --git a/app/execution/bybit_client.py b/app/execution/bybit_client.py
+index 023afdc..90882b1 100644
+--- a/app/execution/bybit_client.py
++++ b/app/execution/bybit_client.py
+@@ -410,14 +410,14 @@ class BybitClient:
+         logger.debug("fetch_open_orders: entering")
+         if not self.connected or not self.session:
+             raise RuntimeError("Bybit not connected")
+-            
++
+         params: dict[str, Any] = {
+             "category": "linear",
+             "settleCoin": "USDT"
+         }
+         if symbol:
+             params["symbol"] = self._to_bybit_symbol(symbol)
+-            
++
+         result = await self._execute(
+             self.session.get_open_orders,
+             **params
+diff --git a/app/execution/shadow.py b/app/execution/shadow.py
+index 2b3c40c..e54c0f1 100644
+--- a/app/execution/shadow.py
++++ b/app/execution/shadow.py
+@@ -546,7 +546,7 @@ class ShadowAPM:
+             initial_risk = Decimal("0")
+ 
+         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
+-        
++
+         is_hyper = str(entry_regime).startswith("HYPER")
+         wick_long = Decimal("-0.015") if is_hyper else Decimal("-0.03")
+         wick_short = Decimal("0.015") if is_hyper else Decimal("0.03")
+diff --git a/app/main.py b/app/main.py
+index 9d60245..51beeca 100644
+--- a/app/main.py
++++ b/app/main.py
+@@ -975,13 +975,13 @@ async def executor_task(
+         except Exception:
+             max_pos = 5
+             max_hyper = 2
+-            
++
+         open_positions = await position_store.list_all()
+         total_open = len(open_positions)
+         hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+-        
++
+         is_hyper = signal.regime.value.startswith("HYPER")
+-        
++
+         if is_hyper:
+             if hyper_open >= max_hyper:
+                 logger.warning(f"HYPER slots full ({hyper_open}/{max_hyper}), skipping {signal.symbol}")
+@@ -1071,7 +1071,7 @@ async def executor_task(
+                 # No ATR — fall back to 1% of entry price as risk estimate
+                 initial_risk_per_unit = price * Decimal("0.01")
+                 risk_profile_json = risk_profile.to_json()
+-                
++
+             # Absolute fallback to ensure APM tracks the position
+             if initial_risk_per_unit is None or initial_risk_per_unit <= Decimal("0"):
+                 initial_risk_per_unit = price * Decimal("0.01")
+diff --git a/app/risk/dynamic_risk_gate.py b/app/risk/dynamic_risk_gate.py
+index be9d1ed..41f9e23 100644
+--- a/app/risk/dynamic_risk_gate.py
++++ b/app/risk/dynamic_risk_gate.py
+@@ -16,8 +16,8 @@ RiskProfile fields (from docs/architecture/adaptive_multi_strategy.md §5.1):
+ 
+ from __future__ import annotations
+ 
+-import json
+ import dataclasses
++import json
+ from dataclasses import asdict, dataclass
+ from decimal import Decimal
+ 
+@@ -150,7 +150,7 @@ class DynamicRiskGate:
+                 f"DynamicRiskGate: unknown regime {regime}, using CHOP profile"
+             )
+             profile = _PROFILES[MarketRegime.CHOP]
+-            
++
+         if self.override_sl_buffer is not None or self.override_trail_mult is not None:
+             updates = {}
+             if self.override_sl_buffer is not None:
+@@ -158,5 +158,5 @@ class DynamicRiskGate:
+             if self.override_trail_mult is not None:
+                 updates["trail_atr_mult"] = self.override_trail_mult
+             return dataclasses.replace(profile, **updates)
+-            
++
+         return profile
+diff --git a/check_bybit.py b/check_bybit.py
+index 6402fc7..5e471cc 100644
+--- a/check_bybit.py
++++ b/check_bybit.py
+@@ -1,7 +1,9 @@
+ import asyncio
++
+ from app.core.config import settings
+ from app.execution.bybit_client import BybitClient
+ 
++
+ async def main():
+     client = BybitClient(
+         api_key=settings.BYBIT_API_KEY,
+@@ -12,6 +14,6 @@ async def main():
+     positions = await client.fetch_positions()
+     for p in positions:
+         print(f"Symbol: {p['symbol']}, Side: {p['side']}, Size: {p['contracts']}, Entry: {p['entry_price']}")
+-    
++
+ if __name__ == "__main__":
+     asyncio.run(main())
+diff --git a/scripts/check_bybit.py b/scripts/check_bybit.py
+index 01ee4f0..5a80bc3 100644
+--- a/scripts/check_bybit.py
++++ b/scripts/check_bybit.py
+@@ -1,5 +1,6 @@
+ import asyncio
+ import logging
++
+ from app.execution.bybit_client import BybitClient
+ 
+ logger = logging.getLogger(__name__)
+@@ -7,11 +8,11 @@ logger = logging.getLogger(__name__)
+ async def main():
+     client = BybitClient()
+     await client.connect()
+-    
++
+     positions = await client.fetch_positions()
+     print(f"=== BYBIT OPEN POSITIONS ({len(positions)}) ===")
+     for p in positions:
+         print(f"Symbol: {p.get('symbol')} | Side: {p.get('side')} | Contracts: {p.get('contracts')} | Entry: {p.get('entry_price')} | PnL: {p.get('unrealized_pnl')} | SL: {p.get('stopLoss')}")
+-        
++
+ if __name__ == "__main__":
+     asyncio.run(main())
+diff --git a/scripts/check_status.py b/scripts/check_status.py
+index c682e5a..cca82a1 100644
+--- a/scripts/check_status.py
++++ b/scripts/check_status.py
+@@ -1,23 +1,22 @@
+ import asyncio
+-import json
+ import logging
+-from decimal import Decimal
++
++from app.core.config import get_settings
+ from app.core.database import DatabaseEngine
+-from app.core.redis_client import RedisClient
+ from app.core.position_store import PositionStore
+-from app.core.config import get_settings
++from app.core.redis_client import RedisClient
+ 
+ logger = logging.getLogger(__name__)
+ 
+ async def main():
+     settings = get_settings()
+-    
++
+     # Init Redis
+     redis_client = RedisClient()
+     await redis_client.connect()
+-    
++
+     position_store = PositionStore(redis_client)
+-    
++
+     # Get all open positions
+     open_positions = await position_store.list_all()
+     print("=== OPEN POSITIONS ===")
+@@ -26,15 +25,15 @@ async def main():
+     else:
+         for p in open_positions:
+             print(f"Symbol: {p.get('symbol')} | Side: {p.get('side')} | Entry: {p.get('entry_price')} | Size: {p.get('size')} | Live: {p.get('live_price')} | PnL: {p.get('unrealized_pnl')}")
+-            
++
+     print("\n=== PERFORMANCE METRICS ===")
+-    
++
+     # Init Postgres
+     db = DatabaseEngine()
+     await db.connect(settings.postgres_url)
+-    
++
+     query = """
+-    SELECT 
++    SELECT
+         COUNT(*) as total_trades,
+         SUM(CASE WHEN realized_pnl > 0 THEN 1 ELSE 0 END) as winning_trades,
+         SUM(CASE WHEN realized_pnl <= 0 THEN 1 ELSE 0 END) as losing_trades,
+@@ -42,7 +41,7 @@ async def main():
+     FROM trades
+     WHERE status = 'CLOSED'
+     """
+-    
++
+     try:
+         async with db.pool.acquire() as conn:
+             row = await conn.fetchrow(query)
+@@ -50,7 +49,7 @@ async def main():
+             wins = row['winning_trades'] or 0
+             losses = row['losing_trades'] or 0
+             net_pnl = row['net_pnl'] or 0
+-            
++
+             if total > 0:
+                 win_rate = (wins / total) * 100
+                 print(f"Total Trades: {total}")
+@@ -61,7 +60,7 @@ async def main():
+                 print("No closed trades yet.")
+     except Exception as e:
+         print(f"Failed to fetch trade stats: {e}")
+-        
++
+     await db.dispose()
+     await redis_client.close()
+ 
+diff --git a/scripts/current_exposure.py b/scripts/current_exposure.py
+index 9a3405a..ddc67ae 100644
+--- a/scripts/current_exposure.py
++++ b/scripts/current_exposure.py
+@@ -1,8 +1,10 @@
+ import asyncio
+ from decimal import Decimal
+-from app.execution.bybit_client import BybitClient
++
+ from app.core.config import get_settings
+ from app.data.sector_mapping import get_sector
++from app.execution.bybit_client import BybitClient
++
+ 
+ async def check_exposure():
+     settings = get_settings()
+@@ -14,7 +16,7 @@ async def check_exposure():
+     print(f"Total Equity: ${equity:.2f}")
+ 
+     positions = await client.fetch_positions()
+-    
++
+     total_long_value = Decimal("0")
+     total_short_value = Decimal("0")
+     sector_counts = {}
+@@ -25,15 +27,15 @@ async def check_exposure():
+         # Convert Bybit symbol (e.g. ZECUSDT) back to CCXT format (ZEC/USDT) for sector lookup
+         if not sym.endswith("/USDT"):
+             sym = sym.replace("USDT", "/USDT")
+-        
++
+         side = p["side"]
+         size = Decimal(str(p["size"]))
+         mark = Decimal(str(p["markPrice"]))
+         notional = size * mark
+-        
++
+         sector = get_sector(sym)
+         sector_counts[sector] = sector_counts.get(sector, 0) + 1
+-        
++
+         print(f"- {sym} ({side}): {size} @ {mark} => ${notional:.2f} Notional (Sector: {sector})")
+ 
+         if side == "buy":
+@@ -43,14 +45,14 @@ async def check_exposure():
+ 
+     gross_exposure = total_long_value + total_short_value
+     net_exposure = abs(total_long_value - total_short_value)
+-    
++
+     gross_pct = (gross_exposure / equity) * 100 if equity > 0 else Decimal("0")
+     net_pct = (net_exposure / equity) * 100 if equity > 0 else Decimal("0")
+ 
+-    print(f"\n--- Portfolio Exposure ---")
++    print("\n--- Portfolio Exposure ---")
+     print(f"Gross Exposure: ${gross_exposure:.2f} ({gross_pct:.2f}% of Equity) - Limit: {settings.max_gross_exposure_pct}")
+     print(f"Net Exposure: ${net_exposure:.2f} ({net_pct:.2f}% of Equity) - Limit: {settings.max_net_exposure_pct}")
+-    
++
+     print("\n--- Sector Distribution ---")
+     for sec, count in sector_counts.items():
+         print(f"{sec}: {count} / 2 allowed")
+diff --git a/scripts/emergency_close.py b/scripts/emergency_close.py
+index 90d5545..022b058 100644
+--- a/scripts/emergency_close.py
++++ b/scripts/emergency_close.py
+@@ -1,6 +1,7 @@
+ import asyncio
+ import logging
+ from decimal import Decimal
++
+ from app.execution.bybit_client import BybitClient
+ 
+ logger = logging.getLogger(__name__)
+@@ -8,22 +9,22 @@ logger = logging.getLogger(__name__)
+ async def main():
+     client = BybitClient()
+     await client.connect()
+-    
++
+     positions = await client.fetch_positions()
+     print(f"=== FOUND {len(positions)} POSITIONS TO CLOSE ===")
+-    
++
+     for p in positions:
+         symbol = p.get("symbol")
+         # Reverse the side to close
+         side = "sell" if p.get("side") == "buy" else "buy"
+         amount = Decimal(str(p.get("contracts")))
+-        
++
+         print(f"Closing {symbol} | Side: {side} | Amount: {amount}")
+         try:
+             order = await client.create_market_order(symbol, side, amount, params={"reduceOnly": True})
+             print(f"Successfully closed {symbol}: {order}")
+         except Exception as e:
+             print(f"Failed to close {symbol}: {e}")
+-            
++
+ if __name__ == "__main__":
+     asyncio.run(main())
+diff --git a/scripts/run_optimizer.py b/scripts/run_optimizer.py
+index 55660da..e6f02a6 100644
+--- a/scripts/run_optimizer.py
++++ b/scripts/run_optimizer.py
+@@ -1,33 +1,35 @@
+ import asyncio
+ import json
+ from decimal import Decimal
+-from loguru import logger
++
+ import ccxt.async_support as ccxt
++from loguru import logger
+ 
++from app.backtest.optimizer import GridSearchOptimizer
+ from app.core.redis_client import RedisClient
+ from app.data.ohlcv_fetcher import OHLCVFetcher
+-from app.backtest.optimizer import GridSearchOptimizer
++
+ 
+ async def main():
+     logger.info("Starting Parameter Sweeper...")
+     redis = RedisClient()
+     await redis.connect()
+-    
++
+     raw = await redis.redis.get("system:universe:symbols")
+     if not raw:
+         logger.error("No universe found in Redis")
+         return
+-        
++
+     data = json.loads(raw)
+     symbols = data.get("symbols", [])
+-    
++
+     exchange = ccxt.bybit({"enableRateLimit": True})
+     fetcher = OHLCVFetcher(exchange)
+-    
++
+     sl_grid = [Decimal("0.5"), Decimal("1.0"), Decimal("1.5"), Decimal("2.0")]
+     trail_grid = [Decimal("0.5"), Decimal("1.0"), Decimal("1.5"), Decimal("2.0")]
+     optimizer = GridSearchOptimizer(sl_grid, trail_grid)
+-    
++
+     logger.info(f"Processing {len(symbols)} symbols sequentially (Laptop-Safe Batch Mode)...")
+     for sym in symbols:
+         try:
+@@ -35,18 +37,18 @@ async def main():
+             c = await fetcher.fetch(sym, "15m", 500)
+             if c:
+                 await optimizer.process_symbol(sym, c)
+-                
++
+             # Cool down CPU for laptops
+             await asyncio.sleep(0.5)
+         except Exception as e:
+             logger.error(f"Failed processing {sym}: {e}")
+-            
++
+     results = optimizer.get_results()
+-    
++
+     logger.info("--- TOP 5 OPTIMIZATION RESULTS ---")
+     for idx, r in enumerate(results[:5]):
+         logger.info(f"#{idx+1}: SL={r.sl_atr_buffer} Trail={r.trail_atr_mult} | Win={r.win_rate:.1f}% PnL=${r.net_pnl:.2f} Trades={r.total_trades}")
+-        
++
+     await exchange.close()
+ 
+ if __name__ == "__main__":
+diff --git a/test_tick.py b/test_tick.py
+index dca9ad6..69ebd6c 100644
+--- a/test_tick.py
++++ b/test_tick.py
+@@ -1,6 +1,8 @@
+ import asyncio
+-from app.execution.bybit_client import BybitClient
++
+ from app.core.config import settings
++from app.execution.bybit_client import BybitClient
++
+ 
+ async def main():
+     client = BybitClient(api_key=settings.BYBIT_API_KEY, api_secret=settings.BYBIT_API_SECRET, testnet=settings.USE_TESTNET)
+diff --git a/tests/test_alpha/test_entry_filter.py b/tests/test_alpha/test_entry_filter.py
+index e11fe1f..303e9dd 100644
+--- a/tests/test_alpha/test_entry_filter.py
++++ b/tests/test_alpha/test_entry_filter.py
+@@ -55,7 +55,7 @@ class TestEntryFilter:
+         assert "blocked" in reason
+ 
+     def test_existing_position(self):
+-        ok, reason = self.filt.check(has_position=True)
++        ok, reason = self.filt.check(has_position=True, now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
+         assert ok is False
+         assert "existing position" in reason
+ 

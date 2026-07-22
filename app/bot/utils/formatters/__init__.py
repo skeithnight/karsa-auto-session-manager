@@ -304,11 +304,16 @@ def format_breakeven_alert(
 
 
 def format_entry_alert(
-    symbol: str, side: str, price: float, amount: float, sl_price: float
+    symbol: str, side: str, price: float, amount: float, sl_price: float,
+    max_loss_usd: float | None = None,
 ) -> str:
     """Format a trade entry + SL placed alert message."""
     _dash = "\u2500"
     _sep = _dash * 12 + _dash + _dash * 20
+    # Compute real max loss from SL distance if not explicitly passed
+    if max_loss_usd is None:
+        sl_distance = abs(price - sl_price)
+        max_loss_usd = sl_distance * amount
     block = (
         f"{'Metric':<12} Value\n"
         f"{_sep}\n"
@@ -316,7 +321,7 @@ def format_entry_alert(
         f"{'Fill Price':<12} ${format_price(price)}\n"
         f"{'Size':<12} {amount}\n"
         f"{'Stop Loss':<12} ${format_price(sl_price)}\n"
-        f"{'Max Loss':<12} $1.00"
+        f"{'Max Loss':<12} ${max_loss_usd:.2f}"
     )
     return fmt(
         bold("\u2705 ENTRY FILLED"),

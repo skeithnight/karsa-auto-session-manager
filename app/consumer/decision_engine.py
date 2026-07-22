@@ -18,7 +18,7 @@ from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 logger = logging.getLogger(__name__)
 
-_GATE_THRESHOLD = 65.0  # restored from 40.0 for higher win rate
+_GATE_THRESHOLD = 75.0  # Increased for higher confidence entries
 _MIN_CANDLES = 50
 _SLIPPAGE_PCT = Decimal("0.0005")
 _TAKER_FEE = Decimal("0.00055")
@@ -60,6 +60,7 @@ class TradeSignal:
     timestamp_ms: int
     candles: list[list] = field(repr=False)
     expires_at: float | None = None
+    trace_id: str | None = None
 
 
 class DecisionEngine:
@@ -97,6 +98,8 @@ class DecisionEngine:
         self._trade_memory = trade_memory
         self._redis = redis_client
         self._multi_tf = multi_tf
+        self._prev_regimes: dict[str, MarketRegime] = {}
+        self._regime_transition_counts: dict[str, int] = {}
 
     def set_wallet_balance(self, balance: Decimal) -> None:
         """Update wallet balance for position sizing."""
@@ -161,8 +164,42 @@ class DecisionEngine:
         else:
             arr = candles
 
+        # HFT Spread Balloon Gate
+        # Fetch live microsecond best_bid and best_ask from Data Engine state
+        if self._redis:
+            try:
+                import json as _json
+                state_raw = await self._redis.get(f"global:state:{symbol}")
+                if state_raw:
+                    state = _json.loads(state_raw)
+                    best_bid = Decimal(str(state.get("best_bid", "0")))
+                    best_ask = Decimal(str(state.get("best_ask", "0")))
+                    if best_bid > 0 and best_ask > 0:
+                        spread = (best_ask - best_bid) / best_bid
+                        if spread > Decimal("0.005"):
+                            logger.warning(
+                                "evaluate: %s SPREAD BALLOON REJECTION (spread=%.2f%% > 0.5%%) — rejecting to prevent slippage",
+                                symbol, float(spread * 100)
+                            )
+                            return None
+            except Exception as e:
+                logger.debug("Spread balloon check failed for %s: %s", symbol, e)
+
         # Step 1: Regime classification
         regime = self._classifier.classify(arr)
+
+        # Regime hysteresis: require 2 consecutive readings to switch regime
+        _prev_regime = self._prev_regimes.get(symbol)
+        if _prev_regime is not None and regime != _prev_regime:
+            self._regime_transition_counts[symbol] = self._regime_transition_counts.get(symbol, 0) + 1
+            if self._regime_transition_counts[symbol] < 2:
+                regime = _prev_regime  # Stick with previous until confirmed
+            else:
+                self._regime_transition_counts.pop(symbol, None)  # Transition confirmed
+        else:
+            self._regime_transition_counts.pop(symbol, None)  # No transition or same regime
+        self._prev_regimes[symbol] = regime
+
         logger.debug("evaluate: %s regime=%s", symbol, regime.value)
         if self._redis:
             try:
@@ -276,24 +313,28 @@ class DecisionEngine:
         return None
 
     async def check_consecutive_losses(self, symbol: str, regime: MarketRegime) -> bool:
-        """Check if symbol has 3+ consecutive losses in the same regime.
+        """Check if symbol has 3+ consecutive losses or 4+ breakevens in the same regime.
 
-        Returns True if signal should be REJECTED (too many consecutive losses).
+        Returns True if signal should be REJECTED (too many consecutive losses/choppiness).
         """
         if self._trade_memory is None:
             return False
 
         try:
-            trades = await self._trade_memory.get_recent(symbol, count=5)
+            trades = await self._trade_memory.get_recent(symbol, count=7)  # Look deeper (was 5)
             if not trades:
                 return False
 
             regime_str = regime.value
             consecutive = 0
+            breakeven_streak = 0
             for t in trades:
                 pnl = t.get("pnl_pct", 0)
+                reason = t.get("exit_reason", "")
                 if pnl < 0:
                     consecutive += 1
+                    if "breakeven" in reason or "stagnation" in reason:
+                        breakeven_streak += 1
                 else:
                     break
 
@@ -304,9 +345,17 @@ class DecisionEngine:
                     consecutive,
                 )
                 from app.core import metrics
-
                 metrics.signal_confidence_passed_total.labels(regime=regime_str)
                 return True
+
+            if breakeven_streak >= 4:
+                logger.warning(
+                    "breakeven_streak_block: %s %d consecutive breakevens/stagnation — REJECTING (choppy)",
+                    symbol,
+                    breakeven_streak,
+                )
+                return True
+
             return False
 
         except Exception:
@@ -315,9 +364,9 @@ class DecisionEngine:
 
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
         """Determine which directions to evaluate based on regime."""
-        if regime == MarketRegime.TREND_BULL:
+        if regime in (MarketRegime.TREND_BULL, MarketRegime.HYPER_BULL):
             return ["LONG"]
-        if regime == MarketRegime.TREND_BEAR:
+        if regime in (MarketRegime.TREND_BEAR, MarketRegime.HYPER_BEAR):
             return ["SHORT"]
         return ["LONG", "SHORT"]
 
@@ -397,6 +446,8 @@ class DecisionEngine:
         # Entry fee rate (maker for post_only, taker otherwise)
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
+        import uuid
+
         return TradeSignal(
             symbol=symbol,
             direction=direction,
@@ -411,6 +462,7 @@ class DecisionEngine:
             atr=atr,
             timestamp_ms=ts_ms,
             candles=arr.tolist(),
+            trace_id=uuid.uuid4().hex,
         )
 
     @staticmethod

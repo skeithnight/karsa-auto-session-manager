@@ -291,20 +291,20 @@ class TestFormatHealthSummary:
             last_candle_ts="1700000000",
         )
         result = format_health_summary({"data-engine": h})
-        assert "✅" in result
-        assert "data-engine" in result
-        assert "42 MB" in result
+        assert "🟢" in result
+        assert "DATA" in result
+        assert "42M" in result
 
     def test_stale_and_dead(self) -> None:
         h1 = ServiceHealth(service_name="live", status="stale", memory_mb=10.0)
         h2 = ServiceHealth(service_name="shadow", status="dead", memory_mb=0.0)
         result = format_health_summary({"live": h1, "shadow": h2})
-        assert "⚠️" in result
-        assert "❌" in result
-        assert "live" in result
-        assert "shadow" in result
+        assert "🟡" in result
+        assert "🔴" in result
+        assert "LIVE" in result
+        assert "SHDW" in result
 
     def test_unknown_status(self) -> None:
         h = ServiceHealth(service_name="svc", status="unknown")
         result = format_health_summary({"svc": h})
-        assert "❓" in result
+        assert "⚪" in result

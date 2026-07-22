@@ -48,7 +48,7 @@ class TestTrendStrategy:
             direction="LONG",
             global_prices={"binance": last_close + 5, "okx": last_close + 3},
         )
-        assert result == 70.0  # breakout(30) + global_sync(40)
+        assert result == 84.0  # breakout(30) + global_sync(40) * vpvr bonus(1.2)
         assert vol_factor == 1.0
 
     def test_only_breakout_long(self) -> None:

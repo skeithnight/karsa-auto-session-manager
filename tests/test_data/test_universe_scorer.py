@@ -34,7 +34,7 @@ def _mock_scorer(symbols=None, top_n=15, min_score=Decimal("55"), max_per_sector
     Constructor stores: self.redis = redis_client, self.fetcher = ohlcv_fetcher.
     """
     redis_mock = SimpleNamespace(get_global_state=AsyncMock())
-    fetcher_mock = SimpleNamespace(fetch=AsyncMock())
+    fetcher_mock = SimpleNamespace(fetch=AsyncMock(), fetch_funding_rate=AsyncMock(return_value=Decimal("0.0001")))
     if symbols is None:
         symbols = ["BTC/USDT"]
     scorer = UniverseScorer(

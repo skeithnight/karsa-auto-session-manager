@@ -55,7 +55,7 @@ class TestEntryFilter:
         assert "blocked" in reason
 
     def test_existing_position(self):
-        ok, reason = self.filt.check(has_position=True)
+        ok, reason = self.filt.check(has_position=True, now_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC))
         assert ok is False
         assert "existing position" in reason
 

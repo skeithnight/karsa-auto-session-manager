@@ -1,0 +1,68 @@
+E   AssertionError: assert 'existing position' in 'blocked hour 3:00 UTC'
+---------------------------- Captured stderr setup -----------------------------
+2026-07-22 10:24:25.604 | DEBUG    | app.alpha.entry_filter:__init__:48 - EntryFilter.__init__: entering
+2026-07-22 10:24:25.604 | DEBUG    | app.alpha.entry_filter:__init__:56 - EntryFilter.__init__: returning
+----------------------------- Captured stderr call -----------------------------
+2026-07-22 10:24:25.604 | DEBUG    | app.alpha.entry_filter:check:78 - check: entering
+--
+E   AssertionError: Expected at least 1 trade in strong uptrend
+E   assert 0 >= 1
+E    +  where 0 = len([])
+----------------------------- Captured stderr call -----------------------------
+2026-07-22 10:24:25.729 | INFO     | app.alpha.regime_classifier:classify:96 - RegimeClassifier: adx=88.66 hurst=0.500 atr_pct=59 close=200.00 sma20=181.25 → HYPER_BULL
+2026-07-22 10:24:25.729 | INFO     | app.alpha.strategy_router:evaluate_signal:131 - StrategyRouter: regime=HYPER_BULL dir=LONG score=0 atr_pct=2.18 vol_factor=1.09
+2026-07-22 10:24:25.729 | INFO     | app.alpha.strategy_router:evaluate_signal:131 - StrategyRouter: regime=HYPER_BULL dir=SHORT score=30 atr_pct=2.18 vol_factor=1.09
+2026-07-22 10:24:25.729 | INFO     | app.alpha.regime_classifier:classify:96 - RegimeClassifier: adx=88.56 hurst=0.500 atr_pct=55 close=202.00 sma20=183.25 → HYPER_BULL
+--
+E   AssertionError: Expected at least one SL hit from wick detection
+E   assert False
+E    +  where False = any(<generator object TestWorstPriceSeen.test_long_sl_hit_on_wick_below_close.<locals>.<genexpr> at 0x1215cfac0>)
+----------------------------- Captured stderr call -----------------------------
+2026-07-22 10:24:25.832 | INFO     | app.alpha.regime_classifier:classify:96 - RegimeClassifier: adx=88.66 hurst=0.500 atr_pct=59 close=200.00 sma20=181.25 → HYPER_BULL
+2026-07-22 10:24:25.832 | INFO     | app.alpha.strategy_router:evaluate_signal:131 - StrategyRouter: regime=HYPER_BULL dir=LONG score=0 atr_pct=2.18 vol_factor=1.09
+2026-07-22 10:24:25.832 | INFO     | app.alpha.strategy_router:evaluate_signal:131 - StrategyRouter: regime=HYPER_BULL dir=SHORT score=30 atr_pct=2.18 vol_factor=1.09
+2026-07-22 10:24:25.832 | INFO     | app.alpha.regime_classifier:classify:96 - RegimeClassifier: adx=88.56 hurst=0.500 atr_pct=55 close=202.00 sma20=183.25 → HYPER_BULL
+--
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'fetch_funding_rate'
+_________________ TestOverextension.test_overextension_penalty _________________
+tests/test_data/test_universe_scorer.py:108: in test_overextension_penalty
+    result = await scorer.score_symbol("BTC/USDT")
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+app/data/universe_scorer.py:126: in score_symbol
+--
+E   AttributeError: 'types.SimpleNamespace' object has no attribute 'fetch_funding_rate'
+__________ TestShadowPositionStoreKey.test_key_returns_shadow_prefix ___________
+tests/test_shadow_apm.py:348: in test_key_returns_shadow_prefix
+    assert key == "shadow:position:BTC/USDT:buy"
+E   AssertionError: assert 'shadow:posit...BTC/USDT:LONG' == 'shadow:position:BTC/USDT:buy'
+E     
+E     - shadow:position:BTC/USDT:buy
+E     ?                          ^^^
+E     + shadow:position:BTC/USDT:LONG
+E     ?                          ^^^^
+----------------------------- Captured stderr call -----------------------------
+2026-07-22 10:25:04.679 | DEBUG    | app.core.position_store:__init__:45 - PositionStore.__init__: entering
+2026-07-22 10:25:04.679 | DEBUG    | app.core.position_store:__init__:47 - PositionStore.__init__: returning
+_______________ TestTrendStrategy.test_breakout_plus_global_sync _______________
+tests/unit/test_strategy_router.py:51: in test_breakout_plus_global_sync
+--
+E   assert 84.0 == 70.0
+----------------------------- Captured stderr call -----------------------------
+2026-07-22 10:25:04.785 | INFO     | app.alpha.strategy_router:evaluate_signal:131 - StrategyRouter: regime=TREND_BULL dir=LONG score=84 atr_pct=1.26 vol_factor=1.00
+__________________ TestFormatHealthSummary.test_single_fresh ___________________
+tests/unit/test_telemetry.py:294: in test_single_fresh
+    assert "✅" in result
+E   AssertionError: assert '✅' in 'DATA 🟢  42M │ O:5 P:2 │ C:100 (22:13)'
+_________________ TestFormatHealthSummary.test_stale_and_dead __________________
+tests/unit/test_telemetry.py:302: in test_stale_and_dead
+    assert "⚠️" in result
+E   AssertionError: assert '⚠️' in 'LIVE 🟡  10M │ O:0 P:0 │ C:0 (—)\nSHDW 🔴  N/A │ O:0 P:0 │ C:0 (—)'
+_________________ TestFormatHealthSummary.test_unknown_status __________________
+tests/unit/test_telemetry.py:310: in test_unknown_status
+    assert "❓" in result
+E   AssertionError: assert '❓' in 'SVC  ⚪  N/A │ O:0 P:0 │ C:0 (—)'
+=============================== warnings summary ===============================
+tests/integration/test_apm.py::TestTimeExit::test_time_exit_chop_30min
+tests/integration/test_apm.py::TestRegimeShift::test_regime_shift_close_after_hysteresis
+  /Users/dwiki.nugraha/dwikicode/karsa-auto-session-manager/app/execution/position_manager.py:1077: RuntimeWarning: coroutine 'AsyncMockMixin._execute_mock_call' was never awaited
+    fill_price = Decimal(str(close_result.get("avgPrice", close_result.get("price", "0"))))

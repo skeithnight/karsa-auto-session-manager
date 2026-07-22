@@ -1,6 +1,8 @@
 import asyncio
+
 from app.core.config import settings
 from app.execution.bybit_client import BybitClient
+
 
 async def main():
     client = BybitClient(
@@ -12,6 +14,6 @@ async def main():
     positions = await client.fetch_positions()
     for p in positions:
         print(f"Symbol: {p['symbol']}, Side: {p['side']}, Size: {p['contracts']}, Entry: {p['entry_price']}")
-    
+
 if __name__ == "__main__":
     asyncio.run(main())

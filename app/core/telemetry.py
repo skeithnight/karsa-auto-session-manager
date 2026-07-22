@@ -275,13 +275,13 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
         "live": "LIVE",
         "shadow": "SHDW",
     }
-    
+
     for name, h in sorted(services.items()):
         icon = {"fresh": "🟢", "stale": "🟡", "dead": "🔴", "unknown": "⚪"}.get(
             h.status, "⚪"
         )
         mem = f"{h.memory_mb:.0f}M" if h.memory_mb else "N/A"
-        
+
         last_candle_str = "—"
         if h.last_candle_ts:
             try:
@@ -295,7 +295,7 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
                 last_candle_str = str(h.last_candle_ts)[:5]
 
         short_name = name_map.get(name.lower(), name.upper()[:4])
-        
+
         lines.append(
             f"{short_name:<4} {icon} {mem:>4} │ O:{h.orders_placed} P:{h.positions_open} │ C:{h.candles_ingested} ({last_candle_str})"
         )

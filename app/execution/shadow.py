@@ -546,7 +546,7 @@ class ShadowAPM:
             initial_risk = Decimal("0")
 
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
-        
+
         is_hyper = str(entry_regime).startswith("HYPER")
         wick_long = Decimal("-0.015") if is_hyper else Decimal("-0.03")
         wick_short = Decimal("0.015") if is_hyper else Decimal("0.03")

@@ -131,21 +131,21 @@ class TradeMemory:
         Requires at least 10 trades to judge fairly.
         """
         trades = await self.get_recent(symbol, count=10)
-        
+
         # If fewer than 10 trades, we don't have enough statistical significance, default to 1.0
         if len(trades) < 10:
             return 1.0
-            
+
         wins = sum(1 for t in trades if t.get("pnl_pct", 0) > 0.0)
         win_rate = wins / len(trades)
-        
+
         if win_rate < 0.30:
             logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 0.7x penalty.")
             return 0.7
         elif win_rate > 0.60:
             logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 1.2x bonus.")
             return 1.2
-            
+
         return 1.0
 
     def format_prompt(self, symbol: str, trades: list[dict]) -> str:

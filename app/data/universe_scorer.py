@@ -125,7 +125,7 @@ class UniverseScorer:
         # Funding Rate Liquidation Hunt
         funding_rate = await self.fetcher.fetch_funding_rate(symbol)
         funding_score = min(abs(funding_rate) * Decimal("50000"), FUNDING_MAX)
-        
+
         total = volume_score + momentum_score + overextension_penalty + squeeze_score + funding_score
 
         return {

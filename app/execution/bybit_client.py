@@ -410,14 +410,14 @@ class BybitClient:
         logger.debug("fetch_open_orders: entering")
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
-            
+
         params: dict[str, Any] = {
             "category": "linear",
             "settleCoin": "USDT"
         }
         if symbol:
             params["symbol"] = self._to_bybit_symbol(symbol)
-            
+
         result = await self._execute(
             self.session.get_open_orders,
             **params

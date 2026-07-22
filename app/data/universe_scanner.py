@@ -216,7 +216,7 @@ class DynamicUniverseScanner:
                 momentum_boost = 1.0  # +1.0 ensures it beats slow high-volume coins
             elif pct > 10.0:
                 momentum_boost = 0.5
-            
+
             cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + momentum_boost
 
         # 5. Sort by composite score, take top N

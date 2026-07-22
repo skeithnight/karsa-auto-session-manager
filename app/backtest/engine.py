@@ -110,7 +110,7 @@ class BacktestEngine:
             or oi_change is not None
         )
         base_gate = float(self._gate)
-        
+
         idx = 50  # minimum candles for RegimeClassifier
         atr_array = self._calculate_atr_array(arr)
 

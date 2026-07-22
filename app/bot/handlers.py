@@ -25,7 +25,7 @@ from decimal import Decimal
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from app.bot.utils.format import HTML, bold, code, fmt, italic, pre
+from app.bot.utils.format import HTML, bold, fmt, italic, pre
 from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
 from app.core.config import get_settings
 
@@ -2093,13 +2093,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as exc:
                 logger.warning("auto_launch_read_max_pos_failed", extra={"error": str(exc)})
                 max_pos = 5
-                
+
             try:
                 risk_pct = int(await r.get("karsa:settings:risk_pct") or 10)
             except Exception as exc:
                 logger.warning("auto_launch_read_risk_pct_failed", extra={"error": str(exc)})
                 risk_pct = 10
-                
+
             try:
                 await session_mgr.start_session(
                     duration_min=0,

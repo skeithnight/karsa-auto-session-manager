@@ -7,9 +7,9 @@ from decimal import Decimal
 
 from loguru import logger
 
-from app.backtest.engine import BacktestEngine
 from app.alpha.regime_classifier import RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
+from app.backtest.engine import BacktestEngine
 from app.risk.dynamic_risk_gate import DynamicRiskGate
 
 
@@ -30,7 +30,7 @@ class GridSearchOptimizer:
         self.sl_buffers = sl_buffers
         self.trail_mults = trail_mults
         self.results: dict[tuple[Decimal, Decimal], OptimizationResult] = {}
-        
+
         for sl in sl_buffers:
             for trail in trail_mults:
                 self.results[(sl, trail)] = OptimizationResult(
@@ -41,7 +41,7 @@ class GridSearchOptimizer:
                     win_rate=0.0,
                     net_pnl=Decimal("0")
                 )
-                
+
         self.classifier = RegimeClassifier()
         self.router = StrategyRouter()
 
@@ -49,16 +49,16 @@ class GridSearchOptimizer:
         """Process a single symbol against all parameter combinations."""
         if not candles:
             return
-            
+
         logger.debug(f"Optimizing {symbol} across {len(self.sl_buffers) * len(self.trail_mults)} combinations...")
-        
+
         for sl in self.sl_buffers:
             for trail in self.trail_mults:
                 gate = DynamicRiskGate(override_sl_buffer=sl, override_trail_mult=trail)
                 engine = BacktestEngine(self.classifier, self.router, gate)
-                
+
                 reports = await engine.run(symbol, candles)
-                
+
                 res = self.results[(sl, trail)]
                 for r in reports:
                     if r.trade_taken:
@@ -74,6 +74,6 @@ class GridSearchOptimizer:
             if res.total_trades > 0:
                 res.win_rate = (res.total_wins / res.total_trades) * 100
             final_results.append(res)
-            
+
         final_results.sort(key=lambda x: x.net_pnl, reverse=True)
         return final_results

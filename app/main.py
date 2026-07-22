@@ -975,13 +975,13 @@ async def executor_task(
         except Exception:
             max_pos = 5
             max_hyper = 2
-            
+
         open_positions = await position_store.list_all()
         total_open = len(open_positions)
         hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
-        
+
         is_hyper = signal.regime.value.startswith("HYPER")
-        
+
         if is_hyper:
             if hyper_open >= max_hyper:
                 logger.warning(f"HYPER slots full ({hyper_open}/{max_hyper}), skipping {signal.symbol}")
@@ -1071,7 +1071,7 @@ async def executor_task(
                 # No ATR — fall back to 1% of entry price as risk estimate
                 initial_risk_per_unit = price * Decimal("0.01")
                 risk_profile_json = risk_profile.to_json()
-                
+
             # Absolute fallback to ensure APM tracks the position
             if initial_risk_per_unit is None or initial_risk_per_unit <= Decimal("0"):
                 initial_risk_per_unit = price * Decimal("0.01")

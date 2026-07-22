@@ -16,8 +16,8 @@ RiskProfile fields (from docs/architecture/adaptive_multi_strategy.md §5.1):
 
 from __future__ import annotations
 
-import json
 import dataclasses
+import json
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 
@@ -150,7 +150,7 @@ class DynamicRiskGate:
                 f"DynamicRiskGate: unknown regime {regime}, using CHOP profile"
             )
             profile = _PROFILES[MarketRegime.CHOP]
-            
+
         if self.override_sl_buffer is not None or self.override_trail_mult is not None:
             updates = {}
             if self.override_sl_buffer is not None:
@@ -158,5 +158,5 @@ class DynamicRiskGate:
             if self.override_trail_mult is not None:
                 updates["trail_atr_mult"] = self.override_trail_mult
             return dataclasses.replace(profile, **updates)
-            
+
         return profile

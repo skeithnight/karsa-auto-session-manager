@@ -971,10 +971,23 @@ async def executor_task(
         # Max open positions check (from Telegram settings)
         try:
             max_pos = int(await redis_client.get("karsa:settings:max_positions") or 5)
+            max_hyper = int(await redis_client.get("karsa:settings:max_hyper_slots") or 2)
         except Exception:
             max_pos = 5
+            max_hyper = 2
+            
         open_positions = await position_store.list_all()
-        if len(open_positions) >= max_pos:
+        total_open = len(open_positions)
+        hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+        
+        is_hyper = signal.regime.value.startswith("HYPER")
+        
+        if is_hyper:
+            if hyper_open >= max_hyper:
+                logger.warning(f"HYPER slots full ({hyper_open}/{max_hyper}), skipping {signal.symbol}")
+                metrics.signals_skipped.labels(symbol=signal.symbol, reason="max_hyper_slots").inc()
+                continue
+        elif total_open >= max_pos:
             logger.warning(
                 f"Max positions ({max_pos}) reached, skipping {signal.symbol}"
             )
@@ -1045,7 +1058,7 @@ async def executor_task(
 
         try:
             atr_val = getattr(signal, "atr", None)
-            
+
             # Phase 6: compute initial_risk_per_unit from ATR + sl_atr_buffer
             initial_risk_per_unit = None
             risk_profile_json = None
@@ -1058,6 +1071,10 @@ async def executor_task(
                 # No ATR — fall back to 1% of entry price as risk estimate
                 initial_risk_per_unit = price * Decimal("0.01")
                 risk_profile_json = risk_profile.to_json()
+                
+            # Absolute fallback to ensure APM tracks the position
+            if initial_risk_per_unit is None or initial_risk_per_unit <= Decimal("0"):
+                initial_risk_per_unit = price * Decimal("0.01")
 
             # Calculate total dollar risk for Bybit stop loss placement
             max_loss_usd = Decimal("1.00")
@@ -1105,14 +1122,12 @@ async def executor_task(
                     side=side_str,
                     entry_price=price,
                     amount=amount,
-                    sl_order_id=result.get("sl_order_id"),
+                    sl_order_id=result.get("sl_order_id", ""),
                     atr=atr_val,
                     entry_confidence=signal.confidence,
                     regime=regime,
                     entry_regime=regime,
-                    initial_risk_per_unit=str(initial_risk_per_unit)
-                    if initial_risk_per_unit is not None
-                    else None,
+                    initial_risk_per_unit=str(initial_risk_per_unit),
                     risk_profile_json=risk_profile_json,
                 )
                 await trade_store.record_entry(
@@ -1337,8 +1352,8 @@ async def main() -> None:
 
     bybit_client = BybitClient()
     await bybit_client.connect()
-    
-    # CRITICAL FIX: Sync precise tick and lot sizes from CCXT to BybitClient 
+
+    # CRITICAL FIX: Sync precise tick and lot sizes from CCXT to BybitClient
     # to prevent catastrophic 0.01 fallbacks if Bybit API rate limits on startup
     if "bybit" in ccxt_manager.markets_loaded:
         bybit_exchange = ccxt_manager.exchanges["bybit"]

@@ -83,7 +83,8 @@ class PositionStore:
             else "",
             "regime": regime or "",
             "checkpoint": "OPEN",
-            "entered_at": datetime.now(UTC).isoformat(),
+            "entry_time": datetime.now(UTC).isoformat(),
+            "entered_at": datetime.now(UTC).isoformat(),  # Keep for backwards compatibility
             "last_check_at": datetime.now(UTC).isoformat(),
             "entry_regime": entry_regime or regime or "",
             "initial_risk_per_unit": initial_risk_per_unit or "",

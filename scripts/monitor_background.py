@@ -1,6 +1,7 @@
 import subprocess
-import time
 import sys
+import time
+
 
 def main():
     print("Background monitoring started.")
@@ -13,10 +14,10 @@ def main():
             )
             print(f"Monitoring process started with PID {p.pid}")
             sys.stdout.flush()
-            
+
             # Wait for 1 hour (3600 seconds)
             time.sleep(3600)
-            
+
             print("Monitoring time completed. Terminating process...")
             p.terminate()
             p.wait()

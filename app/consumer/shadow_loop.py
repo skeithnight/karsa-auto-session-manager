@@ -55,6 +55,7 @@ async def _on_signal_shadow(
     crypto_analyst: Any | None = None,
     risk_manager: Any | None = None,
     engine: Any | None = None,
+    redis: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
 
@@ -80,6 +81,28 @@ async def _on_signal_shadow(
     # Consecutive loss block
     if engine and await engine.check_consecutive_losses(symbol, signal.regime):
         logger.info("shadow skip %s — consecutive loss block", symbol)
+        return
+
+    # Slot checking
+    positions = await shadow_pos_store.list_all()
+    total_open = len(positions)
+    hyper_open = sum(1 for p in positions if str(p.get("regime", "")).startswith("HYPER"))
+
+    if redis:
+        max_positions = int(await redis.get("karsa:settings:max_positions") or 5)
+        max_hyper_slots = int(await redis.get("karsa:settings:max_hyper_slots") or 2)
+    else:
+        max_positions = 5
+        max_hyper_slots = 2
+
+    is_hyper = signal.regime.value.startswith("HYPER")
+
+    if is_hyper:
+        if hyper_open >= max_hyper_slots:
+            logger.info("shadow skip %s — HYPER slots full (%d/%d)", symbol, hyper_open, max_hyper_slots)
+            return
+    elif total_open >= max_positions:
+        logger.info("shadow skip %s — all slots full (%d/%d)", symbol, total_open, max_positions)
         return
 
     # AI Analyst gate — skip for high-confidence signals (score >= 75) and CHOP regime
@@ -290,7 +313,7 @@ async def _build_shadow_components(
         position_store=pos_store,
         trade_store=trade_store,
     )
-    return pos_store, trade_store, executor, apm
+    return db_engine, pos_store, trade_store, executor, apm
 
 
 async def main() -> None:
@@ -356,6 +379,7 @@ async def main() -> None:
     # Build shadow-specific stores and executor
     try:
         (
+            db_engine,
             shadow_pos_store,
             shadow_trade_store,
             shadow_executor,
@@ -427,6 +451,7 @@ async def main() -> None:
             crypto_analyst,
             risk_manager,
             engine,
+            redis,
         )
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)

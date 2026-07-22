@@ -13,6 +13,7 @@ import json
 import logging
 import signal
 import sys
+from datetime import UTC
 from decimal import Decimal
 from typing import Any
 
@@ -137,6 +138,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     risk_manager: Any,
     trade_store: TradeStore,
     engine: Any | None = None,
+    crypto_analyst: Any | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a real order on Bybit.
 
@@ -185,15 +187,30 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — position already open", symbol)
         return
 
-    # Max positions check (ponytail: read from Redis if set, default 3)
+    # Slot checking
     open_positions = await position_store.list_all()
-    max_pos = 3  # ponytail: hardcoded default, Redis override available
-    if len(open_positions) >= max_pos:
+    total_open = len(open_positions)
+    hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+
+    try:
+        max_pos = int(await position_store.redis.get("karsa:settings:max_positions") or 5)
+        max_hyper = int(await position_store.redis.get("karsa:settings:max_hyper_slots") or 2)
+    except Exception:
+        max_pos = 5
+        max_hyper = 2
+
+    is_hyper = signal.regime.value.startswith("HYPER")
+
+    if is_hyper:
+        if hyper_open >= max_hyper:
+            logger.info("skip %s — HYPER slots full (%d/%d)", symbol, hyper_open, max_hyper)
+            return
+    elif total_open >= max_pos:
         logger.info(
-            "skip %s — max positions %d reached (%d open)",
+            "skip %s — all slots full (%d/%d)",
             symbol,
+            total_open,
             max_pos,
-            len(open_positions),
         )
         return
 
@@ -201,6 +218,32 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     if engine and await engine.check_consecutive_losses(symbol, signal.regime):
         logger.info("skip %s — consecutive loss block", symbol)
         return
+
+    # AI Analyst gate
+    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
+    if (
+        crypto_analyst
+        and signal.score >= 40.0
+        and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
+    ):
+        logger.info(f"AI Analyst validating {symbol} signal")
+        analyst_result = await crypto_analyst.analyze(
+            symbol=symbol,
+            direction=signal.direction,
+            confidence=signal.score,
+            regime=signal.regime.value,
+            spread_pct=0.0,
+            funding_rate=0.0,
+            oi_change=0.0,
+            price=signal.entry_price,
+            recent_trades="",
+        )
+        if not analyst_result or analyst_result.direction != signal.direction:
+            from app.core import metrics
+            reason = "unavailable" if not analyst_result else "direction_mismatch"
+            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+            logger.info("skip %s - AI analyst rejected (%s)", symbol, reason)
+            return
 
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:
@@ -214,8 +257,28 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
     result: PRMResult = await risk_manager.check(signal)
     if not result.approved:
+        from app.core import metrics
+        metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
         logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
         return
+
+    from app.core import metrics
+    metrics.risk_gate_pass.labels(symbol=symbol).inc()
+
+    # Pre-check: can we place an SL for this symbol?
+    try:
+        bybit = getattr(executor, "client", None)
+        if bybit and hasattr(bybit, "fetch_open_orders"):
+            open_orders = await bybit.fetch_open_orders(symbol=symbol)
+            stop_count = sum(1 for o in open_orders
+                             if o.get("type") in ("stop", "stoporder", "stop")
+                             or o.get("stopOrderType"))
+            if stop_count >= 9:  # Leave room for at least 1 new SL
+                logger.warning("skip %s — %d stop orders already on exchange (limit 10)", symbol, stop_count)
+                return
+    except Exception as e:
+        logger.debug("SL pre-check failed for %s: %s", symbol, e)
+        pass  # Don't block entry if check fails
 
     # Execute via SmartOrderRouter
     result = await executor.execute(
@@ -233,13 +296,35 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     # Bybit V5 returns avgPrice, SOR returns average or price
     fill_price = Decimal(str(result.get("average", result.get("avgPrice", result.get("price", 0)))))
 
+    # Guard: reject zero-price fill
+    if fill_price <= 0:
+        logger.error("REJECTING trade %s — fill_price is 0, fetching from order history", symbol)
+        # Try to get actual fill price from Bybit
+        try:
+            await asyncio.sleep(1.0)
+            if hasattr(executor, "client") and hasattr(executor.client, "fetch_my_trades"):
+                trades = await executor.client.fetch_my_trades(symbol, limit=1)
+                if trades:
+                    fill_price = Decimal(str(trades[-1].get("price", 0)))
+        except Exception:
+            pass
+        if fill_price <= 0:
+            logger.critical("ABORTING entry %s — cannot determine fill price", symbol)
+            # Cannot track without fill_price, bail out (ideally we should market close here too,
+            # but since we couldn't fetch order history, Bybit API is likely degraded)
+            return
+
     # Compute initial_risk_per_unit from actual fill price and signal SL.
     # This is the CRITICAL field APM uses for breakeven/trailing/SL placement.
     # Without it, APM bails out on every cycle and leaves position unprotected.
     initial_risk_per_unit = abs(fill_price - signal.sl_price)
-    if initial_risk_per_unit <= Decimal("0"):
+    # If the fill price exactly equals SL price (or is weirdly zero), fallback to ATR to guarantee APM protection
+    if initial_risk_per_unit <= Decimal("0") or initial_risk_per_unit < (signal.atr * Decimal("0.1")):
         # Fallback: derive from ATR and RiskProfile sl_atr_buffer
         initial_risk_per_unit = signal.atr * signal.risk_profile.sl_atr_buffer
+        # Absolute hard floor if ATR is also completely busted
+        if initial_risk_per_unit <= Decimal("0"):
+            initial_risk_per_unit = fill_price * Decimal("0.01")  # 1% fallback
 
     # Save position — all APM-critical fields must be present here
     await position_store.save(
@@ -247,6 +332,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         side=signal.direction,
         entry_price=fill_price,
         amount=signal.amount,
+        sl_order_id=result.get("sl_order_id", ""),  # Guarantee sl_order_id isn't dropped
         atr=signal.atr,
         entry_confidence=signal.score,
         regime=signal.regime.value,
@@ -420,54 +506,58 @@ async def _position_exit_loop(
                 # Fallback: fetch from Bybit closed PnL records
                 net_pnl = None
                 if exit_price <= 0:
-                    try:
-                        # Sleep briefly to let Bybit REST API index the exit order
-                        await asyncio.sleep(1.5)
-                        if hasattr(bybit, "get_closed_pnl"):
-                            pnl_result = await bybit.get_closed_pnl(symbol=symbol, limit=5)
-                            pnl_records = pnl_result.get("closed_pnl", [])
-                            if pnl_records:
-                                last_record = pnl_records[0]
-                                exit_price = float(last_record.get("avgPrice", 0))
-                                net_pnl = float(last_record.get("closedPnl", 0))
-                                if net_pnl > 0:
-                                    exit_reason = "tp"
-                                elif net_pnl < 0:
-                                    exit_reason = "sl"
-                    except Exception as e:
-                        logger.debug("get_closed_pnl failed for %s: %s", symbol, e)
+                    for attempt, delay in enumerate([(1.5, "1st"), (3.0, "2nd"), (5.0, "3rd")]):
+                        await asyncio.sleep(delay[0])
+                        try:
+                            if hasattr(bybit, "get_closed_pnl"):
+                                pnl_result = await bybit.get_closed_pnl(symbol=symbol, limit=5)
+                                pnl_records = pnl_result.get("closed_pnl", [])
+                                if pnl_records:
+                                    last_record = pnl_records[0]
+                                    exit_price = float(last_record.get("avgExitPrice", last_record.get("avgPrice", 0)))
+                                    net_pnl = float(last_record.get("closedPnl", 0))
+                                    if exit_price > 0:
+                                        if net_pnl > 0:
+                                            exit_reason = "tp"
+                                        elif net_pnl < 0:
+                                            exit_reason = "sl"
+                                        break
+                        except Exception as e:
+                            logger.debug("get_closed_pnl failed for %s on attempt %d: %s", symbol, attempt + 1, e)
 
-                # Fallback: try fetch_closed_orders
-                if exit_price <= 0:
-                    try:
-                        orders = (
-                            await bybit.fetch_closed_orders(symbol) if hasattr(bybit, "fetch_closed_orders") else []
-                        )
-                        if orders:
-                            last = orders[0]
-                            exit_price = float(last.get("average", last.get("price", 0)))
-                    except Exception:
-                        pass
+                        # Fallback: try fetch_closed_orders
+                        if exit_price <= 0:
+                            try:
+                                orders = (
+                                    await bybit.fetch_closed_orders(symbol) if hasattr(bybit, "fetch_closed_orders") else []
+                                )
+                                if orders:
+                                    last = orders[0]
+                                    exit_price = float(last.get("average", last.get("price", 0)))
+                            except Exception:
+                                pass
 
-                # Fallback: try fetch_my_trades for actual fill price
-                if exit_price <= 0:
-                    try:
-                        trades = (
-                            await bybit.fetch_my_trades(symbol, limit=5) if hasattr(bybit, "fetch_my_trades") else []
-                        )
-                        if trades:
-                            last_trade = trades[-1]  # most recent trade
-                            exit_price = float(last_trade.get("price", 0))
-                    except Exception:
-                        pass
+                        # Fallback: try fetch_my_trades for actual fill price
+                        if exit_price <= 0:
+                            try:
+                                trades = (
+                                    await bybit.fetch_my_trades(symbol, limit=5) if hasattr(bybit, "fetch_my_trades") else []
+                                )
+                                if trades:
+                                    last_trade = trades[-1]  # most recent trade
+                                    exit_price = float(last_trade.get("price", 0))
+                            except Exception:
+                                pass
+
+                        if exit_price > 0:
+                            break
 
                 if exit_price <= 0:
                     # Fallback: use entry_price as exit_price to close the loop
                     exit_price = entry_price
                     exit_reason = "closed_unknown"
-                    logger.warning(
-                        "exit_price unknown for %s — using entry_price as fallback",
-                        symbol,
+                    logger.error(
+                        "exit_price STILL unknown for %s after 3 retries — using entry_price fallback", symbol
                     )
 
                 # Calculate Net PnL (including fees)
@@ -478,7 +568,7 @@ async def _position_exit_loop(
                         pnl = (exit_price - entry_price) * amount
                     else:
                         pnl = (entry_price - exit_price) * amount
-                        
+
                     # Deduct estimated Bybit Taker Fees (0.06% average per side)
                     fee_pct = 0.0006
                     entry_fee = entry_price * amount * fee_pct
@@ -557,18 +647,18 @@ async def _position_exit_loop(
                         if entry_time_str:
                             try:
                                 if isinstance(entry_time_str, str):
-                                    from datetime import datetime, timezone
+                                    from datetime import datetime
                                     et = datetime.fromisoformat(entry_time_str)
                                     if et.tzinfo is None:
-                                        et = et.replace(tzinfo=timezone.utc)
-                                    now = datetime.now(timezone.utc)
+                                        et = et.replace(tzinfo=UTC)
+                                    now = datetime.now(UTC)
                                     hold_min = int((now - et).total_seconds() / 60)
                             except Exception:
                                 pass
-                        
+
                         regime = pos.get("entry_regime", "UNKNOWN")
                         conf = float(pos.get("entry_confidence", 0.0))
-                        
+
                         await trade_memory.store(
                             symbol=symbol,
                             pnl_pct=Decimal(str(pnl_pct)),
@@ -938,6 +1028,20 @@ async def main() -> None:  # noqa: PLR0915
 
     from app.risk.portfolio_risk_manager import PortfolioRiskManager
 
+    try:
+        from app.alpha.analyst import CryptoAnalyst
+        from app.core.ai_client import AIClient
+
+        ai_client = AIClient(
+            router_url=settings.nine_router_base_url,
+            auth_token=settings.nine_router_auth_token,
+            model=settings.nine_router_model,
+        )
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+    except Exception as e:
+        crypto_analyst = None
+        logger.warning(f"Could not initialize CryptoAnalyst in live loop: {e}")
+
     trade_store = None
     try:
         from app.core.database import DatabaseEngine
@@ -967,7 +1071,7 @@ async def main() -> None:  # noqa: PLR0915
 
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
-        await _on_signal_live(symbol, sig, position_store, executor, risk_manager, trade_store, engine)
+        await _on_signal_live(symbol, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst)
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 

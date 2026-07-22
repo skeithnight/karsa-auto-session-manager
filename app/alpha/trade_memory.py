@@ -72,20 +72,20 @@ class TradeMemory:
             recent = await self.redis.redis.zrevrange(key, 0, 0, withscores=True)
             if not recent:
                 return False
-            
+
             entry_str, timestamp = recent[0]
             now = time.time()
             if (now - timestamp) > (cooldown_mins * 60):
                 return False  # cooldown expired
-                
+
             entry = json.loads(entry_str)
             pnl_pct = entry.get("pnl_pct", 0.0)
-            
-            # If the last trade was a loss or breakeven (< 0.2% profit), enforce cooldown
-            if pnl_pct < 0.2:
+
+            # If the last trade was a real loss (< -0.5%), enforce cooldown
+            if pnl_pct < -0.5:
                 logger.info(f"Cooldown active for {symbol}: last trade was {pnl_pct}% pnl")
                 return True
-                
+
             return False
         except Exception as e:
             logger.warning(f"Cooldown check failed for {symbol}: {e}")
@@ -122,6 +122,31 @@ class TradeMemory:
         except Exception as e:
             logger.error(f"Trade memory read failed for {symbol}: {e}")
             return []
+
+    async def get_symbol_performance_multiplier(self, symbol: str) -> float:
+        """Calculate historical win rate to penalize or boost signals.
+        - Win Rate < 30% -> 0.7x multiplier (Toxic)
+        - Win Rate > 60% -> 1.2x multiplier (Golden)
+        - Otherwise -> 1.0x
+        Requires at least 10 trades to judge fairly.
+        """
+        trades = await self.get_recent(symbol, count=10)
+        
+        # If fewer than 10 trades, we don't have enough statistical significance, default to 1.0
+        if len(trades) < 10:
+            return 1.0
+            
+        wins = sum(1 for t in trades if t.get("pnl_pct", 0) > 0.0)
+        win_rate = wins / len(trades)
+        
+        if win_rate < 0.30:
+            logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 0.7x penalty.")
+            return 0.7
+        elif win_rate > 0.60:
+            logger.info(f"Adaptive Symbol: {symbol} has {win_rate*100:.1f}% win-rate. Applying 1.2x bonus.")
+            return 1.2
+            
+        return 1.0
 
     def format_prompt(self, symbol: str, trades: list[dict]) -> str:
         """Format recent trades as prompt prefix for AI analyst."""

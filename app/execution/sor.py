@@ -135,12 +135,13 @@ class SmartOrderRouter:
                 logger.error(f"SOR market fallback failed: {e}")
                 return None
 
+        order = None
         # Step 1: Post-Only Limit
         logger.info(f"SOR Step 1: Post-Only Limit {side} {amount} @ {price}")
         metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
-            if order.get("status") == "open":
+            if order.get("status") in ("open", "closed"):
                 logger.info(f"Post-Only filled: {order['orderId']}")
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
                 fill_price = Decimal(
@@ -158,14 +159,42 @@ class SmartOrderRouter:
                 )  # atomic SL has no order ID; normalize to ""
                 logger.debug("execute: returning dict (Post-Only filled)")
                 return order
+            elif order.get("status") == "rejected":
+                logger.warning(f"Post-Only rejected: {order.get('rejectReason', 'unknown')}")
         except Exception as e:
             logger.warning(f"Post-Only failed: {e}")
+            # If the order actually filled but we crashed during SL placement,
+            # we MUST NOT proceed to step 2. We must return the filled order.
+            if order and order.get("status") in ("open", "closed"):
+                logger.error(f"CRITICAL: Post-Only filled but crashed after: {e}. Returning order to avoid duplicates.")
+                return order
 
         # Step 2: Reprice attempts
         current_price = price
-        # Derive tick from price (0.1% of price, min 0.01) — prevents negative prices on low-value tokens
-        effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
-        for attempt in range(self.max_reprice_attempts):
+        # Derive tick from price (0.02% of price, min 0.01) — prevents negative prices on low-value tokens
+        effective_tick = max(price * Decimal("0.0002"), Decimal("0.01"))
+
+        # Adaptive Maker-Fee Routing: Determine dynamic reprice attempts
+        max_reprices = self.max_reprice_attempts
+        try:
+            tickers = await self.client.fetch_tickers()
+            if isinstance(tickers, dict):
+                ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                if ticker:
+                    bid_vol = Decimal(str(ticker.get("bidVolume", "0") or "0"))
+                    ask_vol = Decimal(str(ticker.get("askVolume", "0") or "0"))
+                    # If orderbook imbalance heavily favors our side (strong support),
+                    # we have time to wait for a maker fill rather than crossing the spread immediately.
+                    if side == "buy" and bid_vol > 0 and ask_vol > 0 and bid_vol >= ask_vol * Decimal("2.0"):
+                        max_reprices = max(max_reprices, 4)
+                        logger.info(f"SOR: Strong bid support detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
+                    elif side == "sell" and ask_vol > 0 and bid_vol > 0 and ask_vol >= bid_vol * Decimal("2.0"):
+                        max_reprices = max(max_reprices, 4)
+                        logger.info(f"SOR: Strong ask resistance detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
+        except Exception as e:
+            logger.debug(f"SOR adaptive routing check failed: {e}")
+
+        for attempt in range(max_reprices):
             delay = self.reprice_delay_seconds
             try:
                 # Spread-adaptive repricing: fast delay if spread is wide
@@ -216,7 +245,7 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(
                     symbol, side, amount, current_price
                 )
-                if order.get("status") == "open":
+                if order.get("status") in ("open", "closed"):
                     logger.info(f"Reprice filled: {order['orderId']}")
                     fill_price = Decimal(
                         str(order.get("average", order.get("avgPrice", current_price)))
@@ -231,13 +260,37 @@ class SmartOrderRouter:
                     order["sl_order_id"] = sl_id or ""
                     logger.debug("execute: returning dict (Reprice filled)")
                     return order
+                elif order.get("status") == "rejected":
+                    logger.warning(f"Reprice rejected: {order.get('rejectReason', 'unknown')}")
             except Exception as e:
                 logger.warning(f"Reprice failed: {e}")
+                if order and order.get("status") in ("open", "closed"):
+                    logger.error(f"CRITICAL: Reprice filled but crashed after: {e}. Returning order to avoid duplicates.")
+                    return order
 
         # Step 3: Market/IOC fallback
         logger.info("SOR Step 3: Market/IOC fallback")
         metrics.sor_step_total.labels(symbol=symbol, step="market").inc()
         try:
+            # Hard Slippage Limit Check
+            try:
+                tickers = await self.client.fetch_tickers()
+                if isinstance(tickers, dict):
+                    ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                    if ticker:
+                        bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                        ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                        market_price = ask if side == "buy" else bid
+                        if market_price > 0 and price > 0:
+                            expected_slippage = abs(market_price - price) / price
+                            if expected_slippage > Decimal("0.005"):
+                                logger.error(f"SOR Reject: Market fallback would incur {expected_slippage:.2%} slippage (> 0.5% limit). Aborting entry.")
+                                if self.alert_service:
+                                    await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
+                                return None
+            except Exception as e:
+                logger.debug(f"SOR slippage check failed, proceeding to market: {e}")
+
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
 
@@ -300,7 +353,7 @@ class SmartOrderRouter:
             order = await self.client.create_limit_order(
                 symbol, side, remaining, price, params={"reduceOnly": True}
             )
-            if order.get("status") == "open":
+            if order.get("status") in ("open", "closed"):
                 logger.info(f"Exit Post-Only filled: {order['orderId']}")
                 return order
         except Exception as e:
@@ -349,7 +402,7 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(
                     symbol, side, remaining, current_price, params={"reduceOnly": True}
                 )
-                if order.get("status") == "open":
+                if order.get("status") in ("open", "closed"):
                     logger.info(f"Exit reprice filled: {order['orderId']}")
                     return order
             except Exception as e:
@@ -399,6 +452,24 @@ class SmartOrderRouter:
 
             # Round sl_price to price_tick to avoid Bybit precision errors
             sl_price = (raw_sl_price / price_tick).quantize(Decimal("1")) * price_tick
+
+            # Cancel stale conditional stop orders before placing new one
+            try:
+                open_orders = await self.client.fetch_open_orders(symbol=symbol)
+                stop_orders = [o for o in open_orders
+                               if o.get("type") in ("stop", "StopOrder", "Stop")
+                               or o.get("stopOrderType")]
+                if len(stop_orders) >= 8:  # Pre-emptive cleanup at 8 (before hitting 10 limit)
+                    self._log.warning(f"SL cleanup: cancelling {len(stop_orders)} stale stop orders for {symbol}")
+                    for so in stop_orders:
+                        try:
+                            await self.client.cancel_order(so["id"], symbol)
+                        except Exception:
+                            pass
+                    import asyncio
+                    await asyncio.sleep(0.3)  # Let Bybit process cancellations
+            except Exception as e:
+                self._log.warning(f"SL cleanup failed for {symbol}: {e}")
 
             # Primary: atomic SL via set_trading_stop (exchange attaches to position)
             try:
@@ -608,7 +679,7 @@ class SmartOrderRouter:
                         else TREND_SPREAD_PCT
                     )
                     return spread <= threshold
-            
+
             # Fallback
             tickers = await self.client.fetch_tickers(symbol=symbol)
             if not tickers:
@@ -647,7 +718,7 @@ class SmartOrderRouter:
         metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
-            if order.get("status") == "open":
+            if order.get("status") in ("open", "closed"):
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
                 fill_price = Decimal(
                     str(order.get("average", order.get("avgPrice", price)))
@@ -699,7 +770,7 @@ class SmartOrderRouter:
                 order = await self.client.create_limit_order(
                     symbol, side, amount, current_price
                 )
-                if order.get("status") == "open":
+                if order.get("status") in ("open", "closed"):
                     fill_price = Decimal(
                         str(order.get("average", order.get("avgPrice", current_price)))
                     )

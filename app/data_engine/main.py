@@ -12,27 +12,26 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import random
 import signal
 import sys
 from typing import Any
 
+from app.alpha.lead_lag_buffer import LeadLagBuffer
 from app.alpha.regime import RegimeEngine
 from app.core import metrics
 from app.core.config import get_settings
 from app.core.dependencies import get_pool, get_redis, shutdown, startup
+from app.core.redis_client import RedisClient
 from app.core.session import AutonomousSessionManager
 from app.core.telemetry import TelemetryEmitter
+from app.data.ccxt_manager import CCXTManager
+from app.data.filters import BadTickFilter
+from app.data.normalizer import Normalizer
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.data_engine.exchange_connector import ExchangeConnector
 from app.data_engine.postgres_cacher import bulk_upsert
 from app.data_engine.redis_publisher import RedisPublisher
-
-from app.alpha.lead_lag_buffer import LeadLagBuffer
-from app.data.ccxt_manager import CCXTManager
-from app.data.filters import BadTickFilter
-from app.data.normalizer import Normalizer
-from app.core.redis_client import RedisClient
-import random
 
 logger = logging.getLogger("karsa.data_engine")
 
@@ -329,7 +328,7 @@ async def _live_equity_monitor_loop(
             import json as _json
             keys = await redis.keys("karsa:position:*")
             upnl = Decimal("0")
-            
+
             for k in keys:
                 raw = await redis.get(k)
                 if raw:
@@ -338,7 +337,7 @@ async def _live_equity_monitor_loop(
                     amount = Decimal(str(pos.get("amount", "0")))
                     side = pos.get("side", "LONG")
                     symbol = pos.get("symbol", "")
-                    
+
                     if entry_price > 0 and amount > 0:
                         state_raw = await redis.get(f"global:state:{symbol}")
                         if state_raw:
@@ -354,7 +353,7 @@ async def _live_equity_monitor_loop(
 
             start_balance_raw = await redis.get("karsa:metrics:daily_start_balance")
             start_balance = Decimal(str(start_balance_raw)) if start_balance_raw else balance
-            
+
             if not start_balance_raw:
                 await redis.set("karsa:metrics:daily_start_balance", str(balance))
                 start_balance = balance
@@ -362,7 +361,7 @@ async def _live_equity_monitor_loop(
             if start_balance > 0:
                 live_equity = balance + upnl
                 drawdown = (live_equity - start_balance) / start_balance
-                
+
                 if drawdown <= Decimal("-0.02"):
                     logger.critical(
                         f"🚨 LIVE EQUITY DRAWDOWN TRIGGERED: Drawdown is {drawdown:.2%}! "
@@ -393,7 +392,7 @@ async def _live_equity_monitor_loop(
                                     await redis.delete(k)
                                 except Exception as e:
                                     logger.error(f"Failed to flatten {symbol}: {e}")
-                    
+
                     # Disable trading
                     await redis.set("karsa:auto:state:active", "0")
                     await redis.set("karsa:auto:drawdown_triggered", "1")
@@ -422,6 +421,8 @@ async def _run_engine(
     """
     pool = get_pool()
     redis = get_redis()
+    redis_client = RedisClient()
+    redis_client.redis = redis
     publisher = RedisPublisher(redis)
 
     # Determine which exchanges to connect (testnet routing via BYBIT_TESTNET env)
@@ -543,7 +544,7 @@ async def _run_engine(
                     ccxt_manager,
                     normalizer,
                     bad_tick_filter,
-                    redis,
+                    redis_client,
                     lead_lag_buffer,
                     shutdown_event,
                 ),
@@ -609,7 +610,7 @@ async def _run_engine(
                             ccxt_manager,
                             normalizer,
                             bad_tick_filter,
-                            redis,
+                            redis_client,
                             lead_lag_buffer,
                             shutdown_event,
                         ),

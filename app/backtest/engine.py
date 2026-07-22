@@ -109,12 +109,8 @@ class BacktestEngine:
             or funding_rate is not None
             or oi_change is not None
         )
-        effective_gate = self._gate
-        if not has_microstructure:
-            logger.debug(
-                f"BacktestEngine: {symbol} — no microstructure data, using strict gate {effective_gate:.1f}"
-            )
-
+        base_gate = float(self._gate)
+        
         idx = 50  # minimum candles for RegimeClassifier
         atr_array = self._calculate_atr_array(arr)
 
@@ -132,7 +128,15 @@ class BacktestEngine:
                     orderbook_delta=orderbook_delta,
                     funding_rate=funding_rate,
                     oi_change=oi_change,
+                    symbol=symbol,
                 )
+
+                # Calculate effective gate matching the live decision engine
+                effective_gate = base_gate * float(vol_factor)
+
+                # Artificially simulate live global sync bonus for TREND when historical data is missing
+                if not has_microstructure and regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
+                    effective_gate -= 20.0
 
                 if score >= effective_gate:
                     report = self._simulate_trade(

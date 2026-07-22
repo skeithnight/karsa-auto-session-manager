@@ -203,6 +203,32 @@ class BybitClient:
         logger.info(f"Leverage set: {symbol} = {leverage}x")
         return result
 
+    async def _fetch_placed_order_details(self, order_id: str, symbol: str) -> dict[str, Any]:
+        """Query order status with a quick retry to handle API propagation delay."""
+        for attempt in range(3):
+            try:
+                order = await self.get_order_status(order_id, symbol)
+                if order and order.get("orderId"):
+                    # Map Bybit V5 statuses to CCXT standard statuses for SOR compatibility
+                    status_raw = order.get("orderStatus", "").lower()
+                    if status_raw in ("new", "partiallyfilled", "untriggered", "triggered"):
+                        order["status"] = "open"
+                    elif status_raw in ("filled",):
+                        order["status"] = "closed"
+                    elif status_raw in ("cancelled", "canceled", "rejected", "deactivated"):
+                        order["status"] = "canceled"
+                    else:
+                        order["status"] = status_raw
+
+                    # Map avgPrice to average
+                    if "avgPrice" in order:
+                        order["average"] = order["avgPrice"]
+                    return order
+            except Exception as e:
+                logger.debug(f"Fetch order status attempt {attempt+1} failed: {e}")
+            await asyncio.sleep(0.05 * (attempt + 1))
+        return {}
+
     async def create_limit_order(
         self,
         symbol: str,
@@ -232,6 +258,12 @@ class BybitClient:
         logger.info(
             f"Limit order placed: {result.get('orderId')} {side} {amount} @ {price}"
         )
+
+        order_id = result.get("orderId")
+        if order_id:
+            full_order = await self._fetch_placed_order_details(order_id, symbol)
+            if full_order:
+                return full_order
         return result
 
     async def create_market_order(
@@ -258,7 +290,14 @@ class BybitClient:
             order_params.update(params)
         result = await self._execute(self.session.place_order, **order_params)
         logger.info(f"Market order placed: {result.get('orderId')} {side} {amount}")
+
+        order_id = result.get("orderId")
+        if order_id:
+            full_order = await self._fetch_placed_order_details(order_id, symbol)
+            if full_order:
+                return full_order
         return result
+
 
     async def cancel_order(self, order_id: str, symbol: str) -> dict[str, Any]:
         """Cancel an open order."""
@@ -366,15 +405,22 @@ class BybitClient:
         logger.debug(f"fetch_positions: returning list_len={len(positions)}")
         return positions
 
-    async def fetch_open_orders(self) -> list:
+    async def fetch_open_orders(self, symbol: str | None = None) -> list:
         """Fetch all open orders."""
         logger.debug("fetch_open_orders: entering")
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
+            
+        params: dict[str, Any] = {
+            "category": "linear",
+            "settleCoin": "USDT"
+        }
+        if symbol:
+            params["symbol"] = self._to_bybit_symbol(symbol)
+            
         result = await self._execute(
             self.session.get_open_orders,
-            category="linear",
-            settleCoin="USDT",
+            **params
         )
         orders = [
             {
@@ -384,6 +430,8 @@ class BybitClient:
                 "price": _safe_decimal(o.get("price")),
                 "amount": _safe_decimal(o.get("qty")),
                 "status": o.get("orderStatus", "").lower(),
+                "type": o.get("orderType", "").lower(),
+                "stopOrderType": o.get("stopOrderType", "")
             }
             for o in result.get("list", [])
         ]

@@ -30,9 +30,9 @@ def _make_bb_piercing_candles(n: int = 50, direction: str = "SHORT") -> np.ndarr
         candles[i] = [1000 + i * 3600, c - 0.2, c + 0.3, c - 0.3, c, 1000]
     last = candles[-2, 4]
     if direction == "SHORT":
-        candles[-1] = [1000 + n * 3600, last, last + 8.0, last - 0.5, last + 0.5, 2000]
+        candles[-1] = [1000 + n * 3600, last, last + 8.0, last - 0.5, last, 2000]
     else:
-        candles[-1] = [1000 + n * 3600, last, last + 0.5, last - 8.0, last - 0.5, 2000]
+        candles[-1] = [1000 + n * 3600, last, last + 0.5, last - 8.0, last, 2000]
     return candles
 
 

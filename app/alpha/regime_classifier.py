@@ -36,6 +36,8 @@ MIN_CANDLES_FOR_CLASSIFICATION: int = 50
 class MarketRegime(enum.Enum):
     TREND_BULL = "TREND_BULL"
     TREND_BEAR = "TREND_BEAR"
+    HYPER_BULL = "HYPER_BULL"
+    HYPER_BEAR = "HYPER_BEAR"
     RANGE = "RANGE"
     CHOP = "CHOP"
 
@@ -193,12 +195,26 @@ class RegimeClassifier:
         if atr_pct > REGIME_ATR_CHOP_PERCENTILE and adx < REGIME_ADX_CHOP_THRESHOLD:
             return MarketRegime.CHOP
 
+        # Priority 1.5: Hyper-Momentum (ADX >= 40)
+        if adx >= 40.0:
+            if close > sma20:
+                return MarketRegime.HYPER_BULL
+            else:
+                return MarketRegime.HYPER_BEAR
+
         # Priority 2/3: trending (ADX >= 25, inclusive)
         if adx >= REGIME_ADX_TREND_THRESHOLD:
             if close > sma20:
                 return MarketRegime.TREND_BULL
             else:
                 return MarketRegime.TREND_BEAR
+
+        # Priority 2.5: transitional (ADX 20-25) — treat as weak trend with reduced sizing
+        if adx >= REGIME_ADX_CHOP_THRESHOLD:
+            if close > sma20:
+                return MarketRegime.TREND_BULL  # weak trend bull
+            else:
+                return MarketRegime.TREND_BEAR  # weak trend bear
 
         # Priority 4: ranging with anti-persistent price action
         if adx < REGIME_ADX_CHOP_THRESHOLD and hurst < REGIME_HURST_MR_THRESHOLD:
@@ -284,7 +300,7 @@ class RegimeClassifier:
     ) -> float:
         """R/S Hurst exponent. H > 0.5 = trending, H < 0.5 = mean-reverting."""
         if windows is None:
-            windows = [10, 20, 40]
+            windows = [8, 16, 32, 64]
 
         log_prices = np.log(prices[prices > 0])
         if len(log_prices) < max(windows):

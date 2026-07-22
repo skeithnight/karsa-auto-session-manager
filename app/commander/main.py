@@ -113,7 +113,7 @@ async def scheduled_bulk_backtest_task(
                     report_text = format_bulk_backtest_summary(results, bulk_id, status)
 
                     # 5. Send Alert
-                    await alert_service.send(report_text, parse_mode="HTML")
+                    await alert_service.send(report_text)
                     logger.info("scheduled_bulk_backtest_task: Report sent")
 
         except Exception as e:
@@ -160,7 +160,7 @@ async def shadow_feedback_task(
     """Periodically queries shadow performance and disables unprofitable regimes for Live."""
     logger.debug("shadow_feedback_task: entering")
     import json
-    from datetime import datetime, timedelta
+    from datetime import UTC, datetime, timedelta
 
     from sqlalchemy import text
 
@@ -249,7 +249,7 @@ async def shadow_feedback_task(
                     "shadow_feedback_task: updated regime_overrides: %s", overrides
                 )
                 for alert in alerts:
-                    await alert_service.send(alert, parse_mode="HTML")
+                    await alert_service.send(alert)
 
         except Exception as e:
             logger.error("shadow_feedback_task error: %s", e)

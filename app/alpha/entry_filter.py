@@ -15,6 +15,8 @@ from loguru import logger
 
 # Regime-dependent spread limits (max spread_pct allowed)
 REGIME_SPREAD_LIMITS: dict[str, float] = {
+    "HYPER_BULL": 0.005,  # 0.50% — wide limit for massive momentum, reliant on SOR slippage cap
+    "HYPER_BEAR": 0.005,
     "TREND_BULL": 0.001,  # 0.10% — tight for clean breakouts
     "TREND_BEAR": 0.001,  # 0.10% — tight for clean breakouts
     "RANGE": 0.0015,  # 0.15% — standard for mean-reversion
@@ -38,8 +40,8 @@ class EntryFilter:
         max_spread_pct: float = 0.003,
         min_depth_ratio: float = 0.7,
         max_depth_ratio: float = 1.4,
-        blocked_hour_start: int = 0,
-        blocked_hour_end: int = 6,
+        blocked_hour_start: int = 3,
+        blocked_hour_end: int = 5,
         min_atr: float = 0.0,
         max_atr: float = float("inf"),
     ) -> None:

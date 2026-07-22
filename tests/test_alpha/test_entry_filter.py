@@ -49,7 +49,7 @@ class TestEntryFilter:
 
     def test_blocked_hour(self):
         ok, reason = self.filt.check(
-            now_utc=datetime(2026, 1, 1, 0, 30, tzinfo=UTC),
+            now_utc=datetime(2026, 1, 1, 4, 30, tzinfo=UTC),
         )
         assert ok is False
         assert "blocked" in reason

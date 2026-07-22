@@ -71,6 +71,15 @@ class OHLCVFetcher:
                 return self._cache[key][1]
             return []
 
+    async def fetch_funding_rate(self, symbol: str) -> Decimal:
+        """Fetch current funding rate from exchange."""
+        try:
+            funding = await self.exchange.fetch_funding_rate(symbol)
+            return Decimal(str(funding.get("fundingRate", 0)))
+        except Exception as e:
+            logger.debug(f"fetch_funding_rate failed for {symbol}: {e}")
+            return Decimal("0")
+
     def clear_cache(self) -> None:
         """Clear all cached data."""
         self._cache.clear()

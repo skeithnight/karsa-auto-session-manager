@@ -25,7 +25,7 @@ from decimal import Decimal
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
-from app.bot.utils.format import HTML, bold, fmt, italic, pre
+from app.bot.utils.format import HTML, bold, code, fmt, italic, pre
 from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
 from app.core.config import get_settings
 
@@ -649,7 +649,7 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ),
             ],
         ]
-        
+
         # Add Reset Cooldowns button if any exist
         from app.alpha.trade_memory import TradeMemory
         trade_memory = TradeMemory(r)
@@ -1023,14 +1023,22 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.warning("settings_read_regime_failed", extra={"error": str(exc)})
         regime_on = True
 
+    try:
+        risk_pct = int(await r.get("karsa:settings:risk_pct") or 10)
+    except Exception as exc:
+        logger.warning("settings_read_risk_failed", extra={"error": str(exc)})
+        risk_pct = 10
+
     _dash = "\u2500"
     _sep = _dash * 22 + _dash + _dash * 5 + _dash + _dash * 12
     _regime_val = "ON" if regime_on else "OFF"
     _alerts_val = "ON" if alerts_on else "OFF"
+    _risk_val = f"{risk_pct}%"
     settings_block = (
         f"{'Parameter':<22} {'Value':<5}  Cycle\n"
         f"{_sep}\n"
         f"{'Max Open Positions':<22} {max_pos:<5}  [3 \u00b7 5 \u00b7 8]\n"
+        f"{'Risk Allocation':<22} {_risk_val:<5}  [10% \u00b7 30% \u00b7 50% \u00b7 70%]\n"
         f"{'Regime Filter':<22} {_regime_val:<5}  [ON \u00b7 OFF]\n"
         f"{'Trade Alerts':<22} {_alerts_val:<5}  [ON \u00b7 OFF]"
     )
@@ -1051,15 +1059,18 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"\U0001f4c2 Max Pos: {max_pos}", callback_data="settings:max_positions"
             ),
             InlineKeyboardButton(
-                f"\U0001f4ca Regime: {'ON' if regime_on else 'OFF'}",
-                callback_data="settings:regime_filter",
+                f"\U0001f3af Risk: {risk_pct}%", callback_data="settings:risk_pct"
             ),
         ],
         [
             InlineKeyboardButton(
+                f"\U0001f4ca Regime: {'ON' if regime_on else 'OFF'}",
+                callback_data="settings:regime_filter",
+            ),
+            InlineKeyboardButton(
                 f"\U0001f514 Alerts: {'ON' if alerts_on else 'OFF'}",
                 callback_data="settings:alerts",
-            )
+            ),
         ],
         [
             InlineKeyboardButton(
@@ -1088,6 +1099,23 @@ async def _toggle_max_pos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await r.set("karsa:settings:max_positions", str(new_val))
     await settings_cmd(update, context)
     logger.debug("_toggle_max_pos: returning None")
+
+
+async def _toggle_risk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cycle risk percentage: 10 → 30 → 50 → 70 → 10."""
+    logger.debug("_toggle_risk: entering")
+    r = _get_redis(context)
+    try:
+        current = int(await r.get("karsa:settings:risk_pct") or 10)
+    except Exception as exc:
+        logger.warning("toggle_risk_read_failed", extra={"error": str(exc)})
+        current = 10
+
+    cycle = {10: 30, 30: 50, 50: 70, 70: 10}
+    new_val = cycle.get(current, 10)
+    await r.set("karsa:settings:risk_pct", str(new_val))
+    await settings_cmd(update, context)
+    logger.debug("_toggle_risk: returning None")
 
 
 async def _toggle_regime(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1446,16 +1474,17 @@ async def view_positions_detail_cmd(update: Update, context: ContextTypes.DEFAUL
     )
 
     # Add Reset Cooldowns button if any exist
-    from app.alpha.trade_memory import TradeMemory
-    trade_memory = TradeMemory(redis_cache)
-    active_cooldowns = await trade_memory.get_active_cooldowns(cooldown_mins=45)
-    if active_cooldowns:
-        cooldown_list = ", ".join(active_cooldowns)
-        keyboard.insert(len(keyboard) - 2, [
-            InlineKeyboardButton(
-                f"❄️ Reset Cooldowns ({len(active_cooldowns)}): {cooldown_list}", callback_data="cmd_reset_cooldowns"
-            )
-        ])
+    if r:
+        from app.alpha.trade_memory import TradeMemory
+        trade_memory = TradeMemory(r)
+        active_cooldowns = await trade_memory.get_active_cooldowns(cooldown_mins=45)
+        if active_cooldowns:
+            cooldown_list = ", ".join(active_cooldowns)
+            keyboard.insert(len(keyboard) - 2, [
+                InlineKeyboardButton(
+                    f"❄️ Reset Cooldowns ({len(active_cooldowns)}): {cooldown_list}", callback_data="cmd_reset_cooldowns"
+                )
+            ])
 
     await send_or_edit_message(
         update, str(fmt(*lines, sep="\n")), reply_markup=InlineKeyboardMarkup(keyboard)
@@ -1977,6 +2006,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Settings toggles
     elif data == "settings:max_positions":
         await _toggle_max_pos(update, context)
+    elif data == "settings:risk_pct":
+        await _toggle_risk(update, context)
     elif data == "settings:regime_filter":
         await _toggle_regime(update, context)
     elif data == "settings:alerts":
@@ -2052,40 +2083,32 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "crypto_resume":
         await _execute_resume(update, context)
 
-    # ASM launch — show risk level selection
+    # ASM launch — start session dynamically
     elif data == "auto_launch":
-        logger.debug("auto_launch: showing risk selection")
-        keyboard = [
-            [
-                InlineKeyboardButton("10%", callback_data="asm_risk_10"),
-                InlineKeyboardButton("30%", callback_data="asm_risk_30"),
-            ],
-            [
-                InlineKeyboardButton("50%", callback_data="asm_risk_50"),
-                InlineKeyboardButton("70%", callback_data="asm_risk_70"),
-            ],
-            [InlineKeyboardButton("100%", callback_data="asm_risk_100")],
-            [InlineKeyboardButton("← Back", callback_data="main_menu")],
-        ]
-        await _reply(
-            update, "📊 Select risk %:", reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    # ASM risk selected — start session
-    elif data.startswith("asm_risk_"):
-        risk_pct = int(data.split("_")[2])
-        logger.debug(f"asm_risk: selected risk={risk_pct}%")
+        logger.debug("auto_launch: starting session directly")
         session_mgr = context.bot_data.get("session_manager")
         if session_mgr and r:
             try:
+                max_pos = int(await r.get("karsa:settings:max_positions") or 5)
+            except Exception as exc:
+                logger.warning("auto_launch_read_max_pos_failed", extra={"error": str(exc)})
+                max_pos = 5
+                
+            try:
+                risk_pct = int(await r.get("karsa:settings:risk_pct") or 10)
+            except Exception as exc:
+                logger.warning("auto_launch_read_risk_pct_failed", extra={"error": str(exc)})
+                risk_pct = 10
+                
+            try:
                 await session_mgr.start_session(
-                    duration_min=60,
+                    duration_min=0,
                     risk_pct=risk_pct,
-                    max_pos=3,
+                    max_pos=max_pos,
                 )
                 await _reply(
                     update,
-                    f"🚀 Session launched at {risk_pct}% risk.",
+                    f"🚀 Session launched indefinitely!\n\nRisk: {risk_pct}%\nMax Pos: {max_pos}",
                     reply_markup=InlineKeyboardMarkup(
                         [
                             [
@@ -2105,7 +2128,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
         else:
             logger.warning(
-                f"asm_risk: unavailable — session_mgr={session_mgr is not None} redis={r is not None}"
+                f"auto_launch: unavailable — session_mgr={session_mgr is not None} redis={r is not None}"
             )
             await _reply(
                 update,
@@ -2206,17 +2229,17 @@ async def _clear_all_cooldowns(update: Update, context: ContextTypes.DEFAULT_TYP
     r = _get_redis(context)
     from app.alpha.trade_memory import TradeMemory
     trade_memory = TradeMemory(r)
-    
+
     query = update.callback_query
     active_cooldowns = await trade_memory.get_active_cooldowns()
-    
+
     if not active_cooldowns:
         await query.answer("No active cooldowns to reset.", show_alert=True)
         return
-        
+
     for symbol in active_cooldowns:
         await trade_memory.clear_cooldown(symbol)
-        
+
     await query.answer(f"Reset cooldowns for {len(active_cooldowns)} symbols.", show_alert=True)
     # Refresh the portfolio view to hide the button
     await portfolio_cmd(update, context)

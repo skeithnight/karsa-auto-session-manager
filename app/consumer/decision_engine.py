@@ -98,6 +98,8 @@ class DecisionEngine:
         self._trade_memory = trade_memory
         self._redis = redis_client
         self._multi_tf = multi_tf
+        self._prev_regimes: dict[str, MarketRegime] = {}
+        self._regime_transition_counts: dict[str, int] = {}
 
     def set_wallet_balance(self, balance: Decimal) -> None:
         """Update wallet balance for position sizing."""
@@ -185,6 +187,19 @@ class DecisionEngine:
 
         # Step 1: Regime classification
         regime = self._classifier.classify(arr)
+
+        # Regime hysteresis: require 2 consecutive readings to switch regime
+        _prev_regime = self._prev_regimes.get(symbol)
+        if _prev_regime is not None and regime != _prev_regime:
+            self._regime_transition_counts[symbol] = self._regime_transition_counts.get(symbol, 0) + 1
+            if self._regime_transition_counts[symbol] < 2:
+                regime = _prev_regime  # Stick with previous until confirmed
+            else:
+                self._regime_transition_counts.pop(symbol, None)  # Transition confirmed
+        else:
+            self._regime_transition_counts.pop(symbol, None)  # No transition or same regime
+        self._prev_regimes[symbol] = regime
+
         logger.debug("evaluate: %s regime=%s", symbol, regime.value)
         if self._redis:
             try:
@@ -298,24 +313,28 @@ class DecisionEngine:
         return None
 
     async def check_consecutive_losses(self, symbol: str, regime: MarketRegime) -> bool:
-        """Check if symbol has 3+ consecutive losses in the same regime.
+        """Check if symbol has 3+ consecutive losses or 4+ breakevens in the same regime.
 
-        Returns True if signal should be REJECTED (too many consecutive losses).
+        Returns True if signal should be REJECTED (too many consecutive losses/choppiness).
         """
         if self._trade_memory is None:
             return False
 
         try:
-            trades = await self._trade_memory.get_recent(symbol, count=5)
+            trades = await self._trade_memory.get_recent(symbol, count=7)  # Look deeper (was 5)
             if not trades:
                 return False
 
             regime_str = regime.value
             consecutive = 0
+            breakeven_streak = 0
             for t in trades:
                 pnl = t.get("pnl_pct", 0)
+                reason = t.get("exit_reason", "")
                 if pnl < 0:
                     consecutive += 1
+                    if "breakeven" in reason or "stagnation" in reason:
+                        breakeven_streak += 1
                 else:
                     break
 
@@ -326,9 +345,17 @@ class DecisionEngine:
                     consecutive,
                 )
                 from app.core import metrics
-
                 metrics.signal_confidence_passed_total.labels(regime=regime_str)
                 return True
+
+            if breakeven_streak >= 4:
+                logger.warning(
+                    "breakeven_streak_block: %s %d consecutive breakevens/stagnation — REJECTING (choppy)",
+                    symbol,
+                    breakeven_streak,
+                )
+                return True
+
             return False
 
         except Exception:
@@ -337,9 +364,9 @@ class DecisionEngine:
 
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
         """Determine which directions to evaluate based on regime."""
-        if regime == MarketRegime.TREND_BULL:
+        if regime in (MarketRegime.TREND_BULL, MarketRegime.HYPER_BULL):
             return ["LONG"]
-        if regime == MarketRegime.TREND_BEAR:
+        if regime in (MarketRegime.TREND_BEAR, MarketRegime.HYPER_BEAR):
             return ["SHORT"]
         return ["LONG", "SHORT"]
 

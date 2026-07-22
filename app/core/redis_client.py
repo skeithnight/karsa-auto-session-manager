@@ -105,6 +105,16 @@ class RedisClient:
         await self.redis.delete(key)
         logger.debug("delete: returning None")
 
+    async def keys(self, pattern: str) -> list[str]:
+        """Find keys matching a pattern."""
+        logger.debug(f"keys: entering pattern={pattern}")
+        if not self.redis:
+            raise RuntimeError("Redis not connected")
+        result = await self.redis.keys(pattern)
+        logger.debug(f"keys: returning list of length {len(result)}")
+        return result
+
+
     # --- Per-Symbol Regime ---
 
     async def set_symbol_regime(self, symbol: str, regime: str) -> None:

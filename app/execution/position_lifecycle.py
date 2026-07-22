@@ -637,7 +637,7 @@ class CheckpointManager:
                         if entry_price * amount
                         else Decimal("0")
                     )
-                    
+
                     # Deduct ~0.11% round-trip fee so Breakeven doesn't show $0.00
                     fee_cost = (entry_price * amount) * Decimal("0.0011")
                     net_pnl = pnl - fee_cost

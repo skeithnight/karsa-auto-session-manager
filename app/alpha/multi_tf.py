@@ -38,7 +38,7 @@ class MultiTFFilter:
         ohlcv_fetcher: OHLCVFetcher,
         ema_period: int = 20,
         penalty: Decimal = Decimal("0.5"),
-        block_contradictions: bool = True,
+        block_contradictions: bool = False,
     ) -> None:
         self.fetcher = ohlcv_fetcher
         self.ema_period = ema_period
@@ -143,11 +143,11 @@ class MultiTFFilter:
                 if not res.get("direction_agrees"):
                     contradictions += 1
 
-        # If >= 50% of anchors contradict, apply a 20% penalty to the score
+        # If >= 50% of anchors contradict, apply a 10% penalty to the score
         if valid_anchors > 0 and contradictions >= (valid_anchors / 2):
             logger.info(
-                f"Macro Anchor Penalty: {contradictions}/{valid_anchors} anchors contradict {direction}. Applying 0.8x penalty."
+                f"Macro Anchor Penalty: {contradictions}/{valid_anchors} anchors contradict {direction}. Applying 0.9x penalty."
             )
-            return 0.80
+            return 0.90
 
         return 1.0

@@ -19,7 +19,7 @@ class TestSettings:
         }
 
         with patch.dict(os.environ, env_vars):
-            settings = Settings()
+            settings = Settings(_env_file=None)
 
             assert settings.bybit_api_key == "test_key"
             assert settings.bybit_api_secret == "test_secret"
@@ -32,9 +32,9 @@ class TestSettings:
         }
 
         with patch.dict(os.environ, env_vars, clear=True):
-            settings = Settings()
+            settings = Settings(_env_file=None)
 
-            assert settings.postgres_url == "postgresql+asyncpg://karsa:karsa@postgres:5432/karsa"
+            assert settings.postgres_url == "postgresql+asyncpg://karsa:karsa@db:5432/karsa"
             assert settings.redis_url == "redis://redis:6379/0"
             assert settings.daily_drawdown_limit == "-0.02"
 
@@ -46,7 +46,7 @@ class TestSettings:
         }
 
         with patch.dict(os.environ, env_vars, clear=True):
-            settings = Settings()
+            settings = Settings(_env_file=None)
 
             assert "BTC/USDT" in settings.symbols
             assert "ETH/USDT" in settings.symbols

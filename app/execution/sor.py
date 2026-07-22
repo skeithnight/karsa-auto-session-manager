@@ -74,6 +74,8 @@ class SmartOrderRouter:
             logger.warning(f"SOR: invalid price {price} for {symbol}, skipping")
             return None
 
+
+
         # Iceberg / TWAP Order Slicing
         notional = price * amount
         if notional > Decimal("2000"):
@@ -466,7 +468,6 @@ class SmartOrderRouter:
                             await self.client.cancel_order(so["id"], symbol)
                         except Exception:
                             pass
-                    import asyncio
                     await asyncio.sleep(0.3)  # Let Bybit process cancellations
             except Exception as e:
                 self._log.warning(f"SL cleanup failed for {symbol}: {e}")
@@ -815,4 +816,58 @@ class SmartOrderRouter:
                 symbol=symbol, error_type=type(exc).__name__
             ).inc()
             logger.error("SOR: market fallback failed: %s", exc)
+            return None
+
+    async def execute_sniper_trap(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        target_price: Decimal,
+        max_slippage_bps: int,
+    ) -> dict[str, Any] | None:
+        """Execute resting limit order for Sniper Trap. No fallback, no SL placement (SL placed by APM after partial/full fill)."""
+        side = "buy" if side in ("buy", "LONG") else "sell"
+        logger.info(f"SOR Sniper Trap: {side} {amount} {symbol} target={target_price}")
+        
+        try:
+            # 1. Check Slippage Tolerance
+            tickers = await self.client.fetch_tickers()
+            if isinstance(tickers, dict):
+                ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                if ticker:
+                    bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                    ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                    best_price = bid if side == "buy" else ask
+                    
+                    if best_price > 0:
+                        if side == "buy":
+                            # Safe Limit Price = Max(Target, Best_Bid - Tick) (Wait: actually slightly below Best_Bid to ensure Maker)
+                            safe_limit_price = max(target_price, best_price * Decimal("0.9995"))
+                        else:
+                            # Safe Limit Price = Min(Target, Best_Ask + Tick)
+                            safe_limit_price = min(target_price, best_price * Decimal("1.0005"))
+                        
+                        slippage = abs(safe_limit_price - target_price) / target_price * Decimal("10000")
+                        if slippage > max_slippage_bps:
+                            logger.warning(f"SOR Sniper Trap Aborted: Safe price {safe_limit_price} exceeds {max_slippage_bps} bps slippage from {target_price}")
+                            return None
+                        
+                        # Update target price to safe limit price
+                        target_price = safe_limit_price
+
+            # 2. Place Post-Only Order
+            order = await self.client.create_limit_order(
+                symbol, side, amount, target_price, params={"timeInForce": "PostOnly"}
+            )
+            
+            if order.get("status") in ("New", "PartiallyFilled", "open", "closed"):
+                logger.info(f"Sniper Trap Placed: {order.get('orderId')} at {target_price}")
+                return order
+            else:
+                logger.warning(f"Sniper Trap Rejected: {order.get('rejectReason', order)}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"SOR Sniper Trap execution failed: {e}")
             return None

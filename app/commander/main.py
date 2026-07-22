@@ -129,6 +129,47 @@ async def scheduled_bulk_backtest_task(
     logger.debug("scheduled_bulk_backtest_task: returning None")
 
 
+async def scheduled_reports_task(
+    db_engine: DatabaseEngine,
+    alert_service: AlertService,
+    kill_switch: asyncio.Event,
+) -> None:
+    """Dispatches daily analytics reports."""
+    logger.debug("scheduled_reports_task: entering")
+    from app.analytics.evidence import EvidenceAnalyzer
+    from app.analytics.ai_effectiveness import AIEffectivenessAnalyzer
+    from app.analytics.lifecycle import LifecycleAnalyzer
+    from app.analytics.calibration import CalibrationAnalyzer
+    from app.analytics.reports import ReportGenerator
+
+    generator = ReportGenerator(
+        evidence=EvidenceAnalyzer(db_engine),
+        ai=AIEffectivenessAnalyzer(db_engine),
+        lifecycle=LifecycleAnalyzer(db_engine),
+        calibration=CalibrationAnalyzer(db_engine),
+    )
+
+    # Initial wait before starting
+    await asyncio.sleep(10)
+
+    while not kill_switch.is_set():
+        try:
+            report = await generator.generate_daily_report()
+            await alert_service.send(report)
+            logger.info("scheduled_reports_task: Daily report sent")
+        except Exception as e:
+            logger.error("scheduled_reports_task error: %s", e)
+
+        # Sleep 24 hours (chunked)
+        total_wait = 24 * 3600
+        waited = 0
+        while waited < total_wait and not kill_switch.is_set():
+            await asyncio.sleep(60)
+            waited += 60
+
+    logger.debug("scheduled_reports_task: returning None")
+
+
 async def telemetry_listener_task(
     redis_client: RedisClient,
     db_engine: DatabaseEngine,
@@ -368,6 +409,16 @@ async def main() -> None:
         name="commander-telemetry-listener",
     )
 
+    # Start scheduled reports
+    reports_task = asyncio.create_task(
+        scheduled_reports_task(
+            db_engine=db_engine,
+            alert_service=alert_service,
+            kill_switch=shutdown_event,
+        ),
+        name="commander-scheduled-reports",
+    )
+
     # Start the shadow feedback auto-adjustment task
     feedback_task = asyncio.create_task(
         shadow_feedback_task(
@@ -388,12 +439,14 @@ async def main() -> None:
         bot_task.cancel()
         bulk_task.cancel()
         listener_task.cancel()
+        reports_task.cancel()
         feedback_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(
                 bot_task,
                 bulk_task,
                 listener_task,
+                reports_task,
                 feedback_task,
                 return_exceptions=True,
             )

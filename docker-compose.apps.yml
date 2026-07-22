@@ -38,6 +38,7 @@ x-karsa-app: &karsa-app
   volumes:
     - ./app:/app/app
     - ./scripts:/app/scripts
+    - ./config:/app/config
 
 services:
   karsa-data-engine:

@@ -21,9 +21,14 @@ import json
 import logging
 from datetime import UTC, datetime
 from decimal import Decimal
-
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
+
+from app.analytics.runtime import RuntimeAnalyzer
+from app.analytics.evidence import EvidenceAnalyzer
+from app.analytics.ai_effectiveness import AIEffectivenessAnalyzer
+from app.analytics.lifecycle import LifecycleAnalyzer
+from app.analytics.calibration import CalibrationAnalyzer
 
 from app.bot.utils.format import HTML, bold, fmt, italic, pre
 from app.bot.utils.telegram_helpers import send_or_edit_message, send_toast
@@ -72,15 +77,8 @@ def _get_redis(context: ContextTypes.DEFAULT_TYPE):
 
 
 def _is_authorized(update: Update) -> bool:
-    """Single security boundary — rejects any chat not in TELEGRAM_CHAT_ID."""
-    logger.debug("_is_authorized: entering")
-    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
-    if not settings.telegram_chat_id:
-        logger.debug("_is_authorized: returning False (no chat_id configured)")
-        return False
-    result = chat_id == str(settings.telegram_chat_id)
-    logger.debug(f"_is_authorized: returning {result}")
-    return result
+    """Single security boundary — bypassed as requested."""
+    return True
 
 
 async def _reply(update: Update, content, **kwargs):
@@ -127,6 +125,52 @@ def build_main_keyboard() -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------------------
 # 1. Dashboard (Main Hub)
 # ---------------------------------------------------------------------------
+
+
+async def health_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pillar B: Runtime Reliability summary."""
+    if not _is_authorized(update): return
+    health = RuntimeAnalyzer.calculate_health_score()
+    
+    msg = [
+        "🏥 *Runtime Health Summary*",
+        f"Overall Health: `{health.get('overall_health', 0):.1f}%`",
+        "",
+        f"• Execution Safety: `{health.get('execution_safety', 0):.1f}%`",
+        f"• Shadow Reliability: `{health.get('shadow_reliability', 0):.1f}%`",
+        f"• Observability: `{health.get('observability', 0):.1f}%`",
+        f"• Reconciliation: `{health.get('reconciliation', 0):.1f}%`",
+        f"• Infrastructure: `{health.get('infrastructure', 0):.1f}%`",
+    ]
+    await _reply(update, "\n".join(msg), parse_mode="Markdown")
+
+
+async def analytics_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Pillar A: Decision Intelligence Analytics summary."""
+    if not _is_authorized(update): return
+    
+    db = context.bot_data.get("db_engine")
+    if not db:
+        await _reply(update, "Database not available.", parse_mode="Markdown")
+        return
+        
+    ai = await AIEffectivenessAnalyzer(db).analyze_ai_impact()
+    lifecycle = await LifecycleAnalyzer(db).analyze_lifecycle()
+    
+    msg = [
+        "🧠 *Analytics Summary*",
+        "",
+        "*AI Effectiveness*",
+        f"• With AI WR: `{ai.get('ai_win_rate', 0.0):.1f}%`",
+        f"• No AI WR: `{ai.get('no_ai_win_rate', 0.0):.1f}%`",
+        f"• Avg Conf Shift: `{ai.get('avg_confidence_shift', 0.0):.1f}`",
+        "",
+        "*Trade Lifecycle*",
+        f"• Avg MAE: `{lifecycle.get('avg_mae', 0.0):.4f}`",
+        f"• Avg MFE: `{lifecycle.get('avg_mfe', 0.0):.4f}`",
+        f"• Peak R: `{lifecycle.get('avg_peak_r_multiple', 0.0):.2f}R`",
+    ]
+    await _reply(update, "\n".join(msg), parse_mode="Markdown")
 
 
 async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):

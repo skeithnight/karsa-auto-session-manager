@@ -47,7 +47,7 @@ async def startup(settings: Settings | None = None) -> None:
         _redis = aioredis.from_url(
             settings.redis_url,
             decode_responses=True,
-            max_connections=10,
+            max_connections=500,
         )
         # Verify connectivity
         await _redis.ping()

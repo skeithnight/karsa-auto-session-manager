@@ -100,7 +100,24 @@ class Watchdog:
         await self._check_event_loop_lag()
         self._check_latency()
         self._check_critical_tasks()
+        self._check_memory()
         logger.debug("_check_health: returning None")
+
+    def _check_memory(self) -> None:
+        """Track memory stability (Epic 0.8)."""
+        try:
+            import os
+            import psutil
+            process = psutil.Process(os.getpid())
+            rss = process.memory_info().rss
+            metrics.memory_rss_bytes.set(rss)
+        except ImportError:
+            # Fallback if psutil is not installed
+            import resource
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            metrics.memory_rss_bytes.set(usage.ru_maxrss * 1024)
+        except Exception as e:
+            logger.debug(f"Watchdog memory tracking failed: {e}")
 
     async def _check_heartbeat(self) -> None:
         """Check per-exchange heartbeats. Pause/resume Alpha Bridge on stale data."""

@@ -1663,17 +1663,7 @@ async def main() -> None:
         asyncio.create_task(universe_refresh_task(universe_scorer, valid_symbols)),
         asyncio.create_task(dead_mans_switch.start()),
         asyncio.create_task(session_manager.run_loop()),
-        asyncio.create_task(
-            run_bot(
-                redis_client,
-                bybit_client,
-                kill_switch,
-                session_manager,
-                db_engine,
-                alert_service,
-                trade_reconciler=trade_reconciler,
-            )
-        ),
+
         asyncio.create_task(
             regime_engine_task(
                 regime_engine, regime_classifier, ohlcv_fetcher, redis_client

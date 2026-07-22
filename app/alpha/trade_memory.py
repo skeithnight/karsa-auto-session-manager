@@ -26,7 +26,7 @@ class TradeMemory:
     """
 
     def __init__(self, redis_client: RedisClient) -> None:
-        self.redis = redis_client
+        self.redis = getattr(redis_client, "redis", redis_client)
 
     def _key(self, symbol: str) -> str:
         return f"karsa:memory:{symbol}"
@@ -39,6 +39,7 @@ class TradeMemory:
         regime: str,
         exit_reason: str,
         entry_confidence: Decimal,
+        features: dict | None = None,
     ) -> None:
         """Store a closed trade in memory."""
         entry = {
@@ -48,10 +49,15 @@ class TradeMemory:
             "exit": exit_reason,
             "confidence": float(entry_confidence),
         }
+        if features:
+            entry["features"] = features
+
         score = time.time()
         key = self._key(symbol)
 
         try:
+            if not self.redis:
+                return
             await self.redis.zadd(key, {json.dumps(entry): score})
             # FIFO eviction: keep only latest MAX_ENTRIES
             await self.redis.zremrangebyrank(key, 0, -(MAX_ENTRIES_PER_SYMBOL + 1))
@@ -67,9 +73,9 @@ class TradeMemory:
         key = self._key(symbol)
         try:
             # Get the single most recent trade with its score (timestamp)
-            if not self.redis.redis:
+            if not self.redis:
                 return False
-            recent = await self.redis.redis.zrevrange(key, 0, 0, withscores=True)
+            recent = await self.redis.zrevrange(key, 0, 0, withscores=True)
             if not recent:
                 return False
 
@@ -100,6 +106,8 @@ class TradeMemory:
         """
         key = self._key(symbol)
         try:
+            if not self.redis:
+                return []
             raw = await self.redis.zrevrange(key, 0, count * 3 - 1)
             if not raw:
                 return []
@@ -175,9 +183,9 @@ class TradeMemory:
 
     async def get_active_cooldowns(self, cooldown_mins: int = 45) -> list[str]:
         """Return a list of symbols currently in cooldown."""
-        if not self.redis.redis:
+        if not self.redis:
             return []
-        keys = await self.redis.redis.keys("karsa:memory:*")
+        keys = await self.redis.keys("karsa:memory:*")
         symbols = []
         for key in keys:
             if isinstance(key, bytes):
@@ -191,8 +199,8 @@ class TradeMemory:
         """Clear the cooldown for a specific symbol by removing its memory key."""
         key = self._key(symbol)
         try:
-            if self.redis.redis:
-                await self.redis.redis.delete(key)
+            if self.redis:
+                await self.redis.delete(key)
                 logger.info(f"Cooldown cleared for {symbol}")
         except Exception as e:
             logger.error(f"Failed to clear cooldown for {symbol}: {e}")

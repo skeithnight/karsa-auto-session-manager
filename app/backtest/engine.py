@@ -115,21 +115,35 @@ class BacktestEngine:
         atr_array = self._calculate_atr_array(arr)
 
         while idx < len(arr):
-            context = arr[: idx + 1]
-            regime = self._classifier.classify(context)
+            context_candles = arr[: idx + 1]
+
+            from app.core.feature_extractor import FeatureExtractor
+            from app.core.feature_store import FeatureStore
+            from app.core.market_snapshot import MarketSnapshot
+
+            snapshot = MarketSnapshot(
+                symbol=symbol,
+                timestamp_ms=int(context_candles[-1][0]),
+                candles=context_candles,
+                global_prices=global_prices,
+                orderbook_delta=orderbook_delta,
+                funding_rate=funding_rate,
+                oi_change=oi_change,
+            )
+            store = FeatureStore(snapshot)
+            features = FeatureExtractor.extract(store)
+
+            regime = self._classifier.classify(features, snapshot)
             directions = self._determine_directions(regime)
 
             for direction in directions:
-                score, vol_factor = self._router.evaluate_signal(
-                    context,
-                    regime,
-                    direction,
-                    global_prices=global_prices,
-                    orderbook_delta=orderbook_delta,
-                    funding_rate=funding_rate,
-                    oi_change=oi_change,
+                decision_ctx, vol_factor = await self._router.evaluate_signal(
+                    features=features,
+                    regime=regime,
+                    direction=direction,
                     symbol=symbol,
                 )
+                score = decision_ctx.total_confidence
 
                 # Calculate effective gate matching the live decision engine
                 effective_gate = base_gate * float(vol_factor)

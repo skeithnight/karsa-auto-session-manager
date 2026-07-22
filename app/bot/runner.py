@@ -50,6 +50,8 @@ async def run_bot(  # noqa: PLR0913
         start_cmd,
         trade_history_cmd,
         view_positions_detail_cmd,
+        health_cmd,
+        analytics_cmd,
     )
     from app.core.config import get_settings
 
@@ -87,6 +89,8 @@ async def run_bot(  # noqa: PLR0913
     application.add_handler(CommandHandler("positions", view_positions_detail_cmd))
     application.add_handler(CommandHandler("history", trade_history_cmd))
     application.add_handler(CommandHandler("backtest", backtest_cmd))
+    application.add_handler(CommandHandler("health", health_cmd))
+    application.add_handler(CommandHandler("analytics", analytics_cmd))
 
     # ── Register central callback dispatcher ────────────────────────────
     application.add_handler(CallbackQueryHandler(button_callback))

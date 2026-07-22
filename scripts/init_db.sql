@@ -22,7 +22,20 @@ CREATE TABLE IF NOT EXISTS trades (
     initial_risk_per_unit NUMERIC(20,8),
     moved_to_breakeven BOOLEAN DEFAULT FALSE,
     current_sl NUMERIC(20,8),
-    risk_profile_json JSONB
+    risk_profile_json JSONB,
+    -- Sprint 8: Validation & Analytics
+    mae DECIMAL(20,8),
+    mfe DECIMAL(20,8),
+    peak_r_multiple DECIMAL(20,8),
+    evidence_trend BOOLEAN DEFAULT FALSE,
+    evidence_momentum BOOLEAN DEFAULT FALSE,
+    evidence_orderbook BOOLEAN DEFAULT FALSE,
+    evidence_funding BOOLEAN DEFAULT FALSE,
+    evidence_ai BOOLEAN DEFAULT FALSE,
+    ai_confidence_before INTEGER,
+    ai_confidence_after INTEGER,
+    ai_latency_ms INTEGER,
+    trace_id VARCHAR(100)
 );
 
 CREATE TABLE IF NOT EXISTS ai_decisions (

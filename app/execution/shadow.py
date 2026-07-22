@@ -363,13 +363,13 @@ class ShadowAPM:
         entry_price: Decimal,
         side: str,
         r_mult: Decimal = Decimal("0"),
-    ) -> None:
+    ) -> bool:
         held_mins = (datetime.now(UTC) - entry_time).total_seconds() / 60
         if max_minutes > 0 and held_mins > max_minutes:
             symbol = pos.get("symbol", "")
             self._log.warning(f"ShadowAPM: time exit {symbol} after {held_mins:.0f}min")
             await self._close_shadow_position(pos, live_price, f"time_exit_{held_mins:.0f}min")
-            return
+            return True
 
         is_hyper = str(pos.get("regime", "")).startswith("HYPER")
         quick_profit_mins = 3 if is_hyper else 5
@@ -382,14 +382,14 @@ class ShadowAPM:
             symbol = pos.get("symbol", "")
             self._log.warning(f"ShadowAPM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
             await self._close_shadow_position(pos, live_price, f"quick_profit_exit_R{r_mult:.1f}")
-            return
+            return True
 
         # Stagnation Exit
         if held_mins >= stag_mins and r_mult < stag_r:
             symbol = pos.get("symbol", "")
             self._log.warning(f"ShadowAPM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
             await self._close_shadow_position(pos, live_price, f"stagnation_exit_{held_mins:.0f}min")
-            return
+            return True
 
         # Underwater Stale Exit (15 mins)
         if held_mins >= 15:
@@ -398,6 +398,8 @@ class ShadowAPM:
                 symbol = pos.get("symbol", "")
                 self._log.warning(f"ShadowAPM: stale underwater exit {symbol} after {held_mins:.0f}min")
                 await self._close_shadow_position(pos, live_price, f"stale_exit_{held_mins:.0f}min")
+                return True
+        return False
 
     async def _manage_shadow_position(self, pos: dict) -> None:
         """Dispatch: pending fills first, then open position management."""
@@ -505,6 +507,7 @@ class ShadowAPM:
         try:
             mid = await self._executor._get_mid_price(symbol)
         except ValueError:
+            logger.debug(f"ShadowAPM: could not fetch price for {symbol}")
             return
 
         # Refinement 2: update worst_price_seen
@@ -560,7 +563,7 @@ class ShadowAPM:
             max_hold_mins = risk_profile.get("max_hold_time_mins", 0)
             entered_at = pos.get("entered_at", "")
             if entered_at:
-                await self._manage_time_exit(
+                is_closed = await self._manage_time_exit(
                     pos,
                     datetime.fromisoformat(entered_at),
                     max_hold_mins,
@@ -569,6 +572,8 @@ class ShadowAPM:
                     side,
                     r_multiple
                 )
+                if is_closed:
+                    return
         except Exception:
             pass
 
@@ -847,5 +852,5 @@ class ShadowAPM:
             )
         except Exception as e:
             logger.error(f"ShadowAPM: failed to close shadow trade: {e}")
-
+            
         await self._pos_store.remove(symbol, side)

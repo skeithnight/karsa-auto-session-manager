@@ -28,8 +28,12 @@ from typing import Any
 import numpy as np
 from loguru import logger
 
+from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.regime_classifier import MarketRegime
 from app.alpha.ta_tools import calculate_ema, calculate_vpvr
+from app.core.decision_context import DecisionContext
+from app.core.feature_extractor import FeatureVector
+from app.learning.expected_edge import ExpectedEdgeCalculator
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.2) ---
 TREND_SCORE_BREAKOUT: int = 30
@@ -55,86 +59,76 @@ VOLATILITY_FACTOR_MAX: float = 1.5  # high-vol penalty (higher gate)
 class StrategyRouter:
     """Regime-aware signal scorer — no LLM, deterministic."""
 
-    def __init__(self, volatility_scaling: bool = True) -> None:
-        self.volatility_scaling = volatility_scaling
-
-    def evaluate_signal(
+    def __init__(
         self,
-        candles: np.ndarray[Any, Any] | list[list[float]],
+        volatility_scaling: bool = True,
+        collector: EvidenceCollector | None = None,
+        edge_calculator: ExpectedEdgeCalculator | None = None
+    ) -> None:
+        self.volatility_scaling = volatility_scaling
+        self.collector = collector or EvidenceCollector()
+        self.edge_calculator = edge_calculator
+
+    async def evaluate_signal(
+        self,
+        features: FeatureVector,
         regime: MarketRegime,
         direction: str,
-        global_prices: dict[str, float] | None = None,
-        orderbook_delta: float | None = None,
-        funding_rate: float | None = None,
-        oi_change: float | None = None,
         symbol: str = "UNKNOWN",
-    ) -> float:
-        """Score a signal 0-100 based on regime and market data.
+    ) -> tuple[DecisionContext, float]:
+        """Score a signal probabilistically using EvidenceCollector.
 
         Args:
-            candles: OHLCV array (N, 6) or list[list]
-            regime: current market regime from RegimeClassifier
+            features: FeatureVector with technical indicators
+            regime: current market regime
             direction: "LONG" or "SHORT"
-            global_prices: {"binance": price, "okx": price} for cross-exchange sync
-            orderbook_delta: net orderbook delta (positive = buy pressure)
-            funding_rate: current funding rate
-            oi_change: relative OI change (negative = dropping / capitulation)
+            symbol: Trading pair
 
         Returns:
-            Score 0-100. Below 65 = reject.
+            Tuple of (DecisionContext, vol_factor)
         """
-        if not isinstance(candles, np.ndarray):
-            candles = np.array(candles, dtype=float)
+        context = DecisionContext(
+            symbol=symbol,
+            direction=direction,
+            regime=regime,
+            features=features
+        )
 
-        if candles.shape[0] < 20:
-            logger.warning(
-                f"StrategyRouter: only {candles.shape[0]} candles (< 20), returning 0"
-            )
-            return 0.0, 1.0
+        # ─── PROFITABILITY FIX: EXCLUDE MASSIVE-CAPS FROM HYPER ───
+        if regime in (MarketRegime.HYPER_BULL, MarketRegime.HYPER_BEAR):
+            if symbol in ("BTC/USDT", "ETH/USDT"):
+                logger.info(f"StrategyRouter: {symbol} rejected from HYPER (massive-cap)")
+                return context, 1.0
 
-        # Cross-asset volatility normalization
-        atr_pct = self._calculate_atr_pct(candles)
+        if regime == MarketRegime.SNIPER:
+            # Sniper bypasses deterministic collection, relies heavily on AI Pre-Approval
+            context.total_confidence = 100.0  # Trap must be scored explicitly in live loop or pre-approved
+            return context, 1.0
+
+        context = self.collector.collect(context)
+
+        # Apply Adaptive Strategy Ranking based on Expected Edge
+        if self.edge_calculator:
+            edge_profile = await self.edge_calculator.calculate(context)
+            if edge_profile.sample_size > 5:
+                if edge_profile.expectancy > 1.0:
+                    context.add_evidence("expected_edge", 1.0, 15.0, f"High historical expectancy: {edge_profile.expectancy:.2f}%")
+                elif edge_profile.expectancy < -0.5:
+                    context.add_evidence("expected_edge", -1.0, 20.0, f"Negative historical expectancy: {edge_profile.expectancy:.2f}%")
+
+        atr_pct = features.atr_pct or VOLATILITY_REFERENCE_ATR_PCT
         vol_factor = (
             self._volatility_factor(atr_pct) if self.volatility_scaling else 1.0
         )
 
-        if regime in (MarketRegime.TREND_BULL, MarketRegime.TREND_BEAR):
-            score = self._score_trend_strategy(
-                candles, direction, global_prices, orderbook_delta, oi_change, funding_rate
-            )
-        elif regime in (MarketRegime.HYPER_BULL, MarketRegime.HYPER_BEAR):
-            # ─── PROFITABILITY FIX: EXCLUDE MASSIVE-CAPS FROM HYPER ───
-            # BTC and ETH lack the micro-volatility required for the 15m scalp HYPER strategy
-            if symbol in ("BTC/USDT", "ETH/USDT"):
-                logger.info(f"StrategyRouter: {symbol} rejected from HYPER (massive-cap)")
-                score = 0.0
-            else:
-                score = self._score_hyper_strategy(
-                    candles, direction, orderbook_delta, funding_rate
-                )
-        elif regime == MarketRegime.RANGE:
-            score = self._score_range_strategy(
-                candles, direction, orderbook_delta, funding_rate
-            )
-        elif regime == MarketRegime.CHOP:
-            score = self._score_chop_strategy(
-                candles, direction, orderbook_delta, funding_rate, oi_change
-            )
-        else:
-            logger.warning(f"StrategyRouter: unknown regime {regime}, returning 0")
-            return 0.0, 1.0
-
-        # Cross-asset normalization: vol_factor returned for gate threshold scaling
-        # High-vol assets (altcoins) get vol_factor > 1.0 → higher effective gate
-        # Low-vol assets get vol_factor < 1.0 → lower effective gate (easier pass)
-
         logger.info(
             f"StrategyRouter: regime={regime.value} dir={direction} "
-            f"score={score} atr_pct={atr_pct:.2f} vol_factor={vol_factor:.2f}"
+            f"confidence={context.total_confidence:.1f} atr_pct={atr_pct:.2f} vol_factor={vol_factor:.2f}"
         )
 
         from app.core import metrics as m
 
+        score = context.total_confidence
         if score < 50:
             bucket = "0-50"
         elif score < 65:
@@ -146,7 +140,7 @@ class StrategyRouter:
 
         m.strategy_scored_total.labels(regime=regime.value, score_bucket=bucket).inc()
 
-        return float(score), float(vol_factor)
+        return context, float(vol_factor)
 
     # ------------------------------------------------------------------
     # TREND scoring
@@ -337,6 +331,36 @@ class StrategyRouter:
             if orderbook_delta is not None:
                 if direction == "LONG" and orderbook_delta > 0.1 or direction == "SHORT" and orderbook_delta < -0.1:
                     score += 20
+
+        return score
+
+    # ------------------------------------------------------------------
+    # SNIPER scoring (Pre-Entry Verification)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _score_sniper_strategy(
+        orderbook_delta: float | None = None,
+        oi_change: float | None = None,
+        funding_rate: float | None = None,
+        direction: str = "LONG",
+    ) -> int:
+        """Toxic Flow / Adverse Selection check before triggering a resting Sniper Trap."""
+        score = 100  # Starts at 100 because it's AI Pre-Approved
+
+        if orderbook_delta is not None:
+            if direction == "LONG" and orderbook_delta < -0.3:
+                # Heavy market selling with no bid absorption = Toxic Flow
+                logger.warning(f"Sniper Trap Toxic Flow: LONG rejected due to orderbook delta {orderbook_delta}")
+                score -= 50
+            elif direction == "SHORT" and orderbook_delta > 0.3:
+                logger.warning(f"Sniper Trap Toxic Flow: SHORT rejected due to orderbook delta {orderbook_delta}")
+                score -= 50
+
+        if oi_change is not None:
+            if oi_change > 0.05:
+                # OI increasing massively during crash = new shorts piling in aggressively, toxic.
+                score -= 30
 
         return score
 

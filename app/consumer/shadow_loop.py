@@ -15,6 +15,7 @@ import contextlib
 import logging
 import signal
 import sys
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -81,6 +82,14 @@ async def _on_signal_shadow(
     # Consecutive loss block
     if engine and await engine.check_consecutive_losses(symbol, signal.regime):
         logger.info("shadow skip %s — consecutive loss block", symbol)
+        return
+
+    # Epic 0.3 Symbol Validation
+    unsupported_symbols = {"ALLO/USDT", "COIN/USDT"}
+    if symbol in unsupported_symbols:
+        from app.core import metrics
+        metrics.get_metric_sum("karsa_symbol_validation_failed") # Initialize/touch metric
+        logger.warning(f"shadow skip {symbol} — unsupported symbol (blacklist)")
         return
 
     # Slot checking
@@ -440,19 +449,71 @@ async def main() -> None:
         return
 
     # Wire signal handler
+    WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "10"))
+    signal_queues = [asyncio.Queue(maxsize=100) for _ in range(WORKER_COUNT)]
+
+    async def _signal_worker(worker_id: int, q: asyncio.Queue) -> None:
+        from app.core import metrics
+
+        while not shutdown_event.is_set():
+            try:
+                metrics.pipeline_queue_depth.labels(worker_id=str(worker_id)).set(q.qsize())
+                try:
+                    queued_ts, sym, sig = await asyncio.wait_for(q.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+
+                wait_time = time.time() - queued_ts
+                metrics.pipeline_queue_wait_seconds.labels(worker_id=str(worker_id)).observe(wait_time)
+                metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(1.0)
+                try:
+                    await _on_signal_shadow(
+                        sym,
+                        sig,
+                        shadow_executor,
+                        shadow_pos_store,
+                        shadow_trade_store,
+                        crypto_analyst,
+                        risk_manager,
+                        engine,
+                        redis,
+                    )
+                except Exception as e:
+                    logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
+                finally:
+                    q.task_done()
+                    metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(0.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Worker {worker_id} crashed: {e}")
+                await asyncio.sleep(1.0)
+
+    worker_tasks = [asyncio.create_task(_signal_worker(i, signal_queues[i]), name=f"shadow-worker-{i}") for i in range(WORKER_COUNT)]
+
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
-        await _on_signal_shadow(
-            symbol,
-            sig,
-            shadow_executor,
-            shadow_pos_store,
-            shadow_trade_store,
-            crypto_analyst,
-            risk_manager,
-            engine,
-            redis,
-        )
+        worker_idx = hash(symbol) % WORKER_COUNT
+        q = signal_queues[worker_idx]
+        if q.full():
+            from app.core import metrics
+            metrics.decision_queue_full_total.labels(symbol=symbol).inc()
+            metrics.decision_rejected_total.labels(symbol=symbol, reason="QUEUE_FULL").inc()
+            logger.warning(f"Worker queue {worker_idx} full, REJECTING {symbol}")
+
+            from app.core.observability import ObservabilityLogger
+            ObservabilityLogger.log_decision_trace(
+                strategy=sig.regime.value,
+                confidence=sig.score,
+                regime=sig.regime.value,
+                evidence=[],
+                entry_decision="FLAT",
+                exit_decision=None,
+                decision_id=f"rej-{int(time.time()*1000)}",
+                symbol=symbol,
+            )
+            return
+        await q.put((time.time(), symbol, sig))
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 
@@ -498,11 +559,15 @@ async def main() -> None:
         await shutdown_event.wait()
     finally:
         consumer.stop()
+        for wt in worker_tasks:
+            wt.cancel()
         ingestor_task.cancel()
         universe_task.cancel()
         consumer_task.cancel()
         apm_task.cancel()
         orphan_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):
             await consumer_task
         with contextlib.suppress(asyncio.CancelledError):

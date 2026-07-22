@@ -13,6 +13,7 @@ import json
 import logging
 import signal
 import sys
+import time
 from datetime import UTC
 from decimal import Decimal
 from typing import Any
@@ -172,12 +173,15 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
             cfg = json.loads(raw_cfg)
             overrides = cfg.get("regime_overrides", {})
             if overrides.get(signal.regime.value) == "DISABLE":
-                logger.info(
-                    "skip %s — %s regime is temporarily DISABLED by Shadow Auto-Adjustment",
-                    symbol,
-                    signal.regime.value,
-                )
-                return
+                if signal.regime == MarketRegime.SNIPER:
+                    logger.info("SNIPER trap bypassing regime_overrides['DISABLE'] rule for %s", symbol)
+                else:
+                    logger.info(
+                        "skip %s — %s regime is temporarily DISABLED by Shadow Auto-Adjustment",
+                        symbol,
+                        signal.regime.value,
+                    )
+                    return
     except Exception as e:
         logger.debug("regime_overrides check failed: %s", e)
 
@@ -220,11 +224,11 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         return
 
     # AI Analyst gate
-    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
+    AI_CONFIDENCE_BYPASS_THRESHOLD = 100.0
     if (
         crypto_analyst
         and signal.score >= 40.0
-        and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
+        and signal.score <= AI_CONFIDENCE_BYPASS_THRESHOLD
     ):
         logger.info(f"AI Analyst validating {symbol} signal")
         analyst_result = await crypto_analyst.analyze(
@@ -1069,9 +1073,63 @@ async def main() -> None:  # noqa: PLR0915
         bybit_client=bybit,
     )
 
+    WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "10"))
+    signal_queues = [asyncio.Queue(maxsize=100) for _ in range(WORKER_COUNT)]
+
+    async def _signal_worker(worker_id: int, q: asyncio.Queue) -> None:
+        import time
+
+        from app.core import metrics
+
+        while not shutdown_event.is_set():
+            try:
+                metrics.pipeline_queue_depth.labels(worker_id=str(worker_id)).set(q.qsize())
+                try:
+                    queued_ts, sym, sig = await asyncio.wait_for(q.get(), timeout=1.0)
+                except TimeoutError:
+                    continue
+
+                wait_time = time.time() - queued_ts
+                metrics.pipeline_queue_wait_seconds.labels(worker_id=str(worker_id)).observe(wait_time)
+                metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(1.0)
+                try:
+                    await _on_signal_live(sym, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst)
+                except Exception as e:
+                    logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
+                finally:
+                    q.task_done()
+                    metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(0.0)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Worker {worker_id} crashed: {e}")
+                await asyncio.sleep(1.0)
+
+    worker_tasks = [asyncio.create_task(_signal_worker(i, signal_queues[i]), name=f"live-worker-{i}") for i in range(WORKER_COUNT)]
+
     async def on_signal(symbol: str, sig: TradeSignal) -> None:
         emitter.record_signal()
-        await _on_signal_live(symbol, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst)
+        worker_idx = hash(symbol) % WORKER_COUNT
+        q = signal_queues[worker_idx]
+        if q.full():
+            from app.core import metrics
+            metrics.decision_queue_full_total.labels(symbol=symbol).inc()
+            metrics.decision_rejected_total.labels(symbol=symbol, reason="QUEUE_FULL").inc()
+            logger.warning(f"Worker queue {worker_idx} full, REJECTING {symbol}")
+
+            from app.core.observability import ObservabilityLogger
+            ObservabilityLogger.log_decision_trace(
+                strategy=sig.regime.value,
+                confidence=sig.score,
+                regime=sig.regime.value,
+                evidence=[],
+                entry_decision="FLAT",
+                exit_decision=None,
+                decision_id=f"rej-{int(time.time()*1000)}",
+                symbol=symbol,
+            )
+            return
+        await q.put((time.time(), symbol, sig))
 
     consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
 
@@ -1289,6 +1347,8 @@ async def main() -> None:  # noqa: PLR0915
         await shutdown_event.wait()
     finally:
         consumer.stop()
+        for wt in worker_tasks:
+            wt.cancel()
         ingestor_task.cancel()
         universe_task.cancel()
         consumer_task.cancel()
@@ -1302,6 +1362,8 @@ async def main() -> None:  # noqa: PLR0915
         if balance_task:
             balance_task.cancel()
         wallet_metrics_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):
             await consumer_task
         with contextlib.suppress(asyncio.CancelledError):

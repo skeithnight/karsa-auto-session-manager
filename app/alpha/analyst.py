@@ -17,6 +17,7 @@ from typing import Any
 
 from loguru import logger
 
+from app.ai.circuit_breaker import AICircuitBreaker
 from app.alpha.ta_tools import (
     calculate_atr,
     calculate_bollinger_bands,
@@ -68,6 +69,24 @@ Rules:
 - If indicators conflict, lean toward FLAT (capital preservation)
 """
 
+SNIPER_PRE_APPROVAL_PROMPT = """You are an elite crypto market-maker and sniper. 
+Analyze the current orderbook depth, funding rates, and open interest for potential liquidation cascades.
+
+Symbol: {symbol}
+Current price: {price}
+Orderbook Imbalance: {ob_imbalance}
+Funding Rate: {funding_rate}
+Open Interest Change: {oi_change}
+
+If a high-probability fragile zone exists, you must pre-approve a limit order trap.
+Provide a target_entry_price at a structural support/resistance level.
+Define strict invalidation conditions (e.g. price breach).
+
+Respond with ONLY a JSON object (no markdown, no explanation):
+{{"target_entry_price": 60000.0, "confidence": 0-100, "thesis": "one sentence", "invalidation_conditions": {{"price_breach": 62000.0}}}}
+If no setup exists, return confidence 0 and target_entry_price 0.
+"""
+
 
 class CryptoAnalyst:
     """AI pre-entry analyst. Runs in ambiguous confidence zone only."""
@@ -83,6 +102,7 @@ class CryptoAnalyst:
         self.fetcher = ohlcv_fetcher
         self.redis = redis_client
         self.cache_ttl = cache_ttl
+        self.circuit_breaker = AICircuitBreaker(failure_threshold=3, reset_timeout_seconds=300)
 
     async def analyze(
         self,
@@ -97,6 +117,56 @@ class CryptoAnalyst:
         recent_trades: str = "",
     ) -> AnalystResult | None:
         """Run AI analysis on an ambiguous signal. Returns None if unavailable."""
+        if not self.circuit_breaker.allow_request():
+            metrics.ai_rejection_total.inc()
+            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_CIRCUIT_OPEN", model_used="circuit_breaker")
+            
+    async def pre_approve_sniper(
+        self,
+        symbol: str,
+        price: float,
+        ob_imbalance: float,
+        funding_rate: float,
+        oi_change: float,
+    ) -> dict[str, Any] | None:
+        """Ask AI for Sniper Trap pre-approval."""
+        if not self.circuit_breaker.allow_request():
+            return None
+            
+        prompt = SNIPER_PRE_APPROVAL_PROMPT.format(
+            symbol=symbol,
+            price=price,
+            ob_imbalance=ob_imbalance,
+            funding_rate=funding_rate,
+            oi_change=oi_change,
+        )
+        
+        try:
+            response = await asyncio.wait_for(
+                self.ai_client.complete(prompt, max_tokens=1024),
+                timeout=3.0
+            )
+            self.circuit_breaker.record_success()
+        except Exception as e:
+            self.circuit_breaker.record_failure()
+            logger.warning(f"Analyst: Sniper AI request failed for {symbol}: {e}")
+            return None
+            
+        if not response:
+            return None
+            
+        try:
+            # simple json extraction
+            text = response.strip()
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.endswith("```"):
+                text = text[:-3]
+            return json.loads(text.strip())
+        except Exception as e:
+            logger.warning(f"Analyst: Sniper parse failed for {symbol}: {e}")
+            return None
+
         cache_key = f"analyst:{symbol}:{int(time.time()) // self.cache_ttl}"
         if self.redis:
             try:
@@ -154,11 +224,27 @@ class CryptoAnalyst:
         if recent_trades:
             prompt = recent_trades + "\n\n" + prompt
 
-        response = await self.ai_client.complete(prompt, max_tokens=1024)
+        try:
+            metrics.ai_request_total.inc()
+            response = await asyncio.wait_for(
+                self.ai_client.complete(prompt, max_tokens=1024),
+                timeout=2.0
+            )
+            self.circuit_breaker.record_success()
+        except TimeoutError:
+            self.circuit_breaker.record_failure()
+            metrics.ai_timeout_total.inc()
+            logger.warning(f"Analyst: AI request timed out for {symbol}")
+            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_TIMEOUT", model_used="circuit_breaker")
+        except Exception as e:
+            self.circuit_breaker.record_failure()
+            logger.warning(f"Analyst: AI request failed for {symbol}: {e}")
+            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_REQUEST_FAILED", model_used="circuit_breaker")
+
         if not response:
             metrics.ai_analyst_calls.labels(result="unavailable").inc()
             logger.warning(f"Analyst: AI unavailable for {symbol}")
-            return None
+            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_REQUEST_FAILED", model_used="circuit_breaker")
 
         result = self._parse_response(response)
         if result is None:

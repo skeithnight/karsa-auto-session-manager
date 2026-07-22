@@ -64,12 +64,16 @@ class AlphaBridge:
             and ingestor.is_stale(symbol)
         ):
             logger.warning("AlphaBridge: %s data stale — scoring blocked", symbol)
+            from app.core.observability import ObservabilityLogger
+            ObservabilityLogger.log_reject_reason(symbol, "Stale Data")
             return None
 
         if len(candles) < self._MIN_CANDLES:
             logger.debug(
                 "AlphaBridge: %s insufficient candles (%d/50)", symbol, len(candles)
             )
+            from app.core.observability import ObservabilityLogger
+            ObservabilityLogger.log_reject_reason(symbol, "Insufficient Candles", {"count": len(candles)})
             return None
 
         generated_at = time.time()

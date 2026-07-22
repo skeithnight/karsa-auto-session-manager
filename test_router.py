@@ -1,6 +1,8 @@
-import asyncio, numpy as np
-from app.alpha.strategy_router import StrategyRouter
+import numpy as np
+
 from app.alpha.regime_classifier import MarketRegime
+from app.alpha.strategy_router import StrategyRouter
+
 
 def _make_trending_candles(n=50, direction=1.0):
     candles = np.zeros((n, 6))

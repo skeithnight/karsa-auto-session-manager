@@ -29,7 +29,7 @@ import numpy as np
 from loguru import logger
 
 from app.alpha.regime_classifier import MarketRegime
-from app.alpha.ta_tools import calculate_bollinger_bands, calculate_ema, calculate_vpvr
+from app.alpha.ta_tools import calculate_ema, calculate_vpvr
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.2) ---
 TREND_SCORE_BREAKOUT: int = 30
@@ -204,7 +204,7 @@ class StrategyRouter:
             score += synced * 20  # 20 per exchange (max 40 if both)
 
         # Microstructure Enhancements
-        
+
         # 1. Macro Trend Alignment (EMA-200)
         # Prevent trading against the macro trend
         if len(closes) >= 200:
@@ -215,7 +215,7 @@ class StrategyRouter:
                     score -= 20  # Penalty: Fighting macro downtrend
                 elif direction == "SHORT" and last_close > ema_200:
                     score -= 20  # Penalty: Fighting macro uptrend
-                
+
         # 2. Orderbook Delta Validation
         # Prevent fakeouts by ensuring limit orders agree with the breakout
         if orderbook_delta is not None:
@@ -229,7 +229,7 @@ class StrategyRouter:
                     score -= 20  # Heavy buy walls absorbing the breakdown
                 elif orderbook_delta < -0.1:
                     score += 10  # Sell walls pressing the breakdown
-                    
+
         # 3. Open Interest (OI) Confirmation
         # True trends need new money (rising OI), not just liquidations (squeeze)
         if oi_change is not None:
@@ -291,34 +291,28 @@ class StrategyRouter:
         if ema_20_dec is None:
             return 0
         ema_20 = float(ema_20_dec)
-        
+
         dist_to_ema = (last_close - ema_20) / ema_20
-        
+
         # Mode A: Momentum Surfing (Harga sedang terbang)
         is_surfing = False
-        if direction == "LONG" and dist_to_ema > 0.03:
+        if direction == "LONG" and dist_to_ema > 0.03 or direction == "SHORT" and dist_to_ema < -0.03:
             is_surfing = True
-        elif direction == "SHORT" and dist_to_ema < -0.03:
-            is_surfing = True
-            
+
         if is_surfing:
             # Momentum Surfing: Requires strong orderbook + volume + safe RSI
             if orderbook_delta is not None:
-                if direction == "LONG" and orderbook_delta > 0.15:
+                if direction == "LONG" and orderbook_delta > 0.15 or direction == "SHORT" and orderbook_delta < -0.15:
                     score += 40
-                elif direction == "SHORT" and orderbook_delta < -0.15:
-                    score += 40
-            
+
             vol_sma = float(np.mean(volumes[-21:-1])) if len(volumes) > 20 else float(np.mean(volumes[:-1]))
             if vol_sma > 0 and volumes[-1] > 2.0 * vol_sma:
                 score += 30
-                
+
             rsi = StrategyRouter._calculate_rsi(closes, period=14)
-            if direction == "LONG" and rsi < 85:
+            if direction == "LONG" and rsi < 85 or direction == "SHORT" and rsi > 15:
                 score += 20
-            elif direction == "SHORT" and rsi > 15:
-                score += 20
-                
+
         else:
             # Mode B: Anti-Breakout (Mean Reversion inside a trend)
             if direction == "LONG":
@@ -327,7 +321,7 @@ class StrategyRouter:
             elif direction == "SHORT":
                 if -0.01 < dist_to_ema < 0.02:
                     score += 50
-                    
+
             # Wick Rejection (Pin Bar off the EMA)
             body = abs(last_close - last_open)
             if direction == "LONG":
@@ -338,12 +332,10 @@ class StrategyRouter:
                 upper_wick = highs[-1] - max(last_close, last_open)
                 if upper_wick > body * 1.5:
                     score += 30
-                    
+
             # Orderbook Support
             if orderbook_delta is not None:
-                if direction == "LONG" and orderbook_delta > 0.1:
-                    score += 20
-                elif direction == "SHORT" and orderbook_delta < -0.1:
+                if direction == "LONG" and orderbook_delta > 0.1 or direction == "SHORT" and orderbook_delta < -0.1:
                     score += 20
 
         return score
@@ -354,7 +346,7 @@ class StrategyRouter:
 
     @staticmethod
     def _score_range_strategy(
-        candles: np.ndarray[Any, Any], 
+        candles: np.ndarray[Any, Any],
         direction: str,
         orderbook_delta: float | None = None,
         funding_rate: float | None = None,
@@ -400,23 +392,19 @@ class StrategyRouter:
             score += RANGE_SCORE_RSI
 
         # Microstructure Enhancements
-        
+
         # 1. Funding Rate Squeeze Bonus
         # Shorting resistance is more profitable if everyone is extremely long and paying funding
         if funding_rate is not None:
-            if direction == "SHORT" and funding_rate > 0.0005:  # Extremely positive funding
+            if direction == "SHORT" and funding_rate > 0.0005 or direction == "LONG" and funding_rate < -0.0005:  # Extremely positive funding
                 score += 15
-            elif direction == "LONG" and funding_rate < -0.0005:  # Extremely negative funding
-                score += 15
-                
+
         # 2. Orderbook Absorption Bonus
         # If we short the top of the range, we want sell walls (negative delta) waiting there
         if orderbook_delta is not None:
-            if direction == "SHORT" and orderbook_delta < -0.1:
+            if direction == "SHORT" and orderbook_delta < -0.1 or direction == "LONG" and orderbook_delta > 0.1:
                 score += 15
-            elif direction == "LONG" and orderbook_delta > 0.1:
-                score += 15
-                
+
         # 3. VPVR Value Area Sniper Bonus
         vpvr_res = calculate_vpvr(candles)
         if vpvr_res:

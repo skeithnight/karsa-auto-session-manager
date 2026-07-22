@@ -326,7 +326,7 @@ class CheckpointManager:
                     try:
                         import json
 
-                        await self.trade_store.record_ai_decision(
+                        await self.trade_store.record_decision(
                             symbol=symbol,
                             decision_type="position_judge",
                             model=verdict.tier_used,
@@ -413,6 +413,17 @@ class CheckpointManager:
             # First, update the checkpoint in DB so we don't trigger this again
             await self.store.update_checkpoint(symbol, side, new_checkpoint)
 
+            # Position Confidence Decay: As time passes, tighten the stop to reduce risk on stale trades
+            decay_factor = {
+                "1H": Decimal("0.8"), # Tighten to 80% of ATR
+                "4H": Decimal("0.5"), # Tighten to 50% of ATR
+                "24H": Decimal("0.2") # Tighten to 20% of ATR
+            }.get(new_checkpoint, Decimal("1.0"))
+
+            if decay_factor < Decimal("1.0") and atr > 0:
+                logger.info(f"Position Confidence Decay: {symbol} reached {new_checkpoint}, tightening SL (factor: {decay_factor})")
+                await self._tighten_stop(pos, current_price, atr * decay_factor)
+
             # Check performance
             if pnl_pct < min_pnl:
                 logger.warning(
@@ -447,7 +458,7 @@ class CheckpointManager:
                             try:
                                 import json
 
-                                await self.trade_store.record_ai_decision(
+                                await self.trade_store.record_decision(
                                     symbol=symbol,
                                     decision_type="position_judge",
                                     model=verdict.tier_used,

@@ -102,6 +102,15 @@ class ShadowTradeStore(TradeStore):
         entry_regime: str | None = None,
         initial_risk_per_unit: Decimal | None = None,
         risk_profile_json: str | None = None,
+        trace_id: str | None = None,
+        ai_confidence_before: int | None = None,
+        ai_confidence_after: int | None = None,
+        ai_latency_ms: int | None = None,
+        evidence_trend: bool = False,
+        evidence_momentum: bool = False,
+        evidence_orderbook: bool = False,
+        evidence_funding: bool = False,
+        evidence_ai: bool = False,
     ) -> int:
         """Record shadow trade entry. Returns trade id."""
         now = datetime.now(UTC)
@@ -111,10 +120,14 @@ class ShadowTradeStore(TradeStore):
                     text(
                         """INSERT INTO shadow_trades (symbol, side, amount, entry_price,
                         regime, entry_time, ai_confidence, entry_regime,
-                        initial_risk_per_unit, risk_profile_json, is_shadow)
+                        initial_risk_per_unit, risk_profile_json, is_shadow,
+                        trace_id, ai_confidence_before, ai_confidence_after, ai_latency_ms,
+                        evidence_trend, evidence_momentum, evidence_orderbook, evidence_funding, evidence_ai)
                         VALUES (:symbol, :side, :amount, :entry_price, :regime,
                         :entry_time, :ai_confidence, :entry_regime,
-                        :initial_risk_per_unit, :risk_profile_json, TRUE)
+                        :initial_risk_per_unit, :risk_profile_json, TRUE,
+                        :trace_id, :ai_confidence_before, :ai_confidence_after, :ai_latency_ms,
+                        :evidence_trend, :evidence_momentum, :evidence_orderbook, :evidence_funding, :evidence_ai)
                         RETURNING id"""
                     ),
                     {
@@ -130,6 +143,15 @@ class ShadowTradeStore(TradeStore):
                         if initial_risk_per_unit is not None
                         else None,
                         "risk_profile_json": risk_profile_json,
+                        "trace_id": trace_id,
+                        "ai_confidence_before": ai_confidence_before,
+                        "ai_confidence_after": ai_confidence_after,
+                        "ai_latency_ms": ai_latency_ms,
+                        "evidence_trend": evidence_trend,
+                        "evidence_momentum": evidence_momentum,
+                        "evidence_orderbook": evidence_orderbook,
+                        "evidence_funding": evidence_funding,
+                        "evidence_ai": evidence_ai,
                     },
                 )
                 row = result.fetchone()
@@ -150,17 +172,25 @@ class ShadowTradeStore(TradeStore):
         exit_reason: str,
         trade_id: int | None = None,
         regime: str | None = None,
+        mae: Decimal | None = None,
+        mfe: Decimal | None = None,
+        peak_r_multiple: Decimal | None = None,
     ) -> int:
         """Close shadow trade. Updates most recent open shadow trade for symbol."""
         now = datetime.now(UTC)
         regime_clause = ", regime = :regime" if regime else ""
+        mae_clause = ", mae = :mae" if mae is not None else ""
+        mfe_clause = ", mfe = :mfe" if mfe is not None else ""
+        peak_r_clause = ", peak_r_multiple = :peak_r_multiple" if peak_r_multiple is not None else ""
+        extra_clauses = regime_clause + mae_clause + mfe_clause + peak_r_clause
+
         try:
             async with self.db.engine.connect() as conn:
                 if trade_id is not None:
                     result = await conn.execute(
                         text(f"""UPDATE shadow_trades SET exit_price = :exit_price,
                             pnl = :pnl, exit_reason = :exit_reason,
-                            exit_time = :exit_time{regime_clause}
+                            exit_time = :exit_time{extra_clauses}
                             WHERE id = :trade_id AND exit_time IS NULL"""),
                         {
                             "trade_id": trade_id,
@@ -169,13 +199,16 @@ class ShadowTradeStore(TradeStore):
                             "exit_reason": exit_reason,
                             "exit_time": now,
                             **({"regime": regime} if regime else {}),
+                            **({"mae": str(mae)} if mae is not None else {}),
+                            **({"mfe": str(mfe)} if mfe is not None else {}),
+                            **({"peak_r_multiple": str(peak_r_multiple)} if peak_r_multiple is not None else {}),
                         },
                     )
                 else:
                     result = await conn.execute(
                         text(f"""UPDATE shadow_trades SET exit_price = :exit_price,
                             pnl = :pnl, exit_reason = :exit_reason,
-                            exit_time = :exit_time{regime_clause}
+                            exit_time = :exit_time{extra_clauses}
                             WHERE id = (
                                 SELECT id FROM shadow_trades
                                 WHERE symbol = :symbol AND exit_time IS NULL
@@ -188,6 +221,9 @@ class ShadowTradeStore(TradeStore):
                             "exit_reason": exit_reason,
                             "exit_time": now,
                             **({"regime": regime} if regime else {}),
+                            **({"mae": str(mae)} if mae is not None else {}),
+                            **({"mfe": str(mfe)} if mfe is not None else {}),
+                            **({"peak_r_multiple": str(peak_r_multiple)} if peak_r_multiple is not None else {}),
                         },
                     )
                 await conn.commit()

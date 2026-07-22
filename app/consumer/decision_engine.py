@@ -12,8 +12,17 @@ from decimal import Decimal
 
 import numpy as np
 
+from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
+from app.core.decision_context import DecisionContext
+from app.core.feature_extractor import FeatureExtractor
+from app.core.feature_store import FeatureStore
+from app.core.market_snapshot import MarketSnapshot
+from app.core.observability import ObservabilityLogger
+from app.learning.expected_edge import ExpectedEdgeCalculator
+from app.learning.similarity_engine import SimilarityEngine
+from app.learning.statistical_learning import StatisticalLearning
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 logger = logging.getLogger(__name__)
@@ -61,6 +70,8 @@ class TradeSignal:
     candles: list[list] = field(repr=False)
     expires_at: float | None = None
     trace_id: str | None = None
+    context: DecisionContext | None = None
+    stage_timings: dict[str, float] | None = None
 
 
 class DecisionEngine:
@@ -87,7 +98,6 @@ class DecisionEngine:
         multi_tf: object | None = None,
     ) -> None:
         self._classifier = classifier
-        self._router = router
         self._risk_gate = risk_gate
         self._gate = Decimal(str(gate_threshold))
         self._base_size = base_size
@@ -100,6 +110,21 @@ class DecisionEngine:
         self._multi_tf = multi_tf
         self._prev_regimes: dict[str, MarketRegime] = {}
         self._regime_transition_counts: dict[str, int] = {}
+        self._similarity = SimilarityEngine()
+        self._evidence_collector = EvidenceCollector(
+            profile_path="config/confidence_profiles/default.yaml"
+        )
+        self._edge_calculator = ExpectedEdgeCalculator(
+            similarity=self._similarity,
+            trade_memory=trade_memory
+        )
+        self._statistical_learning = StatisticalLearning(trade_memory=trade_memory)
+
+        self._router = StrategyRouter(
+            volatility_scaling=True,
+            collector=self._evidence_collector,
+            edge_calculator=self._edge_calculator
+        )
 
     def set_wallet_balance(self, balance: Decimal) -> None:
         """Update wallet balance for position sizing."""
@@ -143,9 +168,13 @@ class DecisionEngine:
         Returns:
             TradeSignal if score >= gate threshold, else None.
         """
+        import time
+
         from app.core import metrics
 
         metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
+        t_start = time.perf_counter()
+        stage_timings = {}
 
         if len(candles) < _MIN_CANDLES:
             logger.debug(
@@ -181,12 +210,34 @@ class DecisionEngine:
                                 "evaluate: %s SPREAD BALLOON REJECTION (spread=%.2f%% > 0.5%%) — rejecting to prevent slippage",
                                 symbol, float(spread * 100)
                             )
+                            ObservabilityLogger.log_reject_reason(symbol, "Spread Balloon Rejection", {"spread_pct": float(spread * 100)})
                             return None
             except Exception as e:
                 logger.debug("Spread balloon check failed for %s: %s", symbol, e)
 
+        # Build standardized market snapshot and features
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            timestamp_ms=int(arr[-1][0]),
+            candles=arr,
+            global_prices=global_prices,
+            orderbook_delta=orderbook_delta,
+            funding_rate=funding_rate,
+            oi_change=oi_change,
+        )
+        store = FeatureStore(snapshot)
+        features = FeatureExtractor.extract(store)
+
+        t_feat = time.perf_counter()
+        stage_timings["feature_extraction"] = t_feat - t_start
+        metrics.pipeline_stage_latency_seconds.labels(stage="feature_extraction").observe(stage_timings["feature_extraction"])
+
         # Step 1: Regime classification
-        regime = self._classifier.classify(arr)
+        regime = self._classifier.classify(features, snapshot)
+
+        t_regime = time.perf_counter()
+        stage_timings["regime_classification"] = t_regime - t_feat
+        metrics.pipeline_stage_latency_seconds.labels(stage="regime_classification").observe(stage_timings["regime_classification"])
 
         # Regime hysteresis: require 2 consecutive readings to switch regime
         _prev_regime = self._prev_regimes.get(symbol)
@@ -196,6 +247,11 @@ class DecisionEngine:
                 regime = _prev_regime  # Stick with previous until confirmed
             else:
                 self._regime_transition_counts.pop(symbol, None)  # Transition confirmed
+                ObservabilityLogger.log_regime_transition(
+                    old_regime=_prev_regime.value,
+                    new_regime=regime.value,
+                    duration_minutes=0.0
+                )
         else:
             self._regime_transition_counts.pop(symbol, None)  # No transition or same regime
         self._prev_regimes[symbol] = regime
@@ -221,6 +277,7 @@ class DecisionEngine:
                         symbol,
                         funding_rate,
                     )
+                    ObservabilityLogger.log_reject_reason(symbol, "Extreme Positive Funding", {"funding_rate": funding_rate, "direction": direction})
                     continue
                 if direction == "SHORT" and funding_rate < -0.0005:
                     logger.info(
@@ -228,6 +285,7 @@ class DecisionEngine:
                         symbol,
                         funding_rate,
                     )
+                    ObservabilityLogger.log_reject_reason(symbol, "Extreme Negative Funding", {"funding_rate": funding_rate, "direction": direction})
                     continue
             momentum_exemption = False
             macro_penalty = 1.0
@@ -241,6 +299,7 @@ class DecisionEngine:
                         symbol,
                         direction,
                     )
+                    ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
                     continue
 
                 # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
@@ -259,15 +318,23 @@ class DecisionEngine:
 
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
 
-            score, vol_factor = self._router.evaluate_signal(
-                arr,
-                regime,
-                direction,
-                global_prices=global_prices,
-                orderbook_delta=orderbook_delta,
-                funding_rate=funding_rate,
-                oi_change=oi_change,
+            t_score = time.perf_counter()
+            context, vol_factor = await self._router.evaluate_signal(
+                features=features,
+                regime=regime,
+                direction=direction,
+                symbol=symbol,
             )
+            stage_timings["strategy_scoring"] = time.perf_counter() - t_score
+            metrics.pipeline_stage_latency_seconds.labels(stage="strategy_scoring").observe(stage_timings["strategy_scoring"])
+
+            # Apply Statistical Learning (Fatigue & Calibration)
+            t_stat = time.perf_counter()
+            await self._statistical_learning.calibrate(context)
+            stage_timings["statistical_learning"] = time.perf_counter() - t_stat
+            metrics.pipeline_stage_latency_seconds.labels(stage="statistical_learning").observe(stage_timings["statistical_learning"])
+
+            score = context.total_confidence
 
             # Momentum Exemption: Do not penalize explosive gainers for their volatility
             if momentum_exemption:
@@ -308,7 +375,36 @@ class DecisionEngine:
                     return None
 
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
-                return await self._build_signal(symbol, direction, regime, score, arr)
+                signal = await self._build_signal(symbol, direction, regime, score, arr, context)
+                # Unfreeze briefly to set stage_timings
+                object.__setattr__(signal, "stage_timings", stage_timings)
+
+                metrics.decision_latency_seconds.labels(symbol=symbol, regime=regime.value).observe(time.perf_counter() - t_start)
+
+                import time
+                ObservabilityLogger.log_decision_trace(
+                    strategy=regime.value,
+                    confidence=score,
+                    regime=regime.value,
+                    evidence=[{"type": "score", "value": score}],
+                    entry_decision=f"BUY_{direction}",
+                    stage_timings=stage_timings,
+                    symbol=symbol,
+                    decision_id=f"dec-{int(time.time()*1000)}",
+                )
+                ObservabilityLogger.log_feature_snapshot(
+                    symbol=symbol,
+                    feature_vector=context.to_dict(),
+                    market_snapshot={"close": float(arr[-1][4])}
+                )
+
+                return signal
+            else:
+                ObservabilityLogger.log_reject_reason(
+                    symbol,
+                    "Low Score",
+                    {"score": score, "gate": effective_gate, "direction": direction}
+                )
 
         return None
 
@@ -339,11 +435,14 @@ class DecisionEngine:
                     break
 
             if consecutive >= self._CONSECUTIVE_LOSS_THRESHOLD:
+                from app.core import metrics
+                metrics.consecutive_loss_detected_total.labels(symbol=symbol, streak_count=str(consecutive), regime=regime_str).inc()
                 logger.warning(
                     "consecutive_loss_block: %s %d consecutive losses — REJECTING (cooldown)",
                     symbol,
                     consecutive,
                 )
+                ObservabilityLogger.log_reject_reason(symbol, "Consecutive Loss Block", {"losses": consecutive})
                 from app.core import metrics
                 metrics.signal_confidence_passed_total.labels(regime=regime_str)
                 return True
@@ -354,6 +453,7 @@ class DecisionEngine:
                     symbol,
                     breakeven_streak,
                 )
+                ObservabilityLogger.log_reject_reason(symbol, "Breakeven Streak Block", {"breakevens": breakeven_streak})
                 return True
 
             return False
@@ -377,6 +477,7 @@ class DecisionEngine:
         regime: MarketRegime,
         score: float,
         arr: np.ndarray,
+        context: DecisionContext | None = None,
     ) -> TradeSignal:
         """Build a TradeSignal from pipeline outputs.
 
@@ -463,6 +564,7 @@ class DecisionEngine:
             timestamp_ms=ts_ms,
             candles=arr.tolist(),
             trace_id=uuid.uuid4().hex,
+            context=context,
         )
 
     @staticmethod

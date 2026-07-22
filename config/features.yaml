@@ -1,0 +1,13 @@
+features:
+  # Platform Capabilities
+  decision_policy: true
+  replay_trace: true
+  
+  # Evidence Providers
+  technical_provider: true
+  learning_provider: true
+  ai_evidence: false  # Safe default, enable when 9router is ready
+  
+  # ML & Analytics
+  trade_fatigue: true
+  expected_edge: true

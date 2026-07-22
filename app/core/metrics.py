@@ -623,6 +623,42 @@ circuit_breaker_state = Gauge(
     ["symbol", "reason"],
 )
 
+# ── Operational Metrics (v2.2) ───────────────────────────────
+redis_active_connections = Gauge("karsa_redis_active_connections", "Redis active connections")
+redis_idle_connections = Gauge("karsa_redis_idle_connections", "Redis idle connections")
+redis_wait_time_seconds = Histogram("karsa_redis_wait_time_seconds", "Redis connection wait time")
+redis_reconnects_total = Counter("karsa_redis_reconnects_total", "Redis reconnect attempts")
+
+ai_request_total = Counter("karsa_ai_request_total", "AI requests made")
+ai_success_total = Counter("karsa_ai_success_total", "AI requests succeeded")
+ai_timeout_total = Counter("karsa_ai_timeout_total", "AI requests timed out")
+ai_rejection_total = Counter("karsa_ai_rejection_total", "AI explicit rejections")
+ai_latency_seconds = Histogram("karsa_ai_latency_seconds", "AI request latency", buckets=[0.5, 1.0, 2.0, 5.0, 10.0, 20.0])
+
+pipeline_queue_depth = Gauge("karsa_pipeline_queue_depth", "Pipeline queue depth", ["worker_id"])
+pipeline_worker_utilization = Gauge("karsa_pipeline_worker_utilization", "Pipeline worker utilization", ["worker_id"])
+pipeline_queue_wait_seconds = Histogram("karsa_pipeline_queue_wait_seconds", "Time spent waiting in pipeline queue", ["worker_id"])
+pipeline_stage_latency_seconds = Histogram("karsa_pipeline_stage_latency_seconds", "Latency per pipeline stage", ["stage"], buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0])
+decision_latency_seconds = Histogram("karsa_decision_latency_seconds", "Total wall-clock latency of Decision Engine evaluate()", ["symbol", "regime"], buckets=[0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0])
+
+decision_rejected_total = Counter("karsa_decision_rejected_total", "Decisions rejected globally", ["symbol", "reason"])
+decision_timeout_total = Counter("karsa_decision_timeout_total", "Decisions timed out", ["symbol"])
+decision_queue_full_total = Counter("karsa_decision_queue_full_total", "Decisions rejected due to queue full", ["symbol"])
+decision_policy_rejected_total = Counter("karsa_decision_policy_rejected_total", "Decisions rejected by policy", ["symbol"])
+decision_ai_timeout_total = Counter("karsa_decision_ai_timeout_total", "Decisions rejected due to AI timeout", ["symbol"])
+
+# ── Epic 0: Runtime Reliability Metrics ──────────────────────
+symbol_validation_failed_total = Counter("karsa_symbol_validation_failed_total", "Symbol validation failed count", ["symbol", "reason"])
+apm_recovery_attempts = Counter("karsa_apm_recovery_attempts_total", "APM recovery attempts", ["symbol"])
+phantom_trade_detected_total = Counter("karsa_phantom_trade_detected_total", "Phantom trades detected in reconciliation", ["symbol"])
+reconciliation_success_total = Counter("karsa_reconciliation_success_total", "Reconciliation successful")
+reconciliation_skipped_total = Counter("karsa_reconciliation_skipped_total", "Reconciliation skipped")
+decision_trace_missing_field_total = Counter("karsa_decision_trace_missing_field_total", "Decision trace missing required field", ["field"])
+consecutive_loss_detected_total = Counter("karsa_consecutive_loss_detected_total", "Consecutive loss streak detected", ["symbol", "streak_count", "regime"])
+memory_rss_bytes = Gauge("karsa_memory_rss_bytes", "RSS memory usage")
+
+
+
 
 def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
     """Helper to sum prometheus metric values across all labels via Prometheus API."""

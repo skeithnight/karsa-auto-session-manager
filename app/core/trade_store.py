@@ -35,6 +35,15 @@ class TradeStore:
         entry_regime: str | None = None,
         initial_risk_per_unit: Decimal | None = None,
         risk_profile_json: str | None = None,
+        trace_id: str | None = None,
+        ai_confidence_before: int | None = None,
+        ai_confidence_after: int | None = None,
+        ai_latency_ms: int | None = None,
+        evidence_trend: bool = False,
+        evidence_momentum: bool = False,
+        evidence_orderbook: bool = False,
+        evidence_funding: bool = False,
+        evidence_ai: bool = False,
     ) -> int:
         """Record trade entry. Returns trade id."""
         now = datetime.now(UTC)
@@ -43,9 +52,13 @@ class TradeStore:
                 result = await conn.execute(
                     text(
                         """INSERT INTO trades (symbol, side, amount, entry_price, regime, entry_time, ai_confidence,
-                        entry_regime, initial_risk_per_unit, risk_profile_json)
+                        entry_regime, initial_risk_per_unit, risk_profile_json, trace_id,
+                        ai_confidence_before, ai_confidence_after, ai_latency_ms,
+                        evidence_trend, evidence_momentum, evidence_orderbook, evidence_funding, evidence_ai)
                         VALUES (:symbol, :side, :amount, :entry_price, :regime, :entry_time, :ai_confidence,
-                        :entry_regime, :initial_risk_per_unit, :risk_profile_json)
+                        :entry_regime, :initial_risk_per_unit, :risk_profile_json, :trace_id,
+                        :ai_confidence_before, :ai_confidence_after, :ai_latency_ms,
+                        :evidence_trend, :evidence_momentum, :evidence_orderbook, :evidence_funding, :evidence_ai)
                         RETURNING id"""
                     ),
                     {
@@ -61,6 +74,15 @@ class TradeStore:
                         if initial_risk_per_unit is not None
                         else None,
                         "risk_profile_json": risk_profile_json,
+                        "trace_id": trace_id,
+                        "ai_confidence_before": ai_confidence_before,
+                        "ai_confidence_after": ai_confidence_after,
+                        "ai_latency_ms": ai_latency_ms,
+                        "evidence_trend": evidence_trend,
+                        "evidence_momentum": evidence_momentum,
+                        "evidence_orderbook": evidence_orderbook,
+                        "evidence_funding": evidence_funding,
+                        "evidence_ai": evidence_ai,
                     },
                 )
                 row = result.fetchone()
@@ -81,6 +103,9 @@ class TradeStore:
         exit_reason: str,
         trade_id: int | None = None,
         regime: str | None = None,
+        mae: Decimal | None = None,
+        mfe: Decimal | None = None,
+        peak_r_multiple: Decimal | None = None,
     ) -> int:
         """Close trade. If trade_id given, close that trade; else most recent open for symbol.
         Returns number of rows updated (0 means no matching open trade found).
@@ -88,12 +113,17 @@ class TradeStore:
         """
         now = datetime.now(UTC)
         regime_clause = ", regime = :regime" if regime else ""
+        mae_clause = ", mae = :mae" if mae is not None else ""
+        mfe_clause = ", mfe = :mfe" if mfe is not None else ""
+        peak_r_clause = ", peak_r_multiple = :peak_r_multiple" if peak_r_multiple is not None else ""
+        extra_clauses = regime_clause + mae_clause + mfe_clause + peak_r_clause
+
         try:
             async with self.db.engine.connect() as conn:
                 if trade_id is not None:
                     result = await conn.execute(
                         text(f"""UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
-                            exit_reason = :exit_reason, exit_time = :exit_time{regime_clause}
+                            exit_reason = :exit_reason, exit_time = :exit_time{extra_clauses}
                             WHERE id = :trade_id AND exit_time IS NULL"""),
                         {
                             "trade_id": trade_id,
@@ -102,12 +132,15 @@ class TradeStore:
                             "exit_reason": exit_reason,
                             "exit_time": now,
                             **({"regime": regime} if regime else {}),
+                            **({"mae": str(mae)} if mae is not None else {}),
+                            **({"mfe": str(mfe)} if mfe is not None else {}),
+                            **({"peak_r_multiple": str(peak_r_multiple)} if peak_r_multiple is not None else {}),
                         },
                     )
                 else:
                     result = await conn.execute(
                         text(f"""UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
-                            exit_reason = :exit_reason, exit_time = :exit_time{regime_clause}
+                            exit_reason = :exit_reason, exit_time = :exit_time{extra_clauses}
                             WHERE id = (
                                 SELECT id FROM trades
                                 WHERE symbol = :symbol AND exit_time IS NULL
@@ -120,6 +153,9 @@ class TradeStore:
                             "exit_reason": exit_reason,
                             "exit_time": now,
                             **({"regime": regime} if regime else {}),
+                            **({"mae": str(mae)} if mae is not None else {}),
+                            **({"mfe": str(mfe)} if mfe is not None else {}),
+                            **({"peak_r_multiple": str(peak_r_multiple)} if peak_r_multiple is not None else {}),
                         },
                     )
                 await conn.commit()
@@ -286,7 +322,7 @@ class TradeStore:
                 "entry_time": r[6],
             }
 
-    async def record_ai_decision(
+    async def record_decision(
         self,
         symbol: str,
         decision_type: str,
@@ -314,5 +350,5 @@ class TradeStore:
                 )
         except Exception as e:
             metrics.postgres_write_errors.labels(table="ai_decisions").inc()
-            logger.error(f"record_ai_decision failed: {e}")
+            logger.error(f"record_decision failed: {e}")
             raise

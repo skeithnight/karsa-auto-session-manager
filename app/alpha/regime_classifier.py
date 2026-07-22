@@ -20,10 +20,14 @@ from __future__ import annotations
 
 import enum
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from loguru import logger
+
+if TYPE_CHECKING:
+    from app.core.feature_extractor import FeatureVector
+    from app.core.market_snapshot import MarketSnapshot
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.1) ---
 REGIME_ADX_TREND_THRESHOLD: float = 25.0
@@ -40,6 +44,7 @@ class MarketRegime(enum.Enum):
     HYPER_BEAR = "HYPER_BEAR"
     RANGE = "RANGE"
     CHOP = "CHOP"
+    SNIPER = "SNIPER"
 
 
 class RegimeClassifier:
@@ -53,38 +58,34 @@ class RegimeClassifier:
     # ------------------------------------------------------------------
 
     def classify(
-        self, candles: np.ndarray[Any, Any] | list[list[float]]
+        self, features: FeatureVector, snapshot: MarketSnapshot
     ) -> MarketRegime:
-        """Classify market regime from OHLCV candles.
+        """Classify market regime from pre-calculated features.
 
         Args:
-            candles: numpy array (N, 6) or list[list] — columns: [ts, open, high, low, close, volume]
+            features: FeatureVector containing technical indicators
+            snapshot: MarketSnapshot for current raw prices
 
         Returns:
             MarketRegime enum value
         """
-        if not isinstance(candles, np.ndarray):
-            candles = np.array(candles, dtype=float)
-
-        if candles.shape[0] < MIN_CANDLES_FOR_CLASSIFICATION:
+        if snapshot.candles.shape[0] < MIN_CANDLES_FOR_CLASSIFICATION:
             logger.warning(
-                f"RegimeClassifier: only {candles.shape[0]} candles (< {MIN_CANDLES_FOR_CLASSIFICATION}), returning CHOP"
+                f"RegimeClassifier: only {snapshot.candles.shape[0]} candles (< {MIN_CANDLES_FOR_CLASSIFICATION}), returning CHOP"
             )
             return MarketRegime.CHOP
 
-        closes = candles[:, 4].astype(float)
-        highs = candles[:, 2].astype(float)
-        lows = candles[:, 3].astype(float)
+        closes = snapshot.get_close_prices()
 
         # Flat-price guard
         if np.all(closes == closes[0]):
             logger.info("RegimeClassifier: all-flat prices, returning RANGE")
             return MarketRegime.RANGE
 
-        adx = self._calculate_adx(highs, lows, closes)
-        hurst = self._calculate_hurst(closes)
-        atr_pct = self._calculate_atr_percentile(highs, lows, closes)
-        sma20 = float(np.mean(closes[-20:]))
+        adx = features.adx_14 or 0.0
+        hurst = features.hurst or 0.5
+        atr_pct = features.atr_pct or 50.0
+        sma20 = features.sma_20 or float(closes[-1])
         last_close = float(closes[-1])
 
         regime = self._decision_tree(adx, hurst, atr_pct, last_close, sma20)
@@ -148,20 +149,28 @@ class RegimeClassifier:
                         if candles_raw
                         else _np.array([])
                     )
-                    regime = self.classify(candles)
 
-                    # Write to Redis with metadata
-                    adx = self._calculate_adx(
-                        candles[:, 2].astype(float),
-                        candles[:, 3].astype(float),
-                        candles[:, 4].astype(float),
-                    )
-                    hurst = self._calculate_hurst(candles[:, 4].astype(float))
-                    atr_pct = self._calculate_atr_percentile(
-                        candles[:, 2].astype(float),
-                        candles[:, 3].astype(float),
-                        candles[:, 4].astype(float),
-                    )
+                    from app.core.feature_extractor import FeatureExtractor
+                    from app.core.feature_store import FeatureStore
+                    from app.core.market_snapshot import MarketSnapshot
+
+                    if len(candles) > 0:
+                        snapshot = MarketSnapshot(
+                            symbol=symbol,
+                            timestamp_ms=int(candles[-1][0]),
+                            candles=candles
+                        )
+                        store = FeatureStore(snapshot)
+                        features = FeatureExtractor.extract(store)
+                        regime = self.classify(features, snapshot)
+                        adx = features.adx_14 or 0.0
+                        hurst = features.hurst or 0.5
+                        atr_pct = features.atr_pct or 50.0
+                    else:
+                        regime = MarketRegime.CHOP
+                        adx = 0.0
+                        hurst = 0.5
+                        atr_pct = 50.0
 
                     payload = json.dumps(
                         {

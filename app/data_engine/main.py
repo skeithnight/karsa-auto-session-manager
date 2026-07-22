@@ -15,6 +15,7 @@ import logging
 import random
 import signal
 import sys
+import time
 from typing import Any
 
 from app.alpha.lead_lag_buffer import LeadLagBuffer
@@ -152,12 +153,16 @@ async def _stream_orderbook(
     """Stream orderbook for a single (symbol, exchange) pair. Runs until shutdown."""
     logger.info(f"Starting stream {exchange_id}/{symbol}")
     retries = 0
+    last_heartbeat = 0.0
     while not shutdown_event.is_set():
         try:
             orderbook = await ccxt_manager.watch_orderbook(symbol, exchange_id)
             retries = 0  # reset backoff on success
             metrics.orderbook_received.labels(exchange=exchange_id, symbol=symbol).inc()
-            await redis_client.set_exchange_heartbeat(exchange_id)
+            now = time.time()
+            if now - last_heartbeat >= 5.0:
+                await redis_client.set_exchange_heartbeat(exchange_id)
+                last_heartbeat = now
             exchange_data = normalizer.normalize_orderbook(
                 orderbook, exchange_id, symbol
             )
@@ -666,6 +671,36 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
+
+    def _sigusr1_handler() -> None:
+        logger.info("SIGUSR1 received: dumping tracemalloc and objgraph")
+        try:
+            import tracemalloc
+            if not tracemalloc.is_tracing():
+                tracemalloc.start(10)
+                logger.info("started tracemalloc")
+            else:
+                snapshot = tracemalloc.take_snapshot()
+                top_stats = snapshot.statistics('lineno')
+                logger.info("[Memory] Top 10 memory allocations:")
+                for stat in top_stats[:10]:
+                    logger.info(f"  {stat}")
+        except Exception as e:
+            logger.error(f"Failed to dump tracemalloc: {e}")
+
+        try:
+            import objgraph
+            logger.info("[Memory] Most common types:")
+            types = objgraph.most_common_types(limit=10)
+            for t in types:
+                logger.info(f"  {t[0]}: {t[1]}")
+        except ImportError:
+            logger.warning("objgraph not installed")
+        except Exception as e:
+            logger.error(f"Failed to dump objgraph: {e}")
+
+    if hasattr(signal, "SIGUSR1"):
+        loop.add_signal_handler(signal.SIGUSR1, _sigusr1_handler)
 
     logger.info("karsa-data-engine starting (role=%s)", settings.karsa_role)
 

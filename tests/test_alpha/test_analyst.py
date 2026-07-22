@@ -111,3 +111,21 @@ class TestCryptoAnalyst:
     def test_parse_confidence_clamped(self, analyst):
         result = analyst._parse_response('{"direction": "LONG", "confidence": 150, "reasoning": "test"}')
         assert result.ai_confidence == 100
+
+    @pytest.mark.asyncio
+    async def test_analyze_forced_high_confidence_signal(self, analyst, mock_ai):
+        """Validates AI with forced high-confidence signal."""
+        mock_ai.complete.return_value = json.dumps({
+            "direction": "LONG", "confidence": 95, "reasoning": "forced high confidence"
+        })
+        candles = [[i * 3600000, 100.0, 105.0, 95.0, 100.0 + (i % 10), 1000.0] for i in range(200)]
+        analyst.fetcher.fetch = AsyncMock(return_value=candles)
+
+        result = await analyst.analyze(
+            symbol="BTC/USDT", direction="LONG", confidence=0.70,
+            regime="TREND_BULL", spread_pct=0.001, funding_rate=0.0001,
+            oi_change=0.05, price=Decimal("50000"),
+        )
+        assert result is not None
+        assert result.direction == "LONG"
+        assert result.ai_confidence == 95

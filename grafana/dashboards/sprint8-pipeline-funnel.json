@@ -1,0 +1,8 @@
+{
+  "title": "Pipeline Funnel",
+  "uid": "sprint8-pipeline-funnel",
+  "panels": [],
+  "schemaVersion": 39,
+  "version": 1,
+  "description": "Pipeline stage conversion funnel, stage latencies, rejection reasons."
+}

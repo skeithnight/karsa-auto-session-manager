@@ -14,9 +14,10 @@ from app.alpha.trade_memory import MAX_ENTRIES_PER_SYMBOL, RETRIEVE_COUNT, Trade
 class TestTradeMemory:
     def setup_method(self):
         self.mock_redis_client = MagicMock()
-        self.mock_redis_client.zadd = AsyncMock()
-        self.mock_redis_client.zremrangebyrank = AsyncMock()
-        self.mock_redis_client.zrevrange = AsyncMock()
+        self.mock_redis_client.redis = MagicMock()
+        self.mock_redis_client.redis.zadd = AsyncMock()
+        self.mock_redis_client.redis.zremrangebyrank = AsyncMock()
+        self.mock_redis_client.redis.zrevrange = AsyncMock()
         self.memory = TradeMemory(self.mock_redis_client)
 
     @pytest.mark.asyncio
@@ -30,8 +31,8 @@ class TestTradeMemory:
             entry_confidence=Decimal("0.85"),
         )
 
-        self.mock_redis_client.zadd.assert_awaited_once()
-        call_args = self.mock_redis_client.zadd.call_args
+        self.mock_redis_client.redis.zadd.assert_awaited_once()
+        call_args = self.mock_redis_client.redis.zadd.call_args
         assert call_args[0][0] == "karsa:memory:BTCUSDT"
 
         payload = call_args[0][1]
@@ -54,14 +55,14 @@ class TestTradeMemory:
             entry_confidence=Decimal("0.9"),
         )
 
-        self.mock_redis_client.zremrangebyrank.assert_awaited_once_with(
+        self.mock_redis_client.redis.zremrangebyrank.assert_awaited_once_with(
             "karsa:memory:BTCUSDT", 0, -(MAX_ENTRIES_PER_SYMBOL + 1)
         )
 
     @pytest.mark.asyncio
     async def test_get_recent_returns_decoded(self):
         trade = {"pnl_pct": 2.0, "hold_min": 15, "regime": "trending", "exit": "tp_hit", "confidence": 0.8}
-        self.mock_redis_client.zrevrange.return_value = [
+        self.mock_redis_client.redis.zrevrange.return_value = [
             json.dumps(trade).encode("utf-8"),
         ]
 
@@ -70,7 +71,7 @@ class TestTradeMemory:
         assert len(result) == 1
         assert result[0]["pnl_pct"] == 2.0
         assert result[0]["regime"] == "trending"
-        self.mock_redis_client.zrevrange.assert_awaited_once_with(
+        self.mock_redis_client.redis.zrevrange.assert_awaited_once_with(
             "karsa:memory:BTCUSDT", 0, RETRIEVE_COUNT * 3 - 1
         )
 
@@ -80,7 +81,7 @@ class TestTradeMemory:
         ranging = {"pnl_pct": -0.5, "hold_min": 5, "regime": "ranging", "exit": "sl_hit", "confidence": 0.6}
         trending2 = {"pnl_pct": 0.3, "hold_min": 8, "regime": "trending", "exit": "manual", "confidence": 0.7}
 
-        self.mock_redis_client.zrevrange.return_value = [
+        self.mock_redis_client.redis.zrevrange.return_value = [
             json.dumps(trending).encode(),
             json.dumps(ranging).encode(),
             json.dumps(trending2).encode(),
@@ -93,7 +94,7 @@ class TestTradeMemory:
 
     @pytest.mark.asyncio
     async def test_get_recent_empty(self):
-        self.mock_redis_client.zrevrange.return_value = []
+        self.mock_redis_client.redis.zrevrange.return_value = []
 
         result = await self.memory.get_recent("BTCUSDT")
 
@@ -124,7 +125,7 @@ class TestTradeMemory:
     @pytest.mark.asyncio
     async def test_get_prompt_context(self):
         trades = [{"pnl_pct": 1.0, "hold_min": 20, "regime": "trending", "exit": "tp_hit", "confidence": 0.9}]
-        self.mock_redis_client.zrevrange.return_value = [
+        self.mock_redis_client.redis.zrevrange.return_value = [
             json.dumps(trades[0]).encode(),
         ]
 

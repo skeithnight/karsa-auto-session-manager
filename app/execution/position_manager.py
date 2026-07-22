@@ -203,9 +203,7 @@ class ActivePositionManager:
                     missing = await self._store.get_missing_fields(  # type: ignore[attr-defined]
                         symbol, side, _REQUIRED_FIELDS
                     )
-                    if not missing:
-                        continue
-
+                    # Always reconcile to ensure exchange matches Redis state (e.g. dropped SL)
                     self._log.warning(
                         "HEALTH_CHECK: %s %s missing fields %s — auto-repairing",
                         symbol,
@@ -296,7 +294,15 @@ class ActivePositionManager:
                     exchange_pos = p
                     break
 
+            if exchange_pos is None:
+                from app.core import metrics
+                metrics.phantom_trade_detected_total.labels(symbol=symbol).inc()
+                self._log.critical(f"APM reconcile: {symbol} is a phantom trade (does not exist on Bybit). Ignoring reconciliation.")
+                return False
+
             if exchange_pos:
+                from app.core import metrics
+                metrics.reconciliation_success_total.inc()
                 # Entry price
                 if not pos.get("entry_price") or pos.get("entry_price") == "0":
                     entry = exchange_pos.get("entry_price", 0)
@@ -330,6 +336,12 @@ class ActivePositionManager:
                         else:
                             pos["current_sl"] = str(exch_sl)
                             pos["stop_loss"] = str(exch_sl)
+                else:
+                    if pos.get("current_sl") and str(pos.get("current_sl")) != "0":
+                        self._log.critical(f"APM reconcile: {symbol} SL missing on exchange! Clearing local SL to trigger emergency replacement.")
+                        pos["current_sl"] = "0"
+                        pos["stop_loss"] = "0"
+                        changed = True
 
                 # TP from exchange
                 exch_tp = exchange_pos.get("takeProfit")
@@ -597,8 +609,28 @@ class ActivePositionManager:
         # Multi-Tier Scale-Outs
         scale_tier = pos.get("scale_tier", 0)
 
-        # Range/Chop/Hyper logic
-        if "TREND" not in entry_regime:
+        # Range/Chop/Hyper/Sniper logic
+        if entry_regime == "SNIPER":
+            # Asymmetric V-Shape Exits
+            if scale_tier < 1 and r_mult >= Decimal("1.5"):
+                # Exit 50% immediately at +1.5R and move SL to BE
+                await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
+                pos["scale_tier"] = 1
+                if not moved_to_be:
+                    await self._move_stop_to_breakeven(pos, entry_price, side)
+                    moved_to_be = True
+                    
+            # Momentum Exhaustion Check (1m RSI > 80 or < 20)
+            if r_mult > Decimal("0.2"):
+                exhausted = await self._check_momentum_exhaustion(symbol, side)
+                if exhausted:
+                    self._log.warning(f"APM SNIPER: Momentum Exhaustion detected for {symbol}. Market closing remainder.")
+                    if self._alert:
+                        asyncio.create_task(self._alert.send(f"🚨 SNIPER MOMENTUM EXHAUSTION EXIT: {symbol} {side} closed at {live_price} to avoid dead-cat bounce!"))
+                    await self._force_close_position(pos, symbol, side)
+                    return
+                    
+        elif "TREND" not in entry_regime:
             if scale_tier < 1 and r_mult >= be_lock_r:
                 await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
                 pos["scale_tier"] = 1
@@ -723,6 +755,57 @@ class ActivePositionManager:
             await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # SNIPER Helpers
+    # ------------------------------------------------------------------
+    
+    async def _check_momentum_exhaustion(self, symbol: str, side: str) -> bool:
+        """Check if 1-minute RSI signals a V-shape top/bottom exhaustion."""
+        try:
+            bybit_symbol = symbol.replace("/", "")
+            if hasattr(self._client, "session") and self._client.session:
+                raw = await self._client._execute(
+                    self._client.session.get_kline,
+                    category="linear",
+                    symbol=bybit_symbol,
+                    interval="1",
+                    limit=20
+                )
+                if raw and raw.get("retCode") == 0 and raw.get("result"):
+                    # Bybit returns newest first, reverse it
+                    kline_list = raw["result"].get("list", [])
+                    if len(kline_list) >= 14:
+                        kline_list.reverse()
+                        closes = [float(k[4]) for k in kline_list]
+                        
+                        # Calculate simple RSI
+                        import numpy as np
+                        deltas = np.diff(closes)
+                        seed = deltas[:14]
+                        up = seed[seed >= 0].sum() / 14
+                        down = -seed[seed < 0].sum() / 14
+                        rs = up / down if down != 0 else 0
+                        rsi = np.zeros_like(closes)
+                        rsi[:14] = 100. - 100. / (1. + rs)
+                        for i in range(14, len(closes)):
+                            delta = deltas[i - 1]
+                            upval = delta if delta > 0 else 0.
+                            downval = -delta if delta < 0 else 0.
+                            up = (up * 13 + upval) / 14
+                            down = (down * 13 + downval) / 14
+                            rs = up / down if down != 0 else 0
+                            rsi[i] = 100. - 100. / (1. + rs)
+                            
+                        current_rsi = rsi[-1]
+                        
+                        if side == "LONG" and current_rsi > 80.0:
+                            return True
+                        elif side == "SHORT" and current_rsi < 20.0:
+                            return True
+        except Exception as e:
+            self._log.debug(f"APM SNIPER: momentum exhaustion check failed for {symbol}: {e}")
+        return False
 
     # ------------------------------------------------------------------
     # R-multiple calculation

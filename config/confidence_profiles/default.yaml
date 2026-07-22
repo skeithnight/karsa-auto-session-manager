@@ -1,0 +1,24 @@
+# Default Confidence Profile
+
+regimes:
+  TREND_BULL:
+    base_confidence: 50.0
+    weights:
+      trend_alignment: 20.0
+      momentum: 20.0
+      volatility_expansion: 10.0
+  TREND_BEAR:
+    base_confidence: 50.0
+    weights:
+      trend_alignment: 20.0
+      momentum: 20.0
+      volatility_expansion: 10.0
+  RANGE:
+    base_confidence: 40.0
+    weights:
+      mean_reversion: 30.0
+      liquidity_sweep: 20.0
+      low_volatility: 10.0
+  CHOP:
+    base_confidence: 0.0
+    weights: {}

@@ -186,7 +186,7 @@ Every formula above needs at least one hand-calculated static JSON fixture in `t
 
 | Position | When | Model | Latency | Failure Mode |
 | :--- | :--- | :--- | :--- | :--- |
-| **Pre-Entry CryptoAnalyst** | After deterministic signal, before risk gate | `claude-haiku-3-5` | ~400ms | Signal **rejected** |
+| **Pre-Entry CryptoAnalyst** | After deterministic signal, before risk gate | `claude-haiku-3-5` | ~400ms | Returns 0 conf (REJECT) |
 | **Position Judge (cheap)** | Every 5min in ambiguous zone | `claude-haiku-3-5` | ~200ms | Escalate to Tier 2 |
 | **Position Judge (escalated)** | After 2× cheap HOLD on losing position | `claude-sonnet-4-5` | ~800ms | Conservative HOLD |
 

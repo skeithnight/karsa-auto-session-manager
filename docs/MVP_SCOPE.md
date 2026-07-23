@@ -38,7 +38,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 *   **Regime Detection:** Hurst + ADX + EMA200 on BTC 1H. CHOP halts all trading.
 *   **Multi-Timeframe Confirmation:** 4H EMA trend check, penalizes signals contradicting higher timeframe.
 *   **Dynamic Universe Scoring:** Replace static symbol list with Volume+Momentum+Squeeze+Overextension scoring.
-*   **AI CryptoAnalyst (MANDATORY):** LLM-powered pre-entry analysis via 9router proxy. Final confidence = quant × 0.5 + AI × 0.5. If AI fails, signal is rejected.
+*   **AI CryptoAnalyst (MANDATORY):** LLM-powered pre-entry analysis via 9router proxy. Final confidence = quant × 0.5 + AI × 0.5. If AI fails, it returns 0 confidence, guaranteeing REJECT.
 *   **Signal Output:** Generation of a directional signal (`LONG`, `SHORT`, `FLAT`) with confidence score.
 
 ### D. Execution (The "Write" Pipeline)

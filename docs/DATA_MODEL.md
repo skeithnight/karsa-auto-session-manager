@@ -126,7 +126,7 @@ Mirrors `trades` table structure + shadow-specific columns. Used when `SHADOW_MO
 | moved_to_breakeven | BOOLEAN | FALSE | Whether breakeven SL was triggered |
 | current_sl | NUMERIC(20,8) | NULL | Current stop-loss price |
 | risk_profile_json | JSONB | NULL | Serialized RiskProfile at entry |
-| is_shadow | BOOLEAN | TRUE | Always TRUE for shadow trades |
+| is_shadow | BOOLEAN | TRUE | BOOLEAN DEFAULT TRUE. Always TRUE for shadow trades to prevent live contamination |
 | slippage_applied | NUMERIC(20,8) | NULL | Slippage applied to fill price |
 | fees_applied | NUMERIC(20,8) | NULL | Total fees charged |
 
@@ -376,6 +376,8 @@ These keys are read and written by `app/bot/handlers.py`. They use `decode_respo
 | `karsa:settings:max_positions` | String | None | `"3"` / `"5"` / `"8"` | Max open positions preference (cycles on toggle) |
 | `karsa:settings:regime_filter` | String | None | `"1"` (enabled) / `"0"` (disabled) | Regime filter preference |
 | `karsa:state:risk_profile` | String | None | `"conservative"` / `"semi_aggressive"` / `"aggressive"` | Active risk profile name |
+| `karsa:exit_alerted:{symbol}:{side}` | String | 60s | `"1"` | Deduplication guard for TP/SL Telegram alerts |
+| `karsa:settings:max_hyper_slots` | String | None | `"2"` | Maximum allowed concurrent HYPER regime positions |
 
 > **Note:** The `karsa:auto:*` keys are written by the Autonomous Session Manager (ASM). ASM gates executor — no trades execute when session is inactive.
 

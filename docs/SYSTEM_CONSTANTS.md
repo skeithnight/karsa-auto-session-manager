@@ -237,3 +237,12 @@
 | `PRM_DAILY_LOSS_LIMIT` | `TODO` | ratio | — | **Pending — Issue #11** (proposed: -3%) |
 | `PRM_MAX_CONSECUTIVE_LOSSES` | `TODO` | count | — | **Pending — Issue #10** (proposed: 4) |
 | `PRM_LOSS_PAUSE_MINUTES` | `60` | minutes | architecture doc | Entry block duration after CB fires |
+
+### 15.6 Other Important Constants
+
+| Constant | Value | Unit | Source | Purpose |
+| :--- | :--- | :--- | :--- | :--- |
+| `REGIME_SHIFT_CONFIRM_COUNT` | `3` | count | `position_manager.py` | Consecutive checks required to trigger Regime Kill Switch |
+| `SHADOW_PENDING_TTL` | `600` | seconds | `shadow.py` | Max time a virtual limit order remains `PENDING` |
+| `MAX_STOP_ORDERS_PER_SYMBOL` | `9` | count | `live_loop.py` | Pre-check limit to ensure room for 1 new SL (Bybit limit is 10) |
+| `APM_BREAKEVEN_ATR_MULT` | `1.0` | × ATR | `position_manager.py` | Price must move 1x ATR to trigger breakeven lock |

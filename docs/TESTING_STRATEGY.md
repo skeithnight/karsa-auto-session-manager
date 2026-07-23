@@ -136,6 +136,8 @@ tests/
     ├── test_circuit_breakers.py
     ├── test_proxy_failover.py
     ├── test_reconciliation_scenarios.py
+    ├── test_regime_hysteresis.py    # Assert 3 consecutive checks required
+    ├── test_shadow_refinements.py   # wick_miss_prevention, funding_drag, pending_ttl
     └── test_watchdog.py
 ```
 
@@ -175,6 +177,8 @@ AI components must be tested with **mocked 9router** — never call real Anthrop
   - AI confidence = 100 → maximum boost
   - Position judge returns HOLD 3 times → forced EXIT
   - Position judge returns EXIT on first call → immediate exit
+  - `test_ai_timeout_rejects_signal`: Assert that a 9router timeout returns `FLAT` with `0` confidence, dropping the blended score below `0.65`.
+  - `test_position_judge_3_hold_forced_exit`: Mock the Position Judge to return `HOLD` 3 times on a losing position; assert that `ActivePositionManager` triggers a market close.
 
 ---
 

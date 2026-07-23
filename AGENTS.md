@@ -224,7 +224,7 @@ The system's logical responsibilities are divided across three "agent" personas.
 - `RegimeClassifier` output is the single source of truth for regime. No module may infer regime from raw price data independently.
 - A CHOP regime means `confidence = 0.0`. No signal is passed forward.
 - AI calls must always happen after deterministic signal generation, never before.
-- If the 9router AI call fails → signal is REJECTED (not bypassed, not degraded to deterministic-only).
+- If the 9router AI call fails (timeout/error) → it returns `0` confidence, which mathematically guarantees the signal is REJECTED (never bypassed or degraded to deterministic-only).
 
 ---
 

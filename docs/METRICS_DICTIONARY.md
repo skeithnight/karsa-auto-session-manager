@@ -57,6 +57,9 @@
 | `karsa_reconciliation_events_total` | Counter | `scenario` (`clean`\|`orphaned_orders`\|`ghost_positions`\|`postgres_dead`) | Startup reconciliation outcome, matching the 4 scenarios in `RISK_AND_RUNBOOK.md` §4 |
 | `karsa_postgres_write_errors_total` | Counter | `table` | Failed writes to `trades`/`signals`/`system_events` |
 | `karsa_state_divergence_detected_total` | Counter | — | Fires on Scenario C (Ghost Positions) — this should page a human, not just increment quietly |
+| `karsa_trade_reconcile_discrepancies` | Counter | `kind` | Count of discrepancies found during reconciliation |
+| `karsa_trade_reconcile_repairs` | Counter | `kind` | Count of successful state repairs made |
+| `karsa_reconciler_stale_removed` | Counter | `symbol` | Count of stale keys cleaned up |
 
 ## 6. Key 6 — Watchdog & Telemetry
 
@@ -108,6 +111,10 @@
 | `karsa_signals_entered_pipeline_total` | Counter | `symbol` | Signals entering the full 6-stage pipeline |
 | `karsa_signals_completed_pipeline_total` | Counter | `symbol`, `outcome` | Signals completed or rejected at stage |
 | `karsa_position_lifecycle_duration_seconds` | Histogram | — | Time from position open to close |
+| `karsa_risk_gate_reject` | Counter | `symbol`, `reason` | Signals rejected by risk gate |
+| `karsa_risk_gate_pass` | Counter | `symbol` | Signals passed by risk gate |
+| `karsa_positions_opened` | Counter | `symbol`, `side` | Positions successfully opened |
+| `karsa_positions_closed` | Counter | `symbol`, `side`, `exit_reason` | Positions closed and why |
 
 ---
 
@@ -125,6 +132,8 @@
 | `karsa_shadow_sl_hits_total` | Counter | `symbol`, `side` | Shadow stop-loss hits triggered |
 | `karsa_shadow_funding_fees_total_usdt` | Counter | — | Cumulative shadow funding rate fees in USDT |
 | `karsa_shadow_limit_orders_unfilled_total` | Counter | `symbol` | Shadow post-only limit orders that expired unfilled (TTL 600s) |
+| `karsa_shadow_live_entry_divergence_seconds` | Histogram | — | Shadow vs Live entry divergence in seconds |
+| `karsa_shadow_live_slippage_bps` | Histogram | — | Shadow vs Live slippage comparison in basis points |
 
 ---
 

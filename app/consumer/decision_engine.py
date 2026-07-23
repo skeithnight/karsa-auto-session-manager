@@ -96,6 +96,8 @@ class DecisionEngine:
         trade_memory: object | None = None,
         redis_client: object | None = None,
         multi_tf: object | None = None,
+        crypto_analyst: object | None = None,
+        trade_store: object | None = None,
     ) -> None:
         self._classifier = classifier
         self._risk_gate = risk_gate
@@ -108,6 +110,8 @@ class DecisionEngine:
         self._trade_memory = trade_memory
         self._redis = redis_client
         self._multi_tf = multi_tf
+        self._crypto_analyst = crypto_analyst
+        self._trade_store = trade_store
         self._prev_regimes: dict[str, MarketRegime] = {}
         self._regime_transition_counts: dict[str, int] = {}
         self._similarity = SimilarityEngine()
@@ -119,6 +123,7 @@ class DecisionEngine:
             trade_memory=trade_memory
         )
         self._statistical_learning = StatisticalLearning(trade_memory=trade_memory)
+        self._background_tasks = set()
 
         self._router = StrategyRouter(
             volatility_scaling=True,
@@ -370,6 +375,51 @@ class DecisionEngine:
                 vol_factor,
             )
 
+            # Fire AI Shadow Scoring for all generated signals without blocking
+            if self._crypto_analyst is not None and self._trade_store is not None:
+                import asyncio
+                
+                async def _shadow_score_and_record():
+                    try:
+                        # Extract features safely
+                        spread_pct = float(features.spread) if getattr(features, 'spread', None) is not None else 0.0
+                        funding_rate = float(features.funding_rate) if getattr(features, 'funding_rate', None) is not None else 0.0
+                        oi_change = float(features.oi_change_1h) if getattr(features, 'oi_change_1h', None) is not None else 0.0
+                        
+                        logger.info("shadow_score_and_record: starting AI analysis for %s", symbol)
+                        ai_result = await self._crypto_analyst.analyze(
+                            symbol=symbol,
+                            direction=direction,
+                            confidence=score,
+                            regime=regime.value,
+                            spread_pct=spread_pct,
+                            funding_rate=funding_rate,
+                            oi_change=oi_change,
+                            price=Decimal(str(arr[-1][4]))
+                        )
+                        logger.info("shadow_score_and_record: AI analysis complete for %s (risk_passed=%s)", symbol, score >= effective_gate)
+                        
+                        risk_passed = score >= effective_gate
+                        
+                        await self._trade_store.record_signal(
+                            symbol=symbol,
+                            direction=direction,
+                            confidence_score=score,
+                            alpha_metrics={"stage_timings": stage_timings},
+                            risk_passed=risk_passed,
+                            strategy_type="SWING",
+                            ai_confidence_score=ai_result.ai_confidence if ai_result else None,
+                            ai_reasoning=ai_result.reasoning if ai_result else None,
+                            macro_context=None
+                        )
+                    except Exception as e:
+                        logger.error("shadow_score_and_record failed for %s: %s", symbol, e, exc_info=True)
+                
+                # Keep strong reference to prevent garbage collection
+                task = asyncio.create_task(_shadow_score_and_record())
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+
             if score >= effective_gate:
                 if await self.check_consecutive_losses(symbol, regime):
                     return None
@@ -520,9 +570,16 @@ class DecisionEngine:
         if risk_distance <= Decimal("0"):
             amount = self._base_size
         elif self._wallet_balance > 0:
-            # Kelly Scaling: Multiply risk_pct by (score/100)
-            base_risk_pct = await self._get_risk_pct()
-            scaled_risk_pct = base_risk_pct * Decimal(str(score / 100.0))
+            # Tiered Dynamic Sizing based on Confidence Score
+            # - Tier B (70-79): 0.5%
+            # - Tier A (80-89): 1.0%
+            # - Tier S (90+): 1.5%
+            if score >= 90:
+                scaled_risk_pct = Decimal("0.015")
+            elif score >= 80:
+                scaled_risk_pct = Decimal("0.010")
+            else:
+                scaled_risk_pct = Decimal("0.005")
 
             amount = (
                 self._wallet_balance

@@ -17,6 +17,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from loguru import logger
+from app.risk.macro_filter import MacroFilter
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.5) ---
 PRM_MAX_SECTOR_POSITIONS: int = 2
@@ -61,6 +62,13 @@ class PortfolioRiskManager:
         self._max_gross_pct = Decimal(_s.max_gross_exposure_pct)
         self._max_net_pct = Decimal(_s.max_net_exposure_pct)
         self._max_single_pct = Decimal(_s.max_single_position_pct)
+        self._macro_filter = MacroFilter(check_interval_seconds=900)
+        self._macro_task = asyncio.create_task(self._update_macro_loop())
+
+    async def _update_macro_loop(self) -> None:
+        while True:
+            await self._macro_filter.update()
+            await asyncio.sleep(60)
 
     async def check(self, signal: object) -> PRMResult:
         """Run all portfolio risk checks. Fail-safe: exception → BLOCK."""
@@ -87,6 +95,12 @@ class PortfolioRiskManager:
 
             # 4. Consecutive loss CB (placeholder)
             c = await self._check_consecutive_loss_circuit_breaker()
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
+            # 5. Macro Kill-Switch
+            c = await self._check_macro_kill_switch(signal)
             checks.append(c)
             if not c.passed:
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
@@ -136,6 +150,17 @@ class PortfolioRiskManager:
         except Exception:
             logger.exception("PRM: correlation trap check failed — BLOCKING")
             return CheckResult(passed=False, reason="correlation check unavailable")
+
+    # ------------------------------------------------------------------
+    # Check 1.5: Macro Kill-Switch
+    # ------------------------------------------------------------------
+
+    async def _check_macro_kill_switch(self, signal: object) -> CheckResult:
+        """Block LONG signals if Macro Kill-Switch is active (BTC dumping or DXY pumping)."""
+        direction = getattr(signal, "direction", "FLAT")
+        if direction == "LONG" and self._macro_filter.is_kill_switch_active:
+            return CheckResult(passed=False, reason=self._macro_filter.reason)
+        return CheckResult(passed=True)
 
     # ------------------------------------------------------------------
     # Check 2: Exposure limits

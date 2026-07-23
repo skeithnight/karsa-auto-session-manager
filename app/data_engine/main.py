@@ -148,6 +148,7 @@ async def _stream_orderbook(
     bad_tick_filter: BadTickFilter,
     redis_client: RedisClient,
     lead_lag_buffer: LeadLagBuffer,
+    publisher: RedisPublisher,
     shutdown_event: asyncio.Event,
 ) -> None:
     """Stream orderbook for a single (symbol, exchange) pair. Runs until shutdown."""
@@ -190,7 +191,7 @@ async def _stream_orderbook(
                 mid = (float(best_bid) + float(best_ask)) / 2
                 lead_lag_buffer.update(symbol, exchange_id, mid)
 
-            if not exchange_data.is_stale:
+
                 global_state = normalizer.build_global_state(symbol, [exchange_data])
                 if global_state:
                     await redis_client.set_global_state(
@@ -216,6 +217,21 @@ async def _stream_orderbook(
                             "updated_at": global_state.updated_at.isoformat(),
                         },
                     )
+
+                    # Publish tick data for Micro-Scalper
+                    if best_bid and best_ask:
+                        await publisher.publish_tick(
+                            exchange_id,
+                            symbol,
+                            {
+                                "ts": int(now * 1000),
+                                "best_bid": str(best_bid),
+                                "best_ask": str(best_ask),
+                                "ob_imbalance": global_state.aggregate_skew if global_state.aggregate_skew else 0.0,
+                                "recent_trades": []
+                            }
+                        )
+
                     metrics.global_state_written.labels(symbol=symbol).inc()
                     if global_state.global_vwap is not None:
                         metrics.vwap_value.labels(symbol=symbol).set(
@@ -551,6 +567,7 @@ async def _run_engine(
                     bad_tick_filter,
                     redis_client,
                     lead_lag_buffer,
+                    publisher,
                     shutdown_event,
                 ),
                 name=f"stream-{key}",
@@ -617,6 +634,7 @@ async def _run_engine(
                             bad_tick_filter,
                             redis_client,
                             lead_lag_buffer,
+                            publisher,
                             shutdown_event,
                         ),
                         name=f"stream-{key}",

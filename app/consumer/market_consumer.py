@@ -22,8 +22,12 @@ from app.consumer.decision_engine import DecisionEngine, TradeSignal
 logger = logging.getLogger(__name__)
 
 _CHANNEL_PATTERN = "karsa:candles:*"
+_TICK_CHANNEL_PATTERN = "karsa:ticks:*"
 _CHANNEL_RE = re.compile(
     r"^karsa:candles:(?P<exchange>[^:]+):(?P<symbol>[^:]+):(?P<timeframe>[^:]+)$"
+)
+_TICK_CHANNEL_RE = re.compile(
+    r"^karsa:ticks:(?P<exchange>[^:]+):(?P<symbol>[^:]+)$"
 )
 _POLL_INTERVAL_S = 1.0  # seconds between subscribe polls
 
@@ -48,11 +52,15 @@ class MarketConsumer:
         decision_engine: DecisionEngine,
         on_signal: Callable[[str, TradeSignal], Coroutine[Any, Any, None]],
         on_candle: Callable[[str, list], Coroutine[Any, Any, None]] | None = None,
+        micro_scalper: Any | None = None,
+        on_micro_signal: Callable[[str, Any], Coroutine[Any, Any, None]] | None = None,
     ) -> None:
         self._redis = redis_client
         self._engine = decision_engine
         self._on_signal = on_signal
         self._on_candle = on_candle
+        self._micro_scalper = micro_scalper
+        self._on_micro_signal = on_micro_signal
         self._buffer = CandleBuffer()
         self._running = False
 
@@ -79,8 +87,8 @@ class MarketConsumer:
             pubsub = None
             try:
                 pubsub = self._redis.pubsub()
-                await pubsub.psubscribe(_CHANNEL_PATTERN)
-                logger.info("subscribed to %s", _CHANNEL_PATTERN)
+                await pubsub.psubscribe(_CHANNEL_PATTERN, _TICK_CHANNEL_PATTERN)
+                logger.info("subscribed to %s and %s", _CHANNEL_PATTERN, _TICK_CHANNEL_PATTERN)
                 backoff = 1
 
                 async for message in pubsub.listen():
@@ -131,6 +139,10 @@ class MarketConsumer:
             channel: Full channel name (e.g. karsa:candles:bybit:BTCUSDT:1h).
             data: JSON payload with candle data.
         """
+        if channel.startswith("karsa:ticks:"):
+            await self._process_tick(channel, data)
+            return
+
         match = _CHANNEL_RE.match(channel)
         if not match:
             return
@@ -202,7 +214,36 @@ class MarketConsumer:
                 signal.sl_price,
                 signal.tp_price,
             )
-            await self._on_signal(symbol, signal)
+            # Run signal execution (which includes 30s AI analyst call) as a background task 
+            # to unblock the Redis pubsub hot path
+            asyncio.create_task(self._on_signal(symbol, signal))
+
+    async def _process_tick(self, channel: str, data: str) -> None:
+        """Process a single tick message from Redis Pub/Sub for Micro-Scalper."""
+        if not self._micro_scalper or not self._on_micro_signal:
+            return
+
+        match = _TICK_CHANNEL_RE.match(channel)
+        if not match:
+            return
+
+        symbol_raw = match.group("symbol")
+        symbol = self._normalize_symbol(symbol_raw)
+
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            return
+
+        signal = await self._micro_scalper.evaluate_tick(
+            symbol=symbol,
+            best_bid=float(payload.get("best_bid", 0)),
+            best_ask=float(payload.get("best_ask", 0)),
+            ob_imbalance=float(payload.get("ob_imbalance", 0)),
+            recent_trades=payload.get("recent_trades", [])
+        )
+        if signal:
+            asyncio.create_task(self._on_micro_signal(symbol, signal))
 
     def _get_global_prices(self, exchange: str, symbol: str) -> dict[str, float] | None:
         """Build cross-exchange price dict for TREND scoring.

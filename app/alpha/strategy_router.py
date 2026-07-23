@@ -105,6 +105,15 @@ class StrategyRouter:
             context.total_confidence = 100.0  # Trap must be scored explicitly in live loop or pre-approved
             return context, 1.0
 
+        # HARD BLOCK: Reject Breakout signals in RANGE regime to prevent fakeout losses
+        if regime == MarketRegime.RANGE:
+            rsi = features.rsi_14 or 50.0
+            # Buying top of range (LONG + RSI > 50) or selling bottom of range (SHORT + RSI < 50)
+            if (direction == "LONG" and rsi > 50.0) or (direction == "SHORT" and rsi < 50.0):
+                logger.info(f"StrategyRouter RANGE Hard Block: Rejecting {direction} breakout in RANGE regime for {symbol} (rsi={rsi:.1f})")
+                context.total_confidence = 0.0
+                return context, 1.0
+
         context = self.collector.collect(context)
 
         # Apply Adaptive Strategy Ranking based on Expected Edge
@@ -154,6 +163,7 @@ class StrategyRouter:
         orderbook_delta: float | None = None,
         oi_change: float | None = None,
         funding_rate: float | None = None,
+        cvd_slope: float | None = None,
     ) -> int:
         score = 0
         closes = candles[:, 4].astype(float)
@@ -224,7 +234,22 @@ class StrategyRouter:
                 elif orderbook_delta < -0.1:
                     score += 10  # Sell walls pressing the breakdown
 
-        # 3. Open Interest (OI) Confirmation
+        # 3. CVD Divergence & Fakeout Detection
+        if cvd_slope is not None:
+            if direction == "LONG":
+                if cvd_slope < -0.3:
+                    score -= 30  # Divergence: Price breaking out UP, but CVD falling (fakeout)
+                    logger.info("StrategyRouter: LONG breakout CVD divergence penalty (-30, cvd_slope=%.2f)", cvd_slope)
+                elif cvd_slope > 0.3:
+                    score += 15  # Whales aggressively buying the breakout
+            elif direction == "SHORT":
+                if cvd_slope > 0.3:
+                    score -= 30  # Divergence: Price breaking down SHORT, but CVD rising (fakeout)
+                    logger.info("StrategyRouter: SHORT breakdown CVD divergence penalty (-30, cvd_slope=%.2f)", cvd_slope)
+                elif cvd_slope < -0.3:
+                    score += 15  # Whales aggressively selling the breakdown
+
+        # 4. Open Interest (OI) Confirmation
         # True trends need new money (rising OI), not just liquidations (squeeze)
         if oi_change is not None:
             if oi_change > 0.01:

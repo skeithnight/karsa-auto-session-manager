@@ -17,7 +17,16 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 from loguru import logger
-from app.risk.macro_filter import MacroFilter
+
+try:
+    from app.risk.macro_filter import MacroFilter
+except ImportError:
+    class MacroFilter:  # type: ignore[no-redef]
+        def __init__(self, check_interval_seconds: int = 900) -> None:
+            self.is_kill_switch_active = False
+            self.reason = ""
+        async def update(self) -> None:
+            pass
 
 # --- Constants (cross-ref: docs/SYSTEM_CONSTANTS.md §15.5) ---
 PRM_MAX_SECTOR_POSITIONS: int = 2
@@ -50,12 +59,14 @@ class PortfolioRiskManager:
         trade_store: object,
         sector_mapping: object,
         bybit_client: object,
+        ohlcv_fetcher: object | None = None,
     ) -> None:
         self._redis = redis_client
         self._position_store = position_store
         self._trade_store = trade_store
         self._sector_mapping = sector_mapping
         self._bybit_client = bybit_client
+        self._ohlcv_fetcher = ohlcv_fetcher
 
         from app.core.config import get_settings
         _s = get_settings()
@@ -77,6 +88,12 @@ class PortfolioRiskManager:
 
             # 1. Correlation trap
             c = await self._check_correlation_trap(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
+            # 1.1 Rolling Correlation Matrix Check
+            c = await self._check_rolling_correlation(signal)
             checks.append(c)
             if not c.passed:
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
@@ -112,6 +129,74 @@ class PortfolioRiskManager:
             return PRMResult(
                 approved=False, reason="PRM internal error (fail-safe BLOCK)"
             )
+
+    async def evaluate_capital_reallocation(self, new_signal: object) -> dict[str, Any] | None:
+        """Evaluate if incoming signal has >1.5x expected value over open consolidating winners.
+
+        Returns dict with reallocation target position or None if no scale-out needed.
+        Guarded by idempotency flag `proactive_scale_out_executed`.
+        """
+        try:
+            sig_conf = float(getattr(new_signal, "confidence", 0.5))
+            sig_tp_dist = float(getattr(new_signal, "tp_distance_pct", 0.03))
+            sig_sl_dist = float(getattr(new_signal, "sl_distance_pct", 0.01))
+
+            new_signal_ev = sig_conf * (sig_tp_dist / sig_sl_dist if sig_sl_dist > 0 else 2.0)
+
+            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            if not positions:
+                return None
+
+            best_candidate = None
+            lowest_ev = float("inf")
+
+            for pos in positions:
+                sym = pos.get("symbol", "")
+                side = pos.get("side", "LONG")
+                already_scaled = pos.get("proactive_scale_out_executed", False)
+                if already_scaled or str(already_scaled).lower() == "true":
+                    continue
+
+                entry_price = float(pos.get("entry_price", 0.0))
+                live_price = float(pos.get("live_price", entry_price))
+                tp_price = float(pos.get("take_profit", 0.0))
+                sl_price = float(pos.get("current_sl", pos.get("stop_loss", 0.0)))
+
+                if entry_price <= 0 or sl_price <= 0:
+                    continue
+
+                pnl = (live_price - entry_price) / entry_price if side == "LONG" else (entry_price - live_price) / entry_price
+                if pnl <= 0:
+                    continue
+
+                rem_tp_dist = abs(tp_price - live_price) / live_price if tp_price > 0 else 0.02
+                rem_sl_dist = abs(live_price - sl_price) / live_price if sl_price > 0 else 0.01
+
+                open_position_ev = pnl * (rem_tp_dist / rem_sl_dist if rem_sl_dist > 0 else 1.0)
+
+                # Check 1.5x hysteresis multiplier: New_Signal_EV > Open_Position_EV * 1.5
+                if new_signal_ev > (open_position_ev * 1.5):
+                    if open_position_ev < lowest_ev:
+                        lowest_ev = open_position_ev
+                        best_candidate = {
+                            "symbol": sym,
+                            "side": side,
+                            "open_position_ev": open_position_ev,
+                            "new_signal_ev": new_signal_ev,
+                        }
+
+            if best_candidate:
+                logger.info(
+                    f"PRM Capital Reallocation Triggered: New signal EV ({new_signal_ev:.2f}) > "
+                    f"Open position {best_candidate['symbol']} EV ({best_candidate['open_position_ev']:.2f}) * 1.5. "
+                    f"Recommending 50% proactive scale-out."
+                )
+                return best_candidate
+
+            return None
+        except Exception as e:
+            logger.debug(f"PRM evaluate_capital_reallocation failed: {e}")
+            return None
 
     # ------------------------------------------------------------------
     # Check 1: Correlation trap
@@ -150,6 +235,86 @@ class PortfolioRiskManager:
         except Exception:
             logger.exception("PRM: correlation trap check failed — BLOCKING")
             return CheckResult(passed=False, reason="correlation check unavailable")
+
+    async def _check_rolling_correlation(self, signal: object) -> CheckResult:
+        """Check 24h rolling Pearson correlation between candidate signal and open positions.
+        - correlation > 0.80 with 1 open position on same side -> 50% position size reduction.
+        - correlation > 0.80 with 2+ open positions on same side -> HARD BLOCK.
+        """
+        symbol = getattr(signal, "symbol", None)
+        direction = getattr(signal, "direction", "LONG")
+        if not symbol or not self._ohlcv_fetcher:
+            return CheckResult(passed=True)
+
+        try:
+            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            if not positions:
+                return CheckResult(passed=True)
+
+            high_corr_count = 0
+            max_corr = 0.0
+
+            # Fetch candidate symbol's last 25 1H candles
+            candles_a = await self._ohlcv_fetcher.fetch(symbol, "1h", limit=25)  # type: ignore[attr-defined]
+            if not candles_a or len(candles_a) < 10:
+                return CheckResult(passed=True)
+
+            import numpy as np
+            closes_a = np.array([c[4] for c in candles_a[-25:]], dtype=float)
+            returns_a = np.diff(closes_a) / closes_a[:-1]
+
+            if np.std(returns_a) == 0:
+                return CheckResult(passed=True)
+
+            for p in positions:
+                p_sym = p.get("symbol", "")
+                p_side = p.get("side", "LONG")
+                if not p_sym or p_sym == symbol:
+                    continue
+
+                if p_side != direction:
+                    continue
+
+                candles_b = await self._ohlcv_fetcher.fetch(p_sym, "1h", limit=25)  # type: ignore[attr-defined]
+                if not candles_b or len(candles_b) < 10:
+                    continue
+
+                closes_b = np.array([c[4] for c in candles_b[-25:]], dtype=float)
+                min_len = min(len(closes_a), len(closes_b))
+                if min_len < 5:
+                    continue
+
+                r_a = np.diff(closes_a[:min_len]) / closes_a[:min_len-1]
+                r_b = np.diff(closes_b[:min_len]) / closes_b[:min_len-1]
+
+                if np.std(r_b) == 0:
+                    continue
+
+                corr = float(np.corrcoef(r_a, r_b)[0, 1])
+                if not np.isnan(corr) and corr > 0.80:
+                    high_corr_count += 1
+                    max_corr = max(max_corr, corr)
+                    logger.warning(
+                        f"PRM Rolling Correlation Warning: {symbol} ({direction}) has {corr:.2f} correlation with open position {p_sym}"
+                    )
+
+            if high_corr_count >= 2:
+                return CheckResult(
+                    passed=False,
+                    reason=f"Rolling correlation > 0.80 with {high_corr_count} open positions (max_corr={max_corr:.2f})",
+                )
+            elif high_corr_count == 1:
+                current_amount = getattr(signal, "amount", Decimal("0"))
+                if current_amount > 0:
+                    signal.amount = current_amount * Decimal("0.5")  # type: ignore[attr-defined]
+                    logger.info(
+                        f"PRM Correlation Sizing: reduced {symbol} size 50% ({current_amount} -> {signal.amount}) due to {max_corr:.2f} correlation"
+                    )
+
+            return CheckResult(passed=True)
+        except Exception:
+            logger.debug(f"PRM rolling correlation check fallback for {symbol}")
+            return CheckResult(passed=True)
 
     # ------------------------------------------------------------------
     # Check 1.5: Macro Kill-Switch

@@ -559,6 +559,13 @@ class ActivePositionManager:
                 last_wick_ts = float(pos.get("last_wick_guard_ts", 0))
                 if time.time() - last_wick_ts < 10.0:  # 10s debounce
                     pos["last_tick_price"] = str(live_price)  # Still update price reference
+                    try:
+                        from app.core.position_store import _normalize_side
+                        side_key = _normalize_side(side)
+                        redis_key = f"karsa:position:{symbol}:{side_key}"
+                        await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                     return
                 pos["last_wick_guard_ts"] = str(time.time())
 
@@ -584,6 +591,13 @@ class ActivePositionManager:
                     self._log.exception(f"APM WICK GUARD: SL tighten failed for {symbol}")
 
                 pos["last_tick_price"] = str(live_price)
+                try:
+                    from app.core.position_store import _normalize_side
+                    side_key = _normalize_side(side)
+                    redis_key = f"karsa:position:{symbol}:{side_key}"
+                    await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+                except Exception:
+                    pass
                 return
 
         pos["last_tick_price"] = str(live_price)
@@ -913,9 +927,50 @@ class ActivePositionManager:
             # Update amount in pos dict so subsequent calculations use reduced quantity
             new_amount = amount - close_qty
             pos["amount"] = str(new_amount)
-            self._log.info(f"APM: scale-out {pct * 100}% ({close_qty}) for {symbol}, remaining={new_amount}")
         except Exception:
             self._log.exception(f"APM: scale-out failed for {symbol}")
+
+    async def proactive_scale_out(
+        self, symbol: str, side: str = "LONG", ratio: Decimal = Decimal("0.50")
+    ) -> bool:
+        """Execute proactive 50% scale-out for dynamic capital reallocation.
+
+        Guarded by idempotency flag `proactive_scale_out_executed`.
+        """
+        pos = await self._store.get(symbol, side)  # type: ignore[attr-defined]
+        if not pos:
+            return False
+
+        if pos.get("proactive_scale_out_executed") or str(pos.get("proactive_scale_out_executed")).lower() == "true":
+            self._log.info(f"APM proactive_scale_out: {symbol} {side} already scaled out (idempotency guard). Skipping.")
+            return False
+
+        entry_price = Decimal(str(pos.get("entry_price", "0")))
+        if entry_price <= 0:
+            return False
+
+        self._log.warning(
+            f"APM CAPITAL REALLOCATION: Proactively scaling out {ratio * 100}% of {symbol} {side} to reallocate capital."
+        )
+        await self._scale_out_position(pos, ratio, entry_price, side)
+        await self._move_stop_to_breakeven(pos, entry_price, side)
+
+        pos["proactive_scale_out_executed"] = True
+        try:
+            from app.core.position_store import _normalize_side
+            side_key = _normalize_side(side)
+            redis_key = f"karsa:position:{symbol}:{side_key}"
+            await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
+        except Exception as e:
+            self._log.error(f"APM proactive_scale_out state save failed for {symbol}: {e}")
+
+        if self._alert:
+            asyncio.create_task(
+                self._alert.send(  # type: ignore[attr-defined]
+                    f"🔄 CAPITAL REALLOCATION: Proactively scaled out {ratio * 100}% of {symbol} {side}. SL set to Breakeven."
+                )
+            )
+        return True
 
     # ------------------------------------------------------------------
     # Breakeven
@@ -1056,9 +1111,19 @@ class ActivePositionManager:
         now = datetime.now(UTC)
         held_mins = (now - entry_time).total_seconds() / 60.0
 
+        # Volatility-Adjusted Time Stop (Dynamic Theta Decay)
+        atr = float(pos.get("atr", 0))
+        entry_price_f = float(entry_price)
+        if atr > 0 and entry_price_f > 0:
+            current_atr_pct = (atr / entry_price_f) * 100.0
+            baseline_atr_pct = 2.0  # 2.0% baseline ATR reference
+            vol_ratio = baseline_atr_pct / current_atr_pct
+            vol_ratio = max(0.5, min(2.0, vol_ratio))
+            max_minutes = int(max_minutes * vol_ratio)
+
         if held_mins > max_minutes:
             symbol = pos.get("symbol", "")
-            self._log.warning(f"APM: time exit {symbol} after {held_mins:.0f}min (max {max_minutes})")
+            self._log.warning(f"APM: volatility-adjusted time exit {symbol} after {held_mins:.0f}min (adj_max {max_minutes}m)")
             await self._force_close_position(pos, f"time_exit_{held_mins:.0f}min")
             return True
 

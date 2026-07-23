@@ -56,6 +56,18 @@ class MarketDataIngestor:
         self.funding_rate: dict[str, float] = {}
         self.oi_change: dict[str, float] = {}
         self._prev_oi: dict[str, float] = {}
+        self.cvd: dict[str, float] = {}
+        self.cvd_history: dict[str, list[float]] = {}
+        self.cvd_slope: dict[str, float] = {}
+        self.liquidity_walls: dict[str, dict[str, float | None]] = {}
+
+        # Spoofing Detection (CPU-Optimized for Top 5 Levels)
+        self.spoofing_bid: dict[str, bool] = {}
+        self.spoofing_ask: dict[str, bool] = {}
+        self._top_bid_levels: dict[str, dict[float, float]] = {}
+        self._top_ask_levels: dict[str, dict[float, float]] = {}
+        self._spoof_expiry_bid: dict[str, float] = {}
+        self._spoof_expiry_ask: dict[str, float] = {}
 
         # Failure tracking per symbol: escalate from debug to warning
         self._failure_counts: dict[str, int] = {}
@@ -209,6 +221,94 @@ class MarketDataIngestor:
         self.orderbook_delta[symbol] = delta
         await self._publish(symbol, "orderbook_delta", str(round(delta, 6)))
 
+        # Cumulative Volume Delta (CVD) calculation & slope tracking
+        current_cvd = self.cvd.get(symbol, 0.0) + (bid_vol - ask_vol)
+        self.cvd[symbol] = current_cvd
+        hist = self.cvd_history.setdefault(symbol, [])
+        hist.append(current_cvd)
+        if len(hist) > 5:
+            hist.pop(0)
+
+        # CVD Slope: change over recent window normalized by avg volume
+        if len(hist) >= 2 and total > 0:
+            slope = (hist[-1] - hist[0]) / (total * len(hist))
+            slope = max(-1.0, min(1.0, slope))
+        else:
+            slope = 0.0
+        self.cvd_slope[symbol] = slope
+        await self._publish(symbol, "cvd_slope", str(round(slope, 6)))
+
+        # Liquidity Wall Detection: >3x average level volume
+        wall_above: float | None = None
+        wall_below: float | None = None
+        if bids:
+            avg_bid_vol = bid_vol / len(bids)
+            for price, vol in bids:
+                if vol > 3.0 * avg_bid_vol:
+                    wall_below = float(price)
+                    break
+        if asks:
+            avg_ask_vol = ask_vol / len(asks)
+            for price, vol in asks:
+                if vol > 3.0 * avg_ask_vol:
+                    wall_above = float(price)
+                    break
+
+        self.liquidity_walls[symbol] = {"wall_above": wall_above, "wall_below": wall_below}
+        if wall_above is not None:
+            await self._publish(symbol, "wall_above", str(wall_above))
+        if wall_below is not None:
+            await self._publish(symbol, "wall_below", str(wall_below))
+
+        # Spoofing Detection: CPU-Optimized for Top 5 Levels (> $500k notional, canceled < 3.0s)
+        now_ts = time.time()
+        if self._spoof_expiry_bid.get(symbol, 0) < now_ts:
+            self.spoofing_bid[symbol] = False
+        if self._spoof_expiry_ask.get(symbol, 0) < now_ts:
+            self.spoofing_ask[symbol] = False
+
+        prev_bids = self._top_bid_levels.setdefault(symbol, {})
+        current_bids: dict[float, float] = {}
+        for price_level, vol_level in bids[:5]:
+            p_flt = float(price_level)
+            v_flt = float(vol_level)
+            if p_flt * v_flt > 500_000:
+                current_bids[p_flt] = prev_bids.get(p_flt, now_ts)
+
+        for prev_p, added_ts in list(prev_bids.items()):
+            if prev_p not in current_bids:
+                duration = now_ts - added_ts
+                if duration < 3.0:
+                    logger.warning(
+                        f"SPOOFING DETECTED for {symbol}: Bid level ${prev_p:.2f} (> $500k) disappeared after {duration:.2f}s!"
+                    )
+                    self.spoofing_bid[symbol] = True
+                    self._spoof_expiry_bid[symbol] = now_ts + 30.0
+                    await self._publish(symbol, "spoofing_bid", "true")
+
+        self._top_bid_levels[symbol] = current_bids
+
+        prev_asks = self._top_ask_levels.setdefault(symbol, {})
+        current_asks: dict[float, float] = {}
+        for price_level, vol_level in asks[:5]:
+            p_flt = float(price_level)
+            v_flt = float(vol_level)
+            if p_flt * v_flt > 500_000:
+                current_asks[p_flt] = prev_asks.get(p_flt, now_ts)
+
+        for prev_p, added_ts in list(prev_asks.items()):
+            if prev_p not in current_asks:
+                duration = now_ts - added_ts
+                if duration < 3.0:
+                    logger.warning(
+                        f"SPOOFING DETECTED for {symbol}: Ask level ${prev_p:.2f} (> $500k) disappeared after {duration:.2f}s!"
+                    )
+                    self.spoofing_ask[symbol] = True
+                    self._spoof_expiry_ask[symbol] = now_ts + 30.0
+                    await self._publish(symbol, "spoofing_ask", "true")
+
+        self._top_ask_levels[symbol] = current_asks
+
         # Cache mid price for shadow APM (SL/TP monitoring)
         if bids and asks:
             best_bid = Decimal(str(bids[0][0]))
@@ -268,6 +368,10 @@ class MarketDataIngestor:
         consumer.orderbook_delta.update(self.orderbook_delta)
         consumer.funding_rate.update(self.funding_rate)
         consumer.oi_change.update(self.oi_change)
+        if hasattr(consumer, "cvd_slope"):
+            consumer.cvd_slope.update(self.cvd_slope)
+        if hasattr(consumer, "liquidity_walls"):
+            consumer.liquidity_walls.update(self.liquidity_walls)
 
     def update_symbols(self, new_symbols: list[str]) -> None:
         """Update symbol list at runtime. New symbols picked up on next poll cycle."""

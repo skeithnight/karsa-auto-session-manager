@@ -72,6 +72,8 @@ class MarketConsumer:
         self.orderbook_delta: dict[str, float] = {}
         self.funding_rate: dict[str, float] = {}
         self.oi_change: dict[str, float] = {}
+        self.cvd_slope: dict[str, float] = {}
+        self.liquidity_walls: dict[str, dict[str, float | None]] = {}
 
     async def start(self) -> None:
         """Subscribe to candle channels and start processing loop.
@@ -171,16 +173,18 @@ class MarketConsumer:
             float(payload["volume"]),
         ]
 
-        # Dedup check
+        # Dedup check: Buffer every tick data, but only run signal evaluation on new candle close (ts > last_ts)
         dedup_key = f"{exchange}:{symbol}:{timeframe}"
         ts = candle[0]
         last_ts = self._last_ts.get(dedup_key, 0)
-        if ts < last_ts:
-            return  # strictly older candle, skip
-        self._last_ts[dedup_key] = ts
 
-        # Buffer the candle
+        # Always update buffer with latest tick data
         self._buffer.append(symbol, candle)
+
+        if ts <= last_ts:
+            return  # Same or older candle tick update, skip signal evaluation
+
+        self._last_ts[dedup_key] = ts
 
         # Optional per-candle callback
         if self._on_candle:
@@ -201,6 +205,8 @@ class MarketConsumer:
             orderbook_delta=self.orderbook_delta.get(symbol),
             funding_rate=self.funding_rate.get(symbol),
             oi_change=self.oi_change.get(symbol),
+            cvd_slope=self.cvd_slope.get(symbol),
+            liquidity_walls=self.liquidity_walls.get(symbol),
         )
 
         if signal is not None:

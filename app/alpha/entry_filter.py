@@ -64,6 +64,9 @@ class EntryFilter:
         has_position: bool = False,
         now_utc: datetime | None = None,
         atr: float | None = None,
+        direction: str | None = None,
+        is_spoofing_bid: bool = False,
+        is_spoofing_ask: bool = False,
     ) -> tuple[bool, str]:
         """Run all entry checks. Returns (passed, reason).
 
@@ -74,11 +77,19 @@ class EntryFilter:
             ask_depth: total ask volume near top of book
             has_position: whether we already hold this symbol
             now_utc: current time (injectable for testing)
+            direction: LONG or SHORT signal direction
+            is_spoofing_bid: whether fake bid support was detected
+            is_spoofing_ask: whether fake ask resistance was detected
         """
         logger.debug("check: entering")
 
-        # Regime check removed — StrategyRouter handles regime-specific gating.
-        # CHOP signals now scored by micro-scalp strategy (funding + liquidity sweep).
+        # 0. Microstructure Spoofing Hard Rejection
+        if direction in ("LONG", "buy") and is_spoofing_bid:
+            logger.warning("EntryFilter: rejecting LONG signal due to bid spoofing (fake support)")
+            return False, "spoofing detected on bid side"
+        if direction in ("SHORT", "sell") and is_spoofing_ask:
+            logger.warning("EntryFilter: rejecting SHORT signal due to ask spoofing (fake resistance)")
+            return False, "spoofing detected on ask side"
 
         # 1. Spread check (regime-dependent)
         effective_spread_limit = REGIME_SPREAD_LIMITS.get(
@@ -127,3 +138,4 @@ class EntryFilter:
 
         logger.debug("check: returning True")
         return True, "passed"
+

@@ -209,20 +209,27 @@ class SmartOrderRouter:
                             spread = (ask - bid) / bid
                             if spread > Decimal("0.002"):
                                 delay = 0.1
-                else:
-                    # Fallback to ccxt fetch_tickers if redis missing
-                    tickers = await self.client.fetch_tickers()
-                    if isinstance(tickers, dict):
-                        ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
-                        if ticker:
-                            bid = Decimal(str(ticker.get("bid", "0") or "0"))
-                            ask = Decimal(str(ticker.get("ask", "0") or "0"))
-                            if bid > 0 and ask > 0:
-                                spread = (ask - bid) / bid
-                                if spread > Decimal("0.002"):
-                                    delay = 0.1
             except Exception as e:
                 logger.debug(f"Spread check failed: {e}")
+
+            # Check for Adverse Selection / Toxic Orderbook Pull (Whale bid/ask pull)
+            try:
+                if self.redis:
+                    raw_delta = await self.redis.get(f"karsa:market:{symbol}:orderbook_delta")
+                    if raw_delta is not None:
+                        ob_delta = float(raw_delta)
+                        # If buying and bids pulled (delta < -0.4) or selling and asks pulled (delta > 0.4)
+                        if (side == "buy" and ob_delta < -0.4) or (side == "sell" and ob_delta > 0.4):
+                            logger.warning(
+                                f"SOR ADVERSE SELECTION: Toxic orderbook pull detected for {symbol} "
+                                f"(side={side}, ob_delta={ob_delta:.2f}). Aborting limit execution!"
+                            )
+                            if order and order.get("id"):
+                                await self.client.cancel_order(order["id"], symbol)
+                            return None
+            except Exception as _pull_err:
+                logger.debug(f"Orderbook pull check failed: {_pull_err}")
+
             await asyncio.sleep(delay)
 
             # Move price toward market (buy: higher, sell: lower)
@@ -871,3 +878,119 @@ class SmartOrderRouter:
         except Exception as e:
             logger.error(f"SOR Sniper Trap execution failed: {e}")
             return None
+
+    async def execute_fee_aware(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        ai_confidence: float = 0.5,
+        atr: Decimal | float = Decimal("0"),
+        estimated_slippage_pct: Decimal = Decimal("0.0001"),
+        price_tick: Decimal = Decimal("0.01"),
+        max_loss_usd: Decimal = Decimal("1.00"),
+    ) -> dict[str, Any] | None:
+        """Fee-aware order execution based on Expected Move (EM) vs Cost of Aggression (CoA).
+
+        1. EM = AI_Confidence * ATR (expressed as USD offset from price).
+        2. CoA = (Taker_Fee [0.00055] + Estimated_Slippage_pct) * Price.
+        3. Decision Rules:
+           - EM > (CoA * 3): High Expectancy setup -> Aggressive chase (1.0s reprice) / market fallback.
+           - EM < (CoA * 1.5): Thin Edge setup -> Strict Post-Only, cancel & abandon if unfilled in 10s.
+           - Otherwise: Moderate Expectancy -> Fallback to standard 3-step routing execute().
+        """
+        side_norm = "buy" if side in ("buy", "LONG") else "sell"
+        if price <= 0 or amount <= 0:
+            logger.warning(f"SOR fee_aware: invalid price {price} or amount {amount} for {symbol}")
+            return None
+
+        # Normalize confidence to 0.0-1.0
+        conf_val = float(ai_confidence)
+        if conf_val > 1.0:
+            conf_val /= 100.0
+        conf = Decimal(str(max(0.0, min(1.0, conf_val))))
+
+        atr_dec = Decimal(str(atr)) if atr else Decimal("0")
+        em_usd = conf * atr_dec
+
+        taker_fee_pct = Decimal("0.00055")
+        coa_pct = taker_fee_pct + Decimal(str(estimated_slippage_pct))
+        coa_usd = coa_pct * price
+
+        logger.info(
+            f"SOR Fee-Aware Evaluation: {symbol} {side_norm} | EM=${em_usd:.4f} (Conf={conf:.2f}, ATR={atr_dec:.4f}) vs CoA=${coa_usd:.4f} (CoA_pct={coa_pct:.5f})"
+        )
+
+        # Rule 1: Thin Edge (EM < 1.5 * CoA) -> Strict Post-Only, cancel & abandon after 10s
+        if em_usd > 0 and em_usd < (coa_usd * Decimal("1.5")):
+            logger.info(
+                f"SOR Fee-Aware: Thin Edge detected for {symbol} (EM=${em_usd:.4f} < 1.5*CoA=${coa_usd * Decimal('1.5'):.4f}). "
+                f"Enforcing strict Post-Only (10s cancel limit, no Taker fee)."
+            )
+            metrics.sor_step_total.labels(symbol=symbol, step="strict_post_only").inc()
+            try:
+                order = await self.client.create_limit_order(
+                    symbol, side_norm, amount, price, params={"timeInForce": "PostOnly"}
+                )
+                if order.get("status") in ("closed", "Filled"):
+                    fill_price = Decimal(str(order.get("average", order.get("avgPrice", price))))
+                    sl_id = await self._place_sl_after_fill(
+                        symbol, side_norm, fill_price, amount, max_loss_usd, price_tick
+                    )
+                    order["sl_order_id"] = sl_id or ""
+                    return order
+
+                # Unfilled immediately -> wait up to 10s for fill, then cancel & abandon
+                order_id = order.get("id") or order.get("orderId")
+                if order_id:
+                    await asyncio.sleep(10.0)
+                    try:
+                        status = await self.client.get_order_status(order_id, symbol)
+                        if status.get("status") in ("closed", "Filled"):
+                            fill_price = Decimal(str(status.get("average", status.get("avgPrice", price))))
+                            sl_id = await self._place_sl_after_fill(
+                                symbol, side_norm, fill_price, amount, max_loss_usd, price_tick
+                            )
+                            status["sl_order_id"] = sl_id or ""
+                            return status
+                        else:
+                            await self.client.cancel_order(order_id, symbol)
+                            logger.info(f"SOR Fee-Aware: Cancelled unfilled thin-edge Post-Only order {order_id} for {symbol}")
+                    except Exception as ce:
+                        logger.warning(f"SOR Fee-Aware: error cancelling thin-edge order for {symbol}: {ce}")
+            except Exception as e:
+                logger.warning(f"SOR Fee-Aware: Thin-edge Post-Only failed for {symbol}: {e}")
+            metrics.orders_rejected.labels(symbol=symbol, reason="fee_aware_thin_edge").inc()
+            return None
+
+        # Rule 2: High Expectancy (EM > 3 * CoA) -> Aggressive chase (1.0s reprice) / market fallback
+        if em_usd > 0 and em_usd > (coa_usd * Decimal("3.0")):
+            logger.info(
+                f"SOR Fee-Aware: High Expectancy detected for {symbol} (EM=${em_usd:.4f} > 3*CoA=${coa_usd * Decimal('3.0'):.4f}). "
+                f"Aggressively chasing limit fill with 1.0s reprice / market fallback."
+            )
+            orig_delay = self.reprice_delay_seconds
+            self.reprice_delay_seconds = 1.0
+            try:
+                return await self.execute(
+                    symbol=symbol,
+                    side=side,
+                    amount=amount,
+                    price=price,
+                    price_tick=price_tick,
+                    max_loss_usd=max_loss_usd,
+                )
+            finally:
+                self.reprice_delay_seconds = orig_delay
+
+        # Rule 3: Moderate Expectancy (or ATR unavailable) -> Standard 3-step execution
+        return await self.execute(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            price=price,
+            price_tick=price_tick,
+            max_loss_usd=max_loss_usd,
+        )
+

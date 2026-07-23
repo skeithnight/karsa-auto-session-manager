@@ -211,7 +211,8 @@ async def shadow_feedback_task(
     while not kill_switch.is_set():
         try:
             logger.info("shadow_feedback_task: running Auto-Adjustment check")
-            cutoff_date = datetime.now(UTC) - timedelta(days=7)
+            current_date_utc = datetime.now(UTC)
+            cutoff_date = current_date_utc - timedelta(days=7)
 
             regime_stats = {}
             async with db_engine.engine.connect() as conn:
@@ -220,7 +221,9 @@ async def shadow_feedback_task(
                         SELECT regime,
                                COUNT(*) as total,
                                COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                               SUM(pnl) as net_pnl
+                               SUM(pnl) as net_pnl,
+                               COALESCE(AVG(pnl) FILTER (WHERE pnl > 0), 0) as avg_win,
+                               COALESCE(ABS(AVG(pnl) FILTER (WHERE pnl <= 0)), 0) as avg_loss
                         FROM shadow_trades
                         WHERE exit_time >= :cutoff
                           AND pnl IS NOT NULL
@@ -236,58 +239,135 @@ async def shadow_feedback_task(
                     total = row[1]
                     wins = row[2]
                     net_pnl = float(row[3] or 0)
-                    win_rate = (wins / total * 100) if total > 0 else 0
+                    avg_win = float(row[4] or 0)
+                    avg_loss = float(row[5] or 0)
+                    
+                    win_rate = (wins / total) if total > 0 else 0.0
+                    loss_rate = 1.0 - win_rate
+                    expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
+                    
                     regime_stats[regime] = {
                         "total": total,
                         "wins": wins,
                         "net_pnl": net_pnl,
-                        "win_rate": win_rate,
+                        "win_rate": win_rate * 100.0,
+                        "avg_win": avg_win,
+                        "avg_loss": avg_loss,
+                        "expectancy": expectancy,
                     }
 
             # Fetch current config
             raw_cfg = await redis_client.redis.get("karsa:auto:config")
             cfg = json.loads(raw_cfg) if raw_cfg else {}
             overrides = cfg.get("regime_overrides", {})
+            sizing = cfg.get("regime_sizing", {})
+            cooldown = cfg.get("regime_cooldown", {})
             changed = False
             alerts = []
 
             for regime, stats in regime_stats.items():
-                if stats["total"] >= 5:
-                    current_status = overrides.get(regime, "ENABLE")
-                    # Disable logic
-                    if (
-                        stats["win_rate"] < 40.0 or stats["net_pnl"] < -5.0
-                    ) and current_status != "DISABLE":
+                if stats["total"] < 30:
+                    logger.debug("shadow_feedback_task: skipping %s due to low sample size (%d < 30)", regime, stats["total"])
+                    continue
+
+                current_status = overrides.get(regime, "ENABLE")
+                current_size = sizing.get(regime, 1.0)
+                cooldown_meta = cooldown.get(regime, {})
+                expectancy = stats["expectancy"]
+                
+                # Check if we are currently disabled
+                is_disabled = (current_status == "DISABLE" or current_size == 0.0)
+                
+                if not is_disabled:
+                    # Degradation Logic
+                    if expectancy < 0:
                         overrides[regime] = "DISABLE"
+                        sizing[regime] = 0.0
+                        cooldown[regime] = {
+                            "disabled_at": current_date_utc.isoformat(),
+                            "consecutive_positive_days": 0,
+                            "last_positive_day": None
+                        }
                         changed = True
                         alerts.append(
                             f"🛡️ <b>Auto-Adjustment Alert</b>\n"
-                            f"Shadow Mode detected poor performance in <b>{regime}</b> regime.\n"
-                            f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}/{stats['total']})\n"
+                            f"Shadow Mode detected negative expectancy in <b>{regime}</b> regime.\n"
+                            f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}% | {stats['wins']}/{stats['total']})\n"
                             f"Net PnL: ${stats['net_pnl']:.2f}\n\n"
-                            f"🔴 Live trading for {regime} is now <b>DISABLED</b> to protect capital."
+                            f"🔴 Live trading for {regime} is now <b>DISABLED (Size 0.0x)</b> to protect capital."
                         )
-                    # Re-enable logic
-                    elif (
-                        stats["win_rate"] >= 50.0
-                        and stats["net_pnl"] > 0
-                        and current_status == "DISABLE"
-                    ):
-                        overrides[regime] = "ENABLE"
-                        changed = True
-                        alerts.append(
-                            f"🟢 <b>Auto-Adjustment Alert</b>\n"
-                            f"Shadow Mode detected recovery in <b>{regime}</b> regime.\n"
-                            f"Win Rate: {stats['win_rate']:.1f}% ({stats['wins']}/{stats['total']})\n"
-                            f"Net PnL: ${stats['net_pnl']:.2f}\n\n"
-                            f"Live trading for {regime} is now <b>RESTORED</b>."
-                        )
+                    elif expectancy < 1.0:
+                        if current_size != 0.5:
+                            sizing[regime] = 0.5
+                            changed = True
+                            alerts.append(
+                                f"⚠️ <b>Auto-Adjustment Alert</b>\n"
+                                f"Shadow Mode detected low expectancy in <b>{regime}</b> regime.\n"
+                                f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}%)\n\n"
+                                f"🟨 Live trading size for {regime} reduced to <b>0.5x</b>."
+                            )
+                    else:
+                        if current_size != 1.0:
+                            sizing[regime] = 1.0
+                            changed = True
+                            alerts.append(
+                                f"🟢 <b>Auto-Adjustment Alert</b>\n"
+                                f"Shadow Mode detected strong expectancy in <b>{regime}</b> regime.\n"
+                                f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}%)\n\n"
+                                f"🟩 Live trading size for {regime} increased to <b>1.0x</b>."
+                            )
+                else:
+                    # Cooldown and Restore Logic
+                    disabled_at_str = cooldown_meta.get("disabled_at")
+                    consecutive_positive_days = cooldown_meta.get("consecutive_positive_days", 0)
+                    last_positive_day = cooldown_meta.get("last_positive_day")
+                    
+                    if disabled_at_str:
+                        try:
+                            disabled_at = datetime.fromisoformat(disabled_at_str)
+                            if disabled_at.tzinfo is None:
+                                disabled_at = disabled_at.replace(tzinfo=UTC)
+                                
+                            days_disabled = (current_date_utc - disabled_at).total_seconds() / 86400.0
+                            if days_disabled >= 14:
+                                # Passed the 14-day cooldown
+                                current_day_str = current_date_utc.strftime("%Y-%m-%d")
+                                if expectancy > 0:
+                                    if last_positive_day != current_day_str:
+                                        consecutive_positive_days += 1
+                                        cooldown_meta["consecutive_positive_days"] = consecutive_positive_days
+                                        cooldown_meta["last_positive_day"] = current_day_str
+                                        cooldown[regime] = cooldown_meta
+                                        changed = True
+                                        
+                                        if consecutive_positive_days >= 3:
+                                            overrides[regime] = "ENABLE"
+                                            sizing[regime] = 0.5  # Start gently at 0.5x
+                                            cooldown.pop(regime, None)
+                                            changed = True
+                                            alerts.append(
+                                                f"🟢 <b>Auto-Adjustment Alert</b>\n"
+                                                f"Shadow Mode verified consistent recovery in <b>{regime}</b> regime "
+                                                f"after 14-day cooldown.\n"
+                                                f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}%)\n\n"
+                                                f"Live trading for {regime} is now <b>RESTORED (Size 0.5x)</b>."
+                                            )
+                                else:
+                                    if consecutive_positive_days > 0:
+                                        cooldown_meta["consecutive_positive_days"] = 0
+                                        cooldown[regime] = cooldown_meta
+                                        changed = True
+                        except ValueError:
+                            logger.error("Failed to parse disabled_at timestamp for %s: %s", regime, disabled_at_str)
 
             if changed:
                 cfg["regime_overrides"] = overrides
+                cfg["regime_sizing"] = sizing
+                cfg["regime_cooldown"] = cooldown
                 await redis_client.redis.set("karsa:auto:config", json.dumps(cfg))
                 logger.info(
-                    "shadow_feedback_task: updated regime_overrides: %s", overrides
+                    "shadow_feedback_task: updated config: overrides=%s, sizing=%s, cooldown=%s",
+                    overrides, sizing, cooldown
                 )
                 for alert in alerts:
                     await alert_service.send(alert)

@@ -637,28 +637,42 @@ async def alpha_bridge_task(
                                     logger.warning(
                                         f"Failed to record ai_decision for {symbol}: {_db_err}"
                                     )
-                            if analyst_result:
-                                # Blend: 50% deterministic + 50% AI
-                                final_conf = (
-                                    signal.confidence * 0.5
-                                    + (analyst_result.ai_confidence / 100.0) * 0.5
+                            if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
+                                reason_str = analyst_result.reasoning if analyst_result else "unavailable_or_error"
+                                logger.info(
+                                    f"AI analyst REJECTED (fail-closed) {symbol}: {reason_str}"
                                 )
-                                if final_conf < 0.65:
-                                    logger.info(
-                                        f"AI analyst rejected {symbol}: {analyst_result.reasoning}"
-                                    )
-                                    metrics.signals_skipped.labels(
-                                        symbol=symbol, reason="ai_rejected"
-                                    ).inc()
-                                    metrics.ai_analyst_rejections.labels(
-                                        reason="low_confidence"
-                                    ).inc()
-                                    continue
-                                signal.confidence = final_conf
-                                signal.metrics["ai_analyst"] = analyst_result.direction
-                                signal.metrics["ai_confidence"] = (
-                                    analyst_result.ai_confidence
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="ai_rejected"
+                                ).inc()
+                                metrics.ai_analyst_rejections.labels(
+                                    reason=reason_str
+                                ).inc()
+                                continue
+
+                            # Blend: 50% deterministic + 50% AI
+                            final_conf = (
+                                signal.confidence * 0.5
+                                + (analyst_result.ai_confidence / 100.0) * 0.5
+                            )
+                            if final_conf < 0.65:
+                                logger.info(
+                                    f"AI analyst rejected {symbol}: low blended confidence ({final_conf:.2f})"
                                 )
+                                metrics.signals_skipped.labels(
+                                    symbol=symbol, reason="ai_rejected"
+                                ).inc()
+                                metrics.ai_analyst_rejections.labels(
+                                    reason="low_confidence"
+                                ).inc()
+                                continue
+
+                            metrics.ai_analyst_approvals.inc()
+                            signal.confidence = final_conf
+                            signal.metrics["ai_analyst"] = analyst_result.direction
+                            signal.metrics["ai_confidence"] = (
+                                analyst_result.ai_confidence
+                            )
 
                         metrics.signals_generated.labels(
                             symbol=symbol, direction=signal.direction

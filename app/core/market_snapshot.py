@@ -24,6 +24,8 @@ class MarketSnapshot:
     funding_rate: float | None = None
     oi_change: float | None = None
     orderbook_delta: float | None = None
+    cvd_slope: float | None = None
+    liquidity_walls: dict[str, float | None] | None = None
 
     # Cross-exchange
     global_prices: dict[str, float] | None = None

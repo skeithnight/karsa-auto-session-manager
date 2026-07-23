@@ -66,6 +66,7 @@ Funding rate: {funding_rate}
 Funding Rate Divergence: {funding_divergence}
 Open interest change: {oi_change}
 Liquidation Proximity: {liquidation_proximity}
+FLOW: USDT_In: ${usdt_inflow_m}M | BTC_Out: {btc_outflow_count} BTC | Liq_Vol: ${liq_volume_m}M ({liq_dominant_side})
 
 Respond with ONLY a JSON object (no markdown, no explanation):
 {{
@@ -129,12 +130,12 @@ class CryptoAnalyst:
         oi_change: float,
         price: Decimal,
         recent_trades: str = "",
+        flow_data: dict[str, Any] | None = None,
     ) -> AnalystResult | None:
         """Run AI analysis on an ambiguous signal. Returns None if unavailable."""
         if not self.circuit_breaker.allow_request():
             metrics.ai_rejection_total.inc()
             return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_CIRCUIT_OPEN", model_used="circuit_breaker")
-            
 
         cache_key = f"analyst:{symbol}:{int(time.time()) // self.cache_ttl}"
         if self.redis:
@@ -198,6 +199,13 @@ class CryptoAnalyst:
         elif direction == "SHORT" and funding_rate > 0:
             funding_divergence = "Favorable (Getting paid to Short)"
 
+        # Alternative Data Flow Metrics
+        fd = flow_data or {}
+        usdt_inflow_m = float(fd.get("usdt_inflow_m", 0.0))
+        btc_outflow_count = float(fd.get("btc_outflow_count", 0.0))
+        liq_volume_m = float(fd.get("liq_volume_m", 0.0))
+        liq_dominant_side = str(fd.get("liq_dominant_side", "Neutral"))
+
         prompt = ANALYST_PROMPT.format(
             symbol=symbol,
             direction=direction,
@@ -219,6 +227,10 @@ class CryptoAnalyst:
             funding_divergence=funding_divergence,
             oi_change=oi_change,
             liquidation_proximity=liquidation_proximity,
+            usdt_inflow_m=usdt_inflow_m,
+            btc_outflow_count=btc_outflow_count,
+            liq_volume_m=liq_volume_m,
+            liq_dominant_side=liq_dominant_side,
         )
         if recent_trades:
             prompt = recent_trades + "\n\n" + prompt
@@ -250,6 +262,16 @@ class CryptoAnalyst:
             metrics.ai_analyst_calls.labels(result="parse_error").inc()
             logger.warning(f"Analyst: parse failed for {symbol}, raw={response[:200]}")
             return None
+
+        # Short Squeeze Confluence Boost (+20% AI confidence)
+        if direction in ("LONG", "buy") and usdt_inflow_m >= 10.0 and liq_volume_m >= 20.0:
+            boosted = min(100, result.ai_confidence + 20)
+            logger.info(
+                f"Analyst Short Squeeze Confluence for {symbol}: AI confidence boosted {result.ai_confidence} -> {boosted} "
+                f"(USDT Inflow=${usdt_inflow_m}M, Liq=${liq_volume_m}M)"
+            )
+            result.ai_confidence = boosted
+            result.reasoning += f" | Boost: +20% short squeeze setup (USDT inflow ${usdt_inflow_m}M + Liq ${liq_volume_m}M)"
 
         metrics.ai_analyst_calls.labels(result="success").inc()
         metrics.ai_confidence.labels(symbol=symbol).set(result.ai_confidence)

@@ -29,6 +29,12 @@ multi_tf_blocked_total = Counter(
     ["symbol"],
 )
 
+macro_momentum_blocks_total = Counter(
+    "karsa_macro_momentum_blocks_total",
+    "BTC/ETH momentum crash or surge hard blocks",
+    ["symbol", "reason"],
+)
+
 
 class MultiTFFilter:
     """4H trend confirmation for 1H signals."""
@@ -151,3 +157,80 @@ class MultiTFFilter:
             return 0.90
 
         return 1.0
+
+    async def check_macro_momentum_block(
+        self,
+        symbol: str,
+        direction: Literal["LONG", "SHORT"],
+        anchors: list[str] | None = None,
+        crash_threshold_pct: float = -1.0,
+    ) -> dict:
+        """Hard-block altcoin signals when BTC/ETH are in short-term crash/surge.
+
+        Computes the 1H return (last close vs 4-candles-ago close) for each anchor.
+        If BTC/ETH is crashing (return < -1%), all altcoin LONGs are hard-blocked.
+        If BTC/ETH is surging (return > +1%), all altcoin SHORTs are hard-blocked.
+
+        Returns:
+            dict with: blocked (bool), reason (str), btc_return (float), eth_return (float)
+        """
+        # Never block BTC/ETH themselves
+        if anchors is None:
+            anchors = ["BTC/USDT", "ETH/USDT"]
+        if symbol in anchors:
+            return {"blocked": False, "reason": "is_anchor", "anchor_returns": {}}
+
+        anchor_returns: dict[str, float] = {}
+        crash_threshold = crash_threshold_pct / 100.0  # e.g. -1.0% → -0.01
+        surge_threshold = abs(crash_threshold)  # +1.0% → +0.01
+
+        for anchor in anchors:
+            try:
+                candles = await self.fetcher.fetch(
+                    anchor, timeframe="1h", limit=5, ttl_seconds=300
+                )
+                if not candles or len(candles) < 4:
+                    continue
+                close_now = float(candles[-1][4])
+                close_4ago = float(candles[-4][4])
+                if close_4ago > 0:
+                    ret = (close_now - close_4ago) / close_4ago
+                    anchor_returns[anchor] = ret
+            except Exception as e:
+                logger.debug(f"Macro momentum check failed for {anchor}: {e}")
+                continue
+
+        if not anchor_returns:
+            return {"blocked": False, "reason": "no_data", "anchor_returns": {}}
+
+        # Check for crash / surge across anchors
+        for anchor, ret in anchor_returns.items():
+            if direction == "LONG" and ret < crash_threshold:
+                logger.warning(
+                    f"MACRO MOMENTUM HARD BLOCK: {symbol} LONG blocked — "
+                    f"{anchor} is crashing ({ret*100:.2f}% in last 4 candles)"
+                )
+                macro_momentum_blocks_total.labels(
+                    symbol=symbol, reason=f"{anchor}_crash"
+                ).inc()
+                return {
+                    "blocked": True,
+                    "reason": f"{anchor}_crash",
+                    "anchor_returns": anchor_returns,
+                }
+            if direction == "SHORT" and ret > surge_threshold:
+                logger.warning(
+                    f"MACRO MOMENTUM HARD BLOCK: {symbol} SHORT blocked — "
+                    f"{anchor} is surging ({ret*100:+.2f}% in last 4 candles)"
+                )
+                macro_momentum_blocks_total.labels(
+                    symbol=symbol, reason=f"{anchor}_surge"
+                ).inc()
+                return {
+                    "blocked": True,
+                    "reason": f"{anchor}_surge",
+                    "anchor_returns": anchor_returns,
+                }
+
+        return {"blocked": False, "reason": "ok", "anchor_returns": anchor_returns}
+

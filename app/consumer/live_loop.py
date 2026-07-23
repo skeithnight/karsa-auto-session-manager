@@ -164,26 +164,84 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.warning("skip %s — ASM state check failed (fail-closed), blocking trade", symbol)
         return
 
-    # Check Auto-Adjustment Regime Overrides
+    # Check Auto-Adjustment Regime Overrides and Apply Dynamic Sizing
     try:
         raw_cfg = await position_store.redis.get("karsa:auto:config")
         if raw_cfg:
             import json
+            from decimal import Decimal
 
             cfg = json.loads(raw_cfg)
             overrides = cfg.get("regime_overrides", {})
-            if overrides.get(signal.regime.value) == "DISABLE":
+            sizing = cfg.get("regime_sizing", {})
+            current_regime = signal.regime.value
+
+            if overrides.get(current_regime) == "DISABLE":
                 if signal.regime == MarketRegime.SNIPER:
                     logger.info("SNIPER trap bypassing regime_overrides['DISABLE'] rule for %s", symbol)
                 else:
                     logger.info(
                         "skip %s — %s regime is temporarily DISABLED by Shadow Auto-Adjustment",
                         symbol,
-                        signal.regime.value,
+                        current_regime,
                     )
+                    from app.core import metrics
+                    metrics.regime_disabled_blocks.labels(symbol=symbol, regime=current_regime).inc()
                     return
+
+            # Apply Dynamic Sizing & Session Time-of-Day Sizing
+            from datetime import UTC, datetime
+            now_utc = datetime.now(UTC)
+            hour = now_utc.hour
+            if 0 <= hour < 7:
+                session_s_mult = Decimal("0.7")  # 30% size reduction during Asian dead hours
+            elif 12 <= hour < 16:
+                session_s_mult = Decimal("1.2")  # 20% size boost during London/NY overlap
+            elif 21 <= hour <= 23:
+                session_s_mult = Decimal("0.8")
+            else:
+                session_s_mult = Decimal("1.0")
+
+            multiplier_val = sizing.get(current_regime, 1.0)
+            multiplier = Decimal(str(multiplier_val)) * session_s_mult
+
+            if multiplier == Decimal("0"):
+                logger.warning(f"skip {symbol} — Multiplier for '{current_regime}' is 0.0 but bypassed DISABLE override.")
+                return
+
+            base_amount = signal.amount
+            adjusted_amount = base_amount * multiplier
+
+            if multiplier < Decimal("1.0"):
+                logger.info(
+                    "Dynamic Sizing Applied for %s | Regime: %s | Multiplier: %sx | Base: %s -> Adjusted: %s",
+                    symbol, current_regime, multiplier, base_amount, adjusted_amount
+                )
+                from app.core import metrics
+                metrics.regime_sizing_applied.labels(symbol=symbol, regime=current_regime).inc()
+
+            # Check Exchange Minimum Order Size
+            min_order_qty = Decimal("0")
+            bybit = getattr(executor, "client", None)
+            if bybit and hasattr(bybit, "_min_qty"):
+                min_order_qty = bybit._min_qty.get(symbol, Decimal("0"))
+                
+            if adjusted_amount < min_order_qty:
+                logger.info(
+                    "skip %s — Adjusted size (%s) is below exchange minimum (%s). Refusing to round up.",
+                    symbol, adjusted_amount, min_order_qty
+                )
+                from app.core import metrics
+                metrics.size_below_minimum_skips.labels(symbol=symbol, regime=current_regime).inc()
+                return
+
+            # Update the signal object
+            signal.amount = adjusted_amount
+            # Ensure we don't crash if signal doesn't have base_amount attribute
+            setattr(signal, "base_amount", base_amount)
+
     except Exception as e:
-        logger.debug("regime_overrides check failed: %s", e)
+        logger.debug("regime_overrides and sizing check failed: %s", e)
 
     # Skip if position already open
     has_pos = await position_store.has_position(symbol)
@@ -222,6 +280,29 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     if engine and await engine.check_consecutive_losses(symbol, signal.regime):
         logger.info("skip %s — consecutive loss block", symbol)
         return
+
+    # AI Analyst Gate (mandatory, fail-closed)
+    if crypto_analyst:
+        analyst_result = await crypto_analyst.analyze(
+            symbol=symbol,
+            direction=signal.direction,
+            confidence=signal.confidence,
+            regime=signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime),
+            spread_pct=0.0,
+            funding_rate=0.0,
+            oi_change=0.0,
+            price=signal.entry_price,
+            recent_trades="",
+        )
+        if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
+            reason = "unavailable" if not analyst_result else f"rejected_{analyst_result.direction}"
+            from app.core import metrics
+            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+            logger.info("live skip %s - AI analyst rejected (%s)", symbol, reason)
+            return
+
+        from app.core import metrics
+        metrics.ai_analyst_approvals.inc()
 
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:

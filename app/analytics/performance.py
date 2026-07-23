@@ -262,6 +262,12 @@ async def fetch_all_closed_trades(trade_store: object) -> list[TradeRecord]:
                 """)
             )
             for row in rows:
+                amount_val = Decimal(str(row[2])) if row[2] is not None else Decimal("0")
+                entry_val = Decimal(str(row[3])) if row[3] is not None else Decimal("0")
+                exit_val = Decimal(str(row[4])) if row[4] is not None else entry_val
+                # Round-trip Bybit fee estimation (~0.06% per leg)
+                est_fee = (entry_val * amount_val * Decimal("0.0006")) + (exit_val * amount_val * Decimal("0.0006"))
+
                 trades.append(
                     TradeRecord(
                         symbol=row[0],
@@ -273,9 +279,8 @@ async def fetch_all_closed_trades(trade_store: object) -> list[TradeRecord]:
                         exit_time=row[8],
                         regime=row[6] or "",
                         exit_reason=row[9] or "",
-                        amount=Decimal(str(row[2]))
-                        if row[2] is not None
-                        else Decimal("0"),
+                        fees=est_fee,
+                        amount=amount_val,
                     )
                 )
     except Exception as exc:

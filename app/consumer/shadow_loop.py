@@ -144,6 +144,8 @@ async def _on_signal_shadow(
             logger.info("shadow skip %s - AI analyst rejected (%s)", symbol, reason)
             return
 
+        metrics.ai_analyst_approvals.inc()
+
     # PortfolioRiskManager gate
     if risk_manager is None:
         logger.error(

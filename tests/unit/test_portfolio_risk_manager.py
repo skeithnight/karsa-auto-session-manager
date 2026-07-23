@@ -105,7 +105,7 @@ class TestCheckStructure:
         result = await prm.check(_make_signal())
         assert result.approved is True
         assert result.checks is not None
-        assert len(result.checks) == 4
+        assert len(result.checks) == 6
 
     @pytest.mark.asyncio
     async def test_signal_no_symbol_blocked(self) -> None:

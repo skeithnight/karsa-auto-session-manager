@@ -85,7 +85,6 @@ class AIClient:
                                 or msg.get("reasoning_content", "")
                                 or msg.get("reasoning", "")
                             )
-                            metrics.ai_analyst_calls.labels(result="success").inc()
                             logger.debug(f"AI complete: model={self.model}")
                             return content
                         logger.warning("AI complete: empty choices")

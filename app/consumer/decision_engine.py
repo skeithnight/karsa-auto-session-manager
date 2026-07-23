@@ -23,7 +23,9 @@ from app.core.observability import ObservabilityLogger
 from app.learning.expected_edge import ExpectedEdgeCalculator
 from app.learning.similarity_engine import SimilarityEngine
 from app.learning.statistical_learning import StatisticalLearning
+from app.alpha.sector_filter import SectorRotationFilter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
+from app.risk.kelly_sizer import KellySizer
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +73,11 @@ class TradeSignal:
     expires_at: float | None = None
     trace_id: str | None = None
     context: DecisionContext | None = None
+
+    @property
+    def confidence(self) -> float:
+        """Normalized confidence score (0.0 - 1.0)."""
+        return self.score / 100.0 if self.score > 1.0 else self.score
     stage_timings: dict[str, float] | None = None
 
 
@@ -123,6 +130,7 @@ class DecisionEngine:
             trade_memory=trade_memory
         )
         self._statistical_learning = StatisticalLearning(trade_memory=trade_memory)
+        self._sector_filter = SectorRotationFilter()
         self._background_tasks = set()
 
         self._router = StrategyRouter(
@@ -159,6 +167,8 @@ class DecisionEngine:
         orderbook_delta: float | None = None,
         funding_rate: float | None = None,
         oi_change: float | None = None,
+        cvd_slope: float | None = None,
+        liquidity_walls: dict[str, float | None] | None = None,
     ) -> TradeSignal | None:
         """Run full decision pipeline on candle data.
 
@@ -169,6 +179,8 @@ class DecisionEngine:
             orderbook_delta: Orderbook imbalance (CHOP scoring).
             funding_rate: Current funding rate (CHOP scoring).
             oi_change: Open interest change (CHOP scoring).
+            cvd_slope: Optional slope of cumulative volume delta.
+            liquidity_walls: Optional dict of liquidity levels.
 
         Returns:
             TradeSignal if score >= gate threshold, else None.
@@ -197,6 +209,19 @@ class DecisionEngine:
             arr = np.array(candles, dtype=np.float64)
         else:
             arr = candles
+
+        # Build standardized market snapshot and features
+        snapshot = MarketSnapshot(
+            symbol=symbol,
+            timestamp_ms=int(arr[-1][0]),
+            candles=arr,
+            global_prices=global_prices,
+            orderbook_delta=orderbook_delta,
+            funding_rate=funding_rate,
+            oi_change=oi_change,
+            cvd_slope=cvd_slope,
+            liquidity_walls=liquidity_walls,
+        )
 
         # HFT Spread Balloon Gate
         # Fetch live microsecond best_bid and best_ask from Data Engine state
@@ -269,11 +294,28 @@ class DecisionEngine:
             except Exception as e:
                 logger.warning("Failed to save regime to redis for %s: %s", symbol, e)
 
+        # Update Sector Rotation returns (4H return)
+        if len(arr) >= 4:
+            close_now = float(arr[-1][4])
+            close_4h = float(arr[-4][4])
+            if close_4h > 0:
+                self._sector_filter.update_sector_returns({symbol: (close_now - close_4h) / close_4h})
+
         # Step 2: Determine directions (regime-dependent)
         directions = self._determine_directions(regime)
 
         # Step 3: Score each direction, take first pass
         for direction in directions:
+            # Sector & Narrative Rotation Filter
+            sec_res = self._sector_filter.check_sector_alignment(symbol, direction)
+            if not sec_res.get("approved"):
+                logger.info(
+                    "evaluate: %s %s BLOCKED by Sector Rotation filter (%s)",
+                    symbol, direction, sec_res.get("reason")
+                )
+                ObservabilityLogger.log_reject_reason(symbol, "Sector Rotation Filter", {"direction": direction, "reason": sec_res.get("reason")})
+                continue
+
             # Extreme Funding Rate Block
             if funding_rate is not None:
                 if direction == "LONG" and funding_rate > 0.0005:
@@ -315,8 +357,17 @@ class DecisionEngine:
                     if direction == "LONG" and pct_change > 0.15 or direction == "SHORT" and pct_change < -0.15:
                         momentum_exemption = True
 
-                # Macro Anchor (Lead-Lag) Penalty
+                # Macro Anchor (Lead-Lag) Hard Block & Penalty
                 if symbol not in ["BTC/USDT", "ETH/USDT"] and not momentum_exemption:
+                    mom_block = await self._multi_tf.check_macro_momentum_block(symbol, direction)
+                    if mom_block.get("blocked"):
+                        logger.warning(
+                            "evaluate: %s %s HARD BLOCKED by BTC/ETH Macro Momentum filter (%s)",
+                            symbol, direction, mom_block.get("reason")
+                        )
+                        ObservabilityLogger.log_reject_reason(symbol, "Macro Momentum Hard Block", {"direction": direction, "reason": mom_block.get("reason")})
+                        continue
+
                     macro_penalty = await self._multi_tf.get_macro_anchor_penalty(
                         direction
                     )
@@ -365,6 +416,28 @@ class DecisionEngine:
 
             # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
             score = score * macro_penalty
+
+            # Session / Time-of-Day Volatility Filtering
+            from datetime import UTC, datetime
+            now_utc = datetime.now(UTC)
+            hour = now_utc.hour
+            if 0 <= hour < 7:
+                session_mult, session_name = 0.7, "ASIA"
+            elif 7 <= hour < 12:
+                session_mult, session_name = 1.0, "LONDON"
+            elif 12 <= hour < 16:
+                session_mult, session_name = 1.2, "LDN_NY_OVERLAP"
+            elif 16 <= hour < 21:
+                session_mult, session_name = 1.0, "NEW_YORK"
+            else:
+                session_mult, session_name = 0.8, "PACIFIC"
+
+            score = score * session_mult
+            logger.info(
+                f"evaluate: {symbol} {direction} Session Volatility Filter ({session_name}): "
+                f"multiplier={session_mult}x -> adjusted_score={score:.1f}"
+            )
+
             effective_gate = float(self._gate) * vol_factor
             logger.debug(
                 "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)",
@@ -375,52 +448,48 @@ class DecisionEngine:
                 vol_factor,
             )
 
-            # Fire AI Shadow Scoring for all generated signals without blocking
-            if self._crypto_analyst is not None and self._trade_store is not None:
-                import asyncio
-                
-                async def _shadow_score_and_record():
-                    try:
-                        # Extract features safely
-                        spread_pct = float(features.spread) if getattr(features, 'spread', None) is not None else 0.0
-                        funding_rate = float(features.funding_rate) if getattr(features, 'funding_rate', None) is not None else 0.0
-                        oi_change = float(features.oi_change_1h) if getattr(features, 'oi_change_1h', None) is not None else 0.0
-                        
-                        logger.info("shadow_score_and_record: starting AI analysis for %s", symbol)
-                        ai_result = await self._crypto_analyst.analyze(
-                            symbol=symbol,
-                            direction=direction,
-                            confidence=score,
-                            regime=regime.value,
-                            spread_pct=spread_pct,
-                            funding_rate=funding_rate,
-                            oi_change=oi_change,
-                            price=Decimal(str(arr[-1][4]))
-                        )
-                        logger.info("shadow_score_and_record: AI analysis complete for %s (risk_passed=%s)", symbol, score >= effective_gate)
-                        
-                        risk_passed = score >= effective_gate
-                        
-                        await self._trade_store.record_signal(
-                            symbol=symbol,
-                            direction=direction,
-                            confidence_score=score,
-                            alpha_metrics={"stage_timings": stage_timings},
-                            risk_passed=risk_passed,
-                            strategy_type="SWING",
-                            ai_confidence_score=ai_result.ai_confidence if ai_result else None,
-                            ai_reasoning=ai_result.reasoning if ai_result else None,
-                            macro_context=None
-                        )
-                    except Exception as e:
-                        logger.error("shadow_score_and_record failed for %s: %s", symbol, e, exc_info=True)
-                
-                # Keep strong reference to prevent garbage collection
-                task = asyncio.create_task(_shadow_score_and_record())
-                self._background_tasks.add(task)
-                task.add_done_callback(self._background_tasks.discard)
-
             if score >= effective_gate:
+                # Fire AI Shadow Scoring ONLY for signals that passed local pre-filter
+                if self._crypto_analyst is not None and self._trade_store is not None:
+                    import asyncio
+
+                    async def _shadow_score_and_record():
+                        try:
+                            spread_pct = float(features.spread) if getattr(features, 'spread', None) is not None else 0.0
+                            funding_rate = float(features.funding_rate) if getattr(features, 'funding_rate', None) is not None else 0.0
+                            oi_change = float(features.oi_change_1h) if getattr(features, 'oi_change_1h', None) is not None else 0.0
+
+                            logger.info("shadow_score_and_record: starting AI analysis for %s", symbol)
+                            ai_result = await self._crypto_analyst.analyze(
+                                symbol=symbol,
+                                direction=direction,
+                                confidence=score,
+                                regime=regime.value,
+                                spread_pct=spread_pct,
+                                funding_rate=funding_rate,
+                                oi_change=oi_change,
+                                price=Decimal(str(arr[-1][4]))
+                            )
+                            logger.info("shadow_score_and_record: AI analysis complete for %s (passed)", symbol)
+
+                            await self._trade_store.record_signal(
+                                symbol=symbol,
+                                direction=direction,
+                                confidence_score=score,
+                                alpha_metrics={"stage_timings": stage_timings},
+                                risk_passed=True,
+                                strategy_type="SWING",
+                                ai_confidence_score=ai_result.ai_confidence if ai_result else None,
+                                ai_reasoning=ai_result.reasoning if ai_result else None,
+                                macro_context=None
+                            )
+                        except Exception as e:
+                            logger.error("shadow_score_and_record failed for %s: %s", symbol, e, exc_info=True)
+
+                    task = asyncio.create_task(_shadow_score_and_record())
+                    self._background_tasks.add(task)
+                    task.add_done_callback(self._background_tasks.discard)
+
                 if await self.check_consecutive_losses(symbol, regime):
                     return None
 
@@ -565,21 +634,33 @@ class DecisionEngine:
             else:
                 tp_price = entry_price - offset
 
-        # Position size (balance-based risk allocation)
+            # Dynamic TP at Liquidity Walls: front-run large orderbook walls
+            if context and hasattr(context, "features") and getattr(context.features, "liquidity_walls", None):
+                walls = getattr(context.features, "liquidity_walls") or {}
+                wall_above = walls.get("wall_above")
+                wall_below = walls.get("wall_below")
+
+                if direction == "LONG" and wall_above is not None:
+                    wall_dec = Decimal(str(wall_above)) * Decimal("0.998")  # 0.2% in front of wall
+                    if entry_price < wall_dec < tp_price:
+                        logger.info("Dynamic TP: LONG TP adjusted from %s to %s (front-running ask wall at %s)", tp_price, wall_dec, wall_above)
+                        tp_price = wall_dec
+                elif direction == "SHORT" and wall_below is not None:
+                    wall_dec = Decimal(str(wall_below)) * Decimal("1.002")  # 0.2% in front of wall
+                    if tp_price < wall_dec < entry_price:
+                        logger.info("Dynamic TP: SHORT TP adjusted from %s to %s (front-running bid wall at %s)", tp_price, wall_dec, wall_below)
+                        tp_price = wall_dec
+
+        # Position size (balance-based risk allocation via Fractional Kelly Criterion)
         risk_distance = abs(entry_price - sl_price)
         if risk_distance <= Decimal("0"):
             amount = self._base_size
         elif self._wallet_balance > 0:
-            # Tiered Dynamic Sizing based on Confidence Score
-            # - Tier B (70-79): 0.5%
-            # - Tier A (80-89): 1.0%
-            # - Tier S (90+): 1.5%
-            if score >= 90:
-                scaled_risk_pct = Decimal("0.015")
-            elif score >= 80:
-                scaled_risk_pct = Decimal("0.010")
-            else:
-                scaled_risk_pct = Decimal("0.005")
+            kelly_sizer = KellySizer()
+            # Calculate Fractional Kelly (25%) risk percentage
+            scaled_risk_pct = kelly_sizer.calculate_risk_pct(
+                wins=0, losses=0, avg_win_usd=0.0, avg_loss_usd=0.0, fallback_score=score
+            )
 
             amount = (
                 self._wallet_balance

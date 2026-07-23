@@ -273,10 +273,10 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return None
 
     results = await asyncio.gather(
-        _with_timeout(_fetch_redis(), 2),
-        _with_timeout(_fetch_db(), 2),
-        _with_timeout(_fetch_wallet(), 3),
-        _with_timeout(_fetch_vpn(), 2),
+        _with_timeout(_fetch_redis(), 5),
+        _with_timeout(_fetch_db(), 5),
+        _with_timeout(_fetch_wallet(), 8),
+        _with_timeout(_fetch_vpn(), 5),
     )
 
     logger.info(
@@ -869,7 +869,6 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from app.analytics.performance import (
         compute_performance,
         fetch_all_closed_shadow_trades,
-        format_performance_report,
     )
 
     db_engine = context.bot_data.get("db_engine")
@@ -912,9 +911,7 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, text, reply_markup=build_main_keyboard())
         return
 
-    text = format_shadow_funnel(
-        funnel_metrics, format_performance_report(shadow_report)
-    )
+    text = format_shadow_funnel(funnel_metrics, shadow_report)
     keyboard = [
         [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_shadow")],
         [
@@ -937,7 +934,6 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from app.analytics.performance import (
         compute_performance,
         fetch_all_closed_trades,
-        format_performance_report,
     )
 
     db_engine = context.bot_data.get("db_engine")
@@ -976,7 +972,7 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reply(update, text, reply_markup=build_main_keyboard())
         return
 
-    text = format_live_funnel(funnel_metrics, format_performance_report(live_report))
+    text = format_live_funnel(funnel_metrics, live_report)
     keyboard = [
         [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_live")],
         [
@@ -1012,11 +1008,6 @@ async def report_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton(
                 "\U0001f534 Live Funnel", callback_data="cmd_report_live"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "\U0001f4c8 Live Performance", callback_data="cmd_performance"
             )
         ],
         [

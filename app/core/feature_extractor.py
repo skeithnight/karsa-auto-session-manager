@@ -32,6 +32,7 @@ class FeatureVector:
 
     # Microstructure
     orderbook_delta: float | None = None
+    cvd_slope: float | None = None
     spread_pct: float | None = None
 
     # Pre-calculated Qualities (added in Sprint 2)
@@ -60,5 +61,6 @@ class FeatureExtractor:
             funding_rate=store.snapshot.funding_rate,
             oi_change=store.snapshot.oi_change,
             orderbook_delta=store.snapshot.orderbook_delta,
+            cvd_slope=store.snapshot.cvd_slope,
             spread_pct=store.get_spread_pct()
         )

@@ -110,6 +110,25 @@ risk_gate_reject = Counter(
     ["symbol", "reason"],
 )
 
+# ── Dynamic Sizing ───────────────────────────────────────────
+regime_sizing_applied = Counter(
+    "karsa_regime_sizing_applied_total",
+    "Signals where dynamic sizing multiplier was applied (< 1.0)",
+    ["symbol", "regime"],
+)
+
+size_below_minimum_skips = Counter(
+    "karsa_size_below_minimum_skips_total",
+    "Signals skipped because fractional size fell below exchange minimum",
+    ["symbol", "regime"],
+)
+
+regime_disabled_blocks = Counter(
+    "karsa_regime_disabled_blocks_total",
+    "Signals blocked completely due to hard DISABLE override",
+    ["symbol", "regime"],
+)
+
 # ── Executor ─────────────────────────────────────────────────
 orders_placed = Counter(
     "karsa_orders_placed_total",
@@ -131,6 +150,12 @@ orders_failed = Counter(
     "karsa_orders_failed_total",
     "Order placement failures",
     ["symbol", "error_type"],
+)
+
+orders_rejected = Counter(
+    "karsa_orders_rejected_total",
+    "Orders rejected by SOR or risk filters",
+    ["symbol", "reason"],
 )
 
 # ── ASM ──────────────────────────────────────────────────────
@@ -263,6 +288,11 @@ ai_analyst_rejections = Counter(
     "karsa_ai_analyst_rejections_total",
     "AI analyst rejections by reason",
     ["reason"],
+)
+
+ai_analyst_approvals = Counter(
+    "karsa_ai_analyst_approvals_total",
+    "AI analyst approval count",
 )
 
 ai_judge_verdict = Counter(
@@ -708,11 +738,7 @@ def get_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": max(
-            0,
-            int(get_metric_sum("karsa_ai_analyst_calls"))
-            - int(get_metric_sum("karsa_ai_analyst_rejections")),
-        ),
+        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_approvals")),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
@@ -729,11 +755,7 @@ def get_live_funnel_metrics() -> dict:
         "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
         "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
         "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": max(
-            0,
-            int(get_metric_sum("karsa_ai_analyst_calls"))
-            - int(get_metric_sum("karsa_ai_analyst_rejections")),
-        ),
+        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_approvals")),
         "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
         "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
         "trade_orders": int(get_metric_sum("karsa_orders_placed")),

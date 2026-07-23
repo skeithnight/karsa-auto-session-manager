@@ -46,6 +46,16 @@ skew_value = Gauge(
 )
 
 # ── Pipeline Funnel (flow-stage counters) ──────────────────
+funnel_universe_scanned = Counter("karsa_funnel_universe_scanned_total", "Funnel global")
+funnel_raw_signals = Counter("karsa_funnel_raw_signals_total", "Funnel global")
+funnel_alpha_passed = Counter("karsa_funnel_alpha_passed_total", "Funnel global")
+funnel_ai_calls = Counter("karsa_funnel_ai_calls_total", "Funnel global")
+funnel_ai_approved = Counter("karsa_funnel_ai_approved_total", "Funnel global")
+funnel_risk_passed = Counter("karsa_funnel_risk_passed_total", "Funnel global")
+funnel_risk_rejected = Counter("karsa_funnel_risk_rejected_total", "Funnel global")
+funnel_orders_placed = Counter("karsa_funnel_orders_placed_total", "Funnel global")
+funnel_positions_closed = Counter("karsa_funnel_positions_closed_total", "Funnel global")
+
 regime_classified_total = Counter(
     "karsa_regime_classified_total",
     "Regime classifications performed",
@@ -272,9 +282,15 @@ ws_disconnects = Counter(
 )
 
 # ── AI Integration ───────────────────────────────────────────
+ai_signals_evaluated = Counter(
+    "karsa_ai_signals_evaluated_total",
+    "Number of signals passed into the AI Analyst gate",
+    ["symbol"],
+)
+
 ai_analyst_calls = Counter(
     "karsa_ai_analyst_calls_total",
-    "AI analyst call outcomes",
+    "AI analyst call outcomes (HTTP level, includes retries and shadow tasks)",
     ["result"],
 )
 
@@ -700,8 +716,18 @@ memory_rss_bytes = Gauge("karsa_memory_rss_bytes", "RSS memory usage")
 
 
 
-def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
-    """Helper to sum prometheus metric values across all labels via Prometheus API."""
+def get_metric_sum(
+    metric_name: str,
+    is_counter: bool = True,
+    instance: str | None = None,
+    time_window: str | None = "1h",
+) -> float:
+    """Helper to sum prometheus metric values via Prometheus API.
+
+    If instance is specified (e.g. 'gluetun:8001' for live, 'gluetun:8002' for shadow),
+    filters query to that specific container instance.
+    If time_window is specified (e.g. '1h'), computes sum(increase(metric[1h])).
+    """
     import json
     import urllib.parse
     import urllib.request
@@ -714,7 +740,15 @@ def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
         if is_counter and not query_name.endswith("_total"):
             query_name += "_total"
 
-        url = f"http://prometheus:9090/api/v1/query?query={urllib.parse.quote(query_name)}"
+        inst_filter = f'instance="{instance}"' if instance else ""
+        label_str = f"{{{inst_filter}}}" if inst_filter else ""
+
+        if is_counter and time_window:
+            query_expr = f"sum(increase({query_name}{label_str}[{time_window}]))"
+        else:
+            query_expr = f"{query_name}{label_str}"
+
+        url = f"http://prometheus:9090/api/v1/query?query={urllib.parse.quote(query_expr)}"
         req = urllib.request.Request(url)
 
         with urllib.request.urlopen(req, timeout=2.0) as response:
@@ -731,34 +765,36 @@ def get_metric_sum(metric_name: str, is_counter: bool = True) -> float:
 
 
 def get_funnel_metrics() -> dict:
-    """Fetch all funnel metrics for the shadow pipeline."""
+    """Fetch all funnel metrics for the shadow pipeline over the last 1 hour."""
+    inst = "gluetun:8002"
     return {
-        "universe_attempted": int(get_metric_sum("karsa_signals_pipeline_attempted")),
-        "universe_processed": int(get_metric_sum("karsa_signals_entered_pipeline")),
-        "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
-        "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
-        "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_approvals")),
-        "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
-        "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
-        "trade_orders": int(get_metric_sum("karsa_shadow_orders_placed")),
-        "trade_sl_hits": int(get_metric_sum("karsa_shadow_sl_hits")),
-        "trade_exits": int(get_metric_sum("karsa_shadow_exits_placed")),
+        "universe_attempted": int(get_metric_sum("karsa_funnel_universe_scanned_total", is_counter=False, time_window=None, instance=inst)),
+        "universe_processed": int(get_metric_sum("karsa_funnel_universe_scanned_total", is_counter=False, time_window=None, instance=inst)),
+        "alpha_generated": int(get_metric_sum("karsa_funnel_raw_signals_total", is_counter=False, time_window=None, instance=inst)),
+        "alpha_passed": int(get_metric_sum("karsa_funnel_alpha_passed_total", is_counter=False, time_window=None, instance=inst)),
+        "ai_calls": int(get_metric_sum("karsa_funnel_ai_calls_total", is_counter=False, time_window=None, instance=inst)),
+        "ai_approvals": int(get_metric_sum("karsa_funnel_ai_approved_total", is_counter=False, time_window=None, instance=inst)),
+        "risk_passed": int(get_metric_sum("karsa_funnel_risk_passed_total", is_counter=False, time_window=None, instance=inst)),
+        "risk_rejected": int(get_metric_sum("karsa_funnel_risk_rejected_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_orders": int(get_metric_sum("karsa_funnel_orders_placed_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_sl_hits": int(get_metric_sum("karsa_funnel_positions_closed_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_exits": int(get_metric_sum("karsa_funnel_positions_closed_total", is_counter=False, time_window=None, instance=inst)),
     }
 
 
 def get_live_funnel_metrics() -> dict:
-    """Fetch all funnel metrics for the live pipeline."""
+    """Fetch all funnel metrics for the live pipeline over the last 1 hour."""
+    inst = "gluetun:8001"
     return {
-        "universe_attempted": int(get_metric_sum("karsa_signals_pipeline_attempted")),
-        "universe_processed": int(get_metric_sum("karsa_signals_entered_pipeline")),
-        "alpha_generated": int(get_metric_sum("karsa_signals_generated")),
-        "alpha_passed": int(get_metric_sum("karsa_signal_confidence_passed")),
-        "ai_calls": int(get_metric_sum("karsa_ai_analyst_calls")),
-        "ai_approvals": int(get_metric_sum("karsa_ai_analyst_approvals")),
-        "risk_passed": int(get_metric_sum("karsa_risk_gate_pass")),
-        "risk_rejected": int(get_metric_sum("karsa_risk_gate_reject")),
-        "trade_orders": int(get_metric_sum("karsa_orders_placed")),
-        "trade_sl_hits": int(get_metric_sum("karsa_stop_loss_placement")),
-        "trade_exits": int(get_metric_sum("karsa_positions_closed")),
+        "universe_attempted": int(get_metric_sum("karsa_funnel_universe_scanned_total", is_counter=False, time_window=None, instance=inst)),
+        "universe_processed": int(get_metric_sum("karsa_funnel_universe_scanned_total", is_counter=False, time_window=None, instance=inst)),
+        "alpha_generated": int(get_metric_sum("karsa_funnel_raw_signals_total", is_counter=False, time_window=None, instance=inst)),
+        "alpha_passed": int(get_metric_sum("karsa_funnel_alpha_passed_total", is_counter=False, time_window=None, instance=inst)),
+        "ai_calls": int(get_metric_sum("karsa_funnel_ai_calls_total", is_counter=False, time_window=None, instance=inst)),
+        "ai_approvals": int(get_metric_sum("karsa_funnel_ai_approved_total", is_counter=False, time_window=None, instance=inst)),
+        "risk_passed": int(get_metric_sum("karsa_funnel_risk_passed_total", is_counter=False, time_window=None, instance=inst)),
+        "risk_rejected": int(get_metric_sum("karsa_funnel_risk_rejected_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_orders": int(get_metric_sum("karsa_funnel_orders_placed_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_sl_hits": int(get_metric_sum("karsa_funnel_positions_closed_total", is_counter=False, time_window=None, instance=inst)),
+        "trade_exits": int(get_metric_sum("karsa_funnel_positions_closed_total", is_counter=False, time_window=None, instance=inst)),
     }

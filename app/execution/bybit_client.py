@@ -203,6 +203,17 @@ class BybitClient:
         logger.info(f"Leverage set: {symbol} = {leverage}x")
         return result
 
+    async def get_maker_fee_rate(self, symbol: str) -> Decimal:
+        """Fetch maker fee rate for symbol. Returns negative Decimal if maker rebate exists."""
+        try:
+            if self._exchange and hasattr(self._exchange, 'market'):
+                market = self._exchange.market(symbol)
+                if market and "maker" in market:
+                    return Decimal(str(market["maker"]))
+        except Exception:
+            pass
+        return Decimal("0.0002")
+
     async def _fetch_placed_order_details(self, order_id: str, symbol: str) -> dict[str, Any]:
         """Query order status with a quick retry to handle API propagation delay."""
         for attempt in range(3):

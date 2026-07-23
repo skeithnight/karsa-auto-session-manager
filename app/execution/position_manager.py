@@ -648,6 +648,26 @@ class ActivePositionManager:
             if scale_tier < 1 and r_mult >= be_lock_r:
                 await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
                 pos["scale_tier"] = 1
+
+        # Microstructure-Aware CVD Trailing Stop (Exit Alpha)
+        if r_mult >= Decimal("0.8") and not moved_to_be:
+            try:
+                cvd_slope_raw = await self._store.redis.get(f"karsa:market:{symbol}:cvd_slope")  # type: ignore[attr-defined]
+                if cvd_slope_raw:
+                    cvd_slope = float(cvd_slope_raw)
+                    if (side == "LONG" and cvd_slope < -0.3) or (side == "SHORT" and cvd_slope > 0.3):
+                        self._log.warning(
+                            f"APM CVD EXHAUSTION: {symbol} {side} CVD slope flipped ({cvd_slope:.2f}) at {r_mult:.2f}R! "
+                            f"Locking Breakeven + 1 tick immediately."
+                        )
+                        await self._move_stop_to_breakeven(pos, entry_price, side)
+                        moved_to_be = True
+                        if self._alert:
+                            asyncio.create_task(self._alert.send(
+                                f"🛡️ APM CVD EXHAUSTION LOCK: {symbol} {side} moved SL to Breakeven at {r_mult:.2f}R due to CVD slope reversal ({cvd_slope:.2f})."
+                            ))
+            except Exception as cvd_err:
+                self._log.debug(f"APM CVD slope check error for {symbol}: {cvd_err}")
         # Trend logic: 33% at 1.5R (Tier 1), 33% at 3.0R (Tier 2)
         elif scale_tier < 1 and r_mult >= Decimal("1.5"):
             await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)

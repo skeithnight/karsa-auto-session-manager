@@ -213,8 +213,8 @@ class MarketDataIngestor:
         bids = ob.get("bids", [])
         asks = ob.get("asks", [])
 
-        bid_vol = sum(level[1] for level in bids)
-        ask_vol = sum(level[1] for level in asks)
+        bid_vol = sum(float(level[1]) for level in bids)
+        ask_vol = sum(float(level[1]) for level in asks)
         total = bid_vol + ask_vol
         delta = (bid_vol - ask_vol) / total if total > 0 else 0.0
 
@@ -244,13 +244,13 @@ class MarketDataIngestor:
         if bids:
             avg_bid_vol = bid_vol / len(bids)
             for price, vol in bids:
-                if vol > 3.0 * avg_bid_vol:
+                if float(vol) > 3.0 * avg_bid_vol:
                     wall_below = float(price)
                     break
         if asks:
             avg_ask_vol = ask_vol / len(asks)
             for price, vol in asks:
-                if vol > 3.0 * avg_ask_vol:
+                if float(vol) > 3.0 * avg_ask_vol:
                     wall_above = float(price)
                     break
 
@@ -260,19 +260,26 @@ class MarketDataIngestor:
         if wall_below is not None:
             await self._publish(symbol, "wall_below", str(wall_below))
 
-        # Spoofing Detection: CPU-Optimized for Top 5 Levels (> $500k notional, canceled < 3.0s)
+        # Spoofing Detection: Relative Concentration in Top 5 Levels (>30% volume & >$10k notional, canceled < 3.0s)
         now_ts = time.time()
         if self._spoof_expiry_bid.get(symbol, 0) < now_ts:
             self.spoofing_bid[symbol] = False
         if self._spoof_expiry_ask.get(symbol, 0) < now_ts:
             self.spoofing_ask[symbol] = False
 
+        top_5_bids = bids[:5]
+        top_5_asks = asks[:5]
+        total_bid_vol = sum(float(level[1]) for level in top_5_bids)
+        total_ask_vol = sum(float(level[1]) for level in top_5_asks)
+
         prev_bids = self._top_bid_levels.setdefault(symbol, {})
         current_bids: dict[float, float] = {}
-        for price_level, vol_level in bids[:5]:
+        for price_level, vol_level in top_5_bids:
             p_flt = float(price_level)
             v_flt = float(vol_level)
-            if p_flt * v_flt > 500_000:
+            notional = p_flt * v_flt
+            # Dynamic concentration check: level volume is > 30% of top 5 depth AND notional > $10,000
+            if total_bid_vol > 0 and (v_flt / total_bid_vol) > 0.30 and notional > 10_000:
                 current_bids[p_flt] = prev_bids.get(p_flt, now_ts)
 
         for prev_p, added_ts in list(prev_bids.items()):
@@ -280,7 +287,7 @@ class MarketDataIngestor:
                 duration = now_ts - added_ts
                 if duration < 3.0:
                     logger.warning(
-                        f"SPOOFING DETECTED for {symbol}: Bid level ${prev_p:.2f} (> $500k) disappeared after {duration:.2f}s!"
+                        f"SPOOFING DETECTED for {symbol}: Bid level ${prev_p:.4f} (>30% depth) disappeared after {duration:.2f}s!"
                     )
                     self.spoofing_bid[symbol] = True
                     self._spoof_expiry_bid[symbol] = now_ts + 30.0
@@ -290,10 +297,11 @@ class MarketDataIngestor:
 
         prev_asks = self._top_ask_levels.setdefault(symbol, {})
         current_asks: dict[float, float] = {}
-        for price_level, vol_level in asks[:5]:
+        for price_level, vol_level in top_5_asks:
             p_flt = float(price_level)
             v_flt = float(vol_level)
-            if p_flt * v_flt > 500_000:
+            notional = p_flt * v_flt
+            if total_ask_vol > 0 and (v_flt / total_ask_vol) > 0.30 and notional > 10_000:
                 current_asks[p_flt] = prev_asks.get(p_flt, now_ts)
 
         for prev_p, added_ts in list(prev_asks.items()):
@@ -301,7 +309,7 @@ class MarketDataIngestor:
                 duration = now_ts - added_ts
                 if duration < 3.0:
                     logger.warning(
-                        f"SPOOFING DETECTED for {symbol}: Ask level ${prev_p:.2f} (> $500k) disappeared after {duration:.2f}s!"
+                        f"SPOOFING DETECTED for {symbol}: Ask level ${prev_p:.4f} (>30% depth) disappeared after {duration:.2f}s!"
                     )
                     self.spoofing_ask[symbol] = True
                     self._spoof_expiry_ask[symbol] = now_ts + 30.0

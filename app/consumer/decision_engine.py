@@ -190,6 +190,7 @@ class DecisionEngine:
         from app.core import metrics
 
         metrics.signals_pipeline_attempted.labels(symbol=symbol).inc()
+        metrics.funnel_universe_scanned.inc()
         t_start = time.perf_counter()
         stage_timings = {}
 
@@ -373,6 +374,7 @@ class DecisionEngine:
                     )
 
             metrics.signals_generated.labels(symbol=symbol, direction=direction).inc()
+            metrics.funnel_raw_signals.inc()
 
             t_score = time.perf_counter()
             context, vol_factor = await self._router.evaluate_signal(
@@ -494,6 +496,7 @@ class DecisionEngine:
                     return None
 
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
+                metrics.funnel_alpha_passed.inc()
                 signal = await self._build_signal(symbol, direction, regime, score, arr, context)
                 # Unfreeze briefly to set stage_timings
                 object.__setattr__(signal, "stage_timings", stage_timings)

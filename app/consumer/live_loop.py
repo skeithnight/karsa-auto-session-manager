@@ -276,13 +276,16 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         )
         return
 
-    # Consecutive loss block
+            # Consecutive loss block
     if engine and await engine.check_consecutive_losses(symbol, signal.regime):
         logger.info("skip %s — consecutive loss block", symbol)
         return
 
     # AI Analyst Gate (mandatory, fail-closed)
     if crypto_analyst:
+        from app.core import metrics
+        metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
+        metrics.funnel_ai_calls.inc()
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
             direction=signal.direction,
@@ -303,6 +306,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
         from app.core import metrics
         metrics.ai_analyst_approvals.inc()
+        metrics.funnel_ai_approved.inc()
 
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:
@@ -318,11 +322,13 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     if not result.approved:
         from app.core import metrics
         metrics.risk_gate_reject.labels(symbol=symbol, reason="portfolio_risk").inc()
+        metrics.funnel_risk_rejected.inc()
         logger.info("skip %s — portfolio risk rejected: %s", symbol, result.reason)
         return
 
     from app.core import metrics
     metrics.risk_gate_pass.labels(symbol=symbol).inc()
+    metrics.funnel_risk_passed.inc()
 
     # Pre-check: can we place an SL for this symbol?
     try:
@@ -453,8 +459,8 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
     # Prometheus: count opened position
     from app.core import metrics
-
     metrics.positions_opened.labels(symbol=symbol, side=signal.direction).inc()
+    metrics.funnel_orders_placed.inc()
 
 
 async def _read_universe(redis: Any) -> list[str] | None:
@@ -740,7 +746,9 @@ async def _position_exit_loop(
                 # Prometheus: count closed position
                 from app.core import metrics
 
+                from app.core import metrics
                 metrics.positions_closed.labels(symbol=symbol, side=side, exit_reason=exit_reason).inc()
+                metrics.funnel_positions_closed.inc()
 
         except asyncio.CancelledError:
             raise

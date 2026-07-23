@@ -122,7 +122,7 @@ class ShadowExecutor:
         raise ValueError(f"ShadowExecutor: no price for {symbol}")
 
     def _apply_slippage(self, price: Decimal, side: str) -> Decimal:
-        """Apply slippage — worse fill for the trader."""
+        """Apply fallback slippage — worse fill for the trader."""
         if side in ("buy", "LONG"):
             return (price * (1 + self._slippage)).quantize(
                 Decimal("0.00000001"), rounding=ROUND_DOWN
@@ -130,6 +130,30 @@ class ShadowExecutor:
         return (price * (1 - self._slippage)).quantize(
             Decimal("0.00000001"), rounding=ROUND_DOWN
         )
+
+    async def _compute_dynamic_slippage(self, symbol: str, price: Decimal, side: str) -> Decimal:
+        """Dynamic Spread-Based Slippage Penalty:
+        spread_bps = ((best_ask - best_bid) / mid) * 10000
+        dynamic_slippage_bps = max(2.0, min(15.0, spread_bps / 2.0))
+        """
+        try:
+            raw = await self._redis.get(f"global:state:{symbol}")
+            if raw:
+                data = _json.loads(raw)
+                bid = Decimal(str(data.get("bid", "0")))
+                ask = Decimal(str(data.get("ask", "0")))
+                if bid > 0 and ask > bid:
+                    mid = (bid + ask) / Decimal("2")
+                    spread_bps = ((ask - bid) / mid) * Decimal("10000")
+                    dynamic_bps = max(Decimal("2.0"), min(Decimal("15.0"), spread_bps / Decimal("2.0")))
+                    slip_mult = (dynamic_bps / Decimal("10000"))
+                    if side in ("buy", "LONG"):
+                        return (price * (Decimal("1") + slip_mult)).quantize(Decimal("0.00000001"))
+                    else:
+                        return (price * (Decimal("1") - slip_mult)).quantize(Decimal("0.00000001"))
+        except Exception:
+            pass
+        return self._apply_slippage(price, side)
 
     async def execute(
         self,
@@ -150,7 +174,7 @@ class ShadowExecutor:
             return None
 
         mid = await self._get_mid_price(symbol, fallback_price=price)
-        fill_price = self._apply_slippage(mid, side)
+        fill_price = await self._compute_dynamic_slippage(symbol, mid, side)
 
         # Cache mid price for APM monitoring (SL/TP checks)
         await self._redis.set(f"shadow:price:{symbol}", str(mid), ex=300)

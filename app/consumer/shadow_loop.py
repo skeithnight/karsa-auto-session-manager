@@ -125,6 +125,8 @@ async def _on_signal_shadow(
         and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
     ):
         logger.info(f"shadow AI Analyst validating {symbol} signal")
+        from app.core import metrics
+        metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
             direction=signal.direction,

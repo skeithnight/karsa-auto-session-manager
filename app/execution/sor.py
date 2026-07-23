@@ -912,20 +912,34 @@ class SmartOrderRouter:
         conf = Decimal(str(max(0.0, min(1.0, conf_val))))
 
         atr_dec = Decimal(str(atr)) if atr else Decimal("0")
-        em_usd = conf * atr_dec
+        # Ensure ATR is treated as price offset; if passed as percentage (< 1.0), convert to price offset
+        atr_price_offset = (atr_dec * price) if (atr_dec > 0 and atr_dec < Decimal("1.0")) else atr_dec
+        em_price_offset = conf * atr_price_offset
 
         taker_fee_pct = Decimal("0.00055")
         coa_pct = taker_fee_pct + Decimal(str(estimated_slippage_pct))
-        coa_usd = coa_pct * price
+        coa_price_offset = coa_pct * price
+
+        # Maker Rebate Targeting: If exchange pays maker rebate (< 0), lower thin edge threshold to 1.0x
+        maker_fee = Decimal("0.0002")
+        if self.client and hasattr(self.client, "get_maker_fee_rate"):
+            try:
+                res = await self.client.get_maker_fee_rate(symbol)
+                if isinstance(res, (int, float, str, Decimal)):
+                    maker_fee = Decimal(str(res))
+            except Exception:
+                pass
+
+        thin_edge_mult = Decimal("1.0") if maker_fee < 0 else Decimal("1.5")
 
         logger.info(
-            f"SOR Fee-Aware Evaluation: {symbol} {side_norm} | EM=${em_usd:.4f} (Conf={conf:.2f}, ATR={atr_dec:.4f}) vs CoA=${coa_usd:.4f} (CoA_pct={coa_pct:.5f})"
+            f"SOR Fee-Aware Evaluation: {symbol} {side_norm} | EM_Offset=${em_price_offset:.4f} (Conf={conf:.2f}, ATR_Offset={atr_price_offset:.4f}) vs CoA_Offset=${coa_price_offset:.4f} (CoA_pct={coa_pct:.5f}, Rebate={maker_fee < 0})"
         )
 
-        # Rule 1: Thin Edge (EM < 1.5 * CoA) -> Strict Post-Only, cancel & abandon after 10s
-        if em_usd > 0 and em_usd < (coa_usd * Decimal("1.5")):
+        # Rule 1: Thin Edge (EM < thin_edge_mult * CoA) -> Strict Post-Only, cancel & abandon after 10s
+        if em_price_offset > 0 and em_price_offset < (coa_price_offset * thin_edge_mult):
             logger.info(
-                f"SOR Fee-Aware: Thin Edge detected for {symbol} (EM=${em_usd:.4f} < 1.5*CoA=${coa_usd * Decimal('1.5'):.4f}). "
+                f"SOR Fee-Aware: Thin Edge detected for {symbol} (EM_Offset=${em_price_offset:.4f} < {thin_edge_mult}*CoA=${coa_price_offset * thin_edge_mult:.4f}). "
                 f"Enforcing strict Post-Only (10s cancel limit, no Taker fee)."
             )
             metrics.sor_step_total.labels(symbol=symbol, step="strict_post_only").inc()
@@ -965,9 +979,9 @@ class SmartOrderRouter:
             return None
 
         # Rule 2: High Expectancy (EM > 3 * CoA) -> Aggressive chase (1.0s reprice) / market fallback
-        if em_usd > 0 and em_usd > (coa_usd * Decimal("3.0")):
+        if em_price_offset > 0 and em_price_offset > (coa_price_offset * Decimal("3.0")):
             logger.info(
-                f"SOR Fee-Aware: High Expectancy detected for {symbol} (EM=${em_usd:.4f} > 3*CoA=${coa_usd * Decimal('3.0'):.4f}). "
+                f"SOR Fee-Aware: High Expectancy detected for {symbol} (EM_Offset=${em_price_offset:.4f} > 3*CoA=${coa_price_offset * Decimal('3.0'):.4f}). "
                 f"Aggressively chasing limit fill with 1.0s reprice / market fallback."
             )
             orig_delay = self.reprice_delay_seconds

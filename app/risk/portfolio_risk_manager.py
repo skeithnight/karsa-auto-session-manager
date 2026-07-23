@@ -130,7 +130,9 @@ class PortfolioRiskManager:
                 approved=False, reason="PRM internal error (fail-safe BLOCK)"
             )
 
-    async def evaluate_capital_reallocation(self, new_signal: object) -> dict[str, Any] | None:
+    async def evaluate_capital_reallocation(
+        self, new_signal: object, open_positions: list[dict[str, Any]] | None = None
+    ) -> dict[str, Any] | None:
         """Evaluate if incoming signal has >1.5x expected value over open consolidating winners.
 
         Returns dict with reallocation target position or None if no scale-out needed.
@@ -143,7 +145,7 @@ class PortfolioRiskManager:
 
             new_signal_ev = sig_conf * (sig_tp_dist / sig_sl_dist if sig_sl_dist > 0 else 2.0)
 
-            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            positions = open_positions if open_positions is not None else await self._position_store.list_all()  # type: ignore[attr-defined]
             if not positions:
                 return None
 
@@ -172,7 +174,18 @@ class PortfolioRiskManager:
                 rem_tp_dist = abs(tp_price - live_price) / live_price if tp_price > 0 else 0.02
                 rem_sl_dist = abs(live_price - sl_price) / live_price if sl_price > 0 else 0.01
 
-                open_position_ev = pnl * (rem_tp_dist / rem_sl_dist if rem_sl_dist > 0 else 1.0)
+                momentum_multiplier = 1.0
+                try:
+                    if self._redis:
+                        cvd_slope_raw = await self._redis.get(f"karsa:market:{sym}:cvd_slope")
+                        if cvd_slope_raw:
+                            cvd_slope = float(cvd_slope_raw)
+                            if (side == "LONG" and cvd_slope < -0.2) or (side == "SHORT" and cvd_slope > 0.2):
+                                momentum_multiplier = 0.5
+                except Exception:
+                    pass
+
+                open_position_ev = (pnl * (rem_tp_dist / rem_sl_dist if rem_sl_dist > 0 else 1.0)) * momentum_multiplier
 
                 # Check 1.5x hysteresis multiplier: New_Signal_EV > Open_Position_EV * 1.5
                 if new_signal_ev > (open_position_ev * 1.5):

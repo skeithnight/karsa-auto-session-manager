@@ -50,13 +50,19 @@ class AIClient:
         prompt: str,
         max_tokens: int = 1024,
         temperature: float = 0.0,
+        system_prompt: str | None = None,
     ) -> str | None:
         """Send chat completion request. Returns response text or None on failure."""
         session = await self._get_session()
         start_time = time.monotonic()
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+        
         payload = {
             "model": self.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "max_tokens": max_tokens,
             "temperature": temperature,
             "stream": False,

@@ -50,6 +50,7 @@ class Settings(BaseSettings):
     commander_feedback_interval_hours: int = 1
 
     # ── Trading ────────────────────────────────────────────────
+    stablecoins: set[str] = {"USDT/USDT", "USDC/USDT", "FDUSD/USDT"}
     symbols: list[str] = [
         # Tier 1 — majors ($100M+ daily turnover on Bybit)
         "BTC/USDT",

@@ -113,8 +113,18 @@ risk_gate_reject = Counter(
 # ── Executor ─────────────────────────────────────────────────
 orders_placed = Counter(
     "karsa_orders_placed_total",
-    "Orders placed on Bybit",
+    "Total orders successfully placed on exchange",
     ["symbol", "side"],
+)
+
+execution_aborted_no_executor_total = Counter(
+    "karsa_execution_aborted_no_executor_total",
+    "Trades aborted because executor was None",
+)
+
+execution_error_total = Counter(
+    "karsa_execution_error_total",
+    "Trades failed during SOR execution due to exception",
 )
 
 orders_failed = Counter(

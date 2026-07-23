@@ -7,12 +7,14 @@ Refreshes every 4 hours. Falls back to static config list if empty.
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import UTC, datetime
 from decimal import Decimal
 
 from loguru import logger
 
 from app.alpha.ta_tools import calculate_bollinger_bands
+from app.core.config import get_settings
 from app.core.redis_client import RedisClient
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.data.sector_mapping import get_sector
@@ -60,27 +62,50 @@ class UniverseScorer:
         if symbol in toxic_tickers:
             return None
 
+        # ─── PROFITABILITY FIX: DYNAMIC TOXIC TICKER BLOCK ───
+        settings = get_settings()
+        if symbol in settings.stablecoins:
+            return None
+        
+        # Leveraged token pattern rejection
+        if symbol.endswith(("UP/USDT", "DOWN/USDT", "BULL/USDT", "BEAR/USDT")):
+            return None
         state = await self.redis.get_global_state(symbol)
         if not state:
             return None
 
         total_volume = Decimal(str(state.get("total_volume", "0")))
-        if total_volume <= 0:
+        if total_volume < Decimal("5000000"):  # 5M minimum volume
             return None
         volume_score = min(
             total_volume / Decimal("1000000000") * VOLUME_MAX, VOLUME_MAX
         )
 
         try:
-            candles = await self.fetcher.fetch(symbol, timeframe="1h", limit=25)
+            candles = await self.fetcher.fetch(symbol, timeframe="1h", limit=168)
         except Exception as e:
             logger.debug(f"Universe scorer OHLCV failed for {symbol}: {e}")
             return None
 
-        if not candles or len(candles) < 21:
+        if not candles or len(candles) < 168:  # 7 days of 1h candles
             return None
 
         closes = [Decimal(str(c[4])) for c in candles]
+        
+        # Dynamic Toxicity Check 1: Death Spiral / Rug-Pull (>60% drop from 7d high)
+        if len(closes) > 0:
+            max_7d = max(closes)
+            current_price = closes[-1]
+            if max_7d > 0 and current_price < max_7d * Decimal("0.40"):
+                logger.debug(f"{symbol} dynamically blacklisted: Down >60% from 7d high (max={max_7d}, now={current_price})")
+                return None
+        
+        # Dynamic Toxicity Check 2: Zombie / Flatline (no price movement in 24h)
+        if len(closes) >= 24:
+            last_24h = closes[-24:]
+            if max(last_24h) == min(last_24h):
+                logger.debug(f"{symbol} dynamically blacklisted: Zombie coin (no price movement in 24h)")
+                return None
 
         # Momentum: 1H price change %
         if len(closes) >= 2:
@@ -198,3 +223,16 @@ class UniverseScorer:
             logger.error(f"Universe Redis write failed: {e}")
 
         return symbols
+
+    async def refresh_loop(self, config_symbols: list[str], interval_hours: int = 4) -> None:
+        """Continuously refresh universe at intervals."""
+        from app.core import metrics
+        while True:
+            try:
+                symbols = await self.refresh(config_symbols)
+                metrics.universe_symbols_scored.inc(len(symbols))
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"Universe refresh failed: {e}")
+            await asyncio.sleep(interval_hours * 3600)

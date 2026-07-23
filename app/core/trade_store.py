@@ -352,3 +352,40 @@ class TradeStore:
             metrics.postgres_write_errors.labels(table="ai_decisions").inc()
             logger.error(f"record_decision failed: {e}")
             raise
+
+    async def record_signal(
+        self,
+        symbol: str,
+        direction: str,
+        confidence_score: float,
+        alpha_metrics: dict[str, Any],
+        risk_passed: bool,
+        strategy_type: str = "SWING",
+        ai_confidence_score: int | None = None,
+        ai_reasoning: str | None = None,
+        macro_context: dict[str, Any] | None = None,
+    ) -> None:
+        """Record a generated signal and its shadow AI evaluation."""
+        import json
+        try:
+            async with self.db.engine.begin() as conn:
+                await conn.execute(
+                    text(
+                        """INSERT INTO signals (symbol, direction, confidence_score, alpha_metrics, risk_passed, strategy_type, ai_confidence_score, ai_reasoning, macro_context)
+                        VALUES (:symbol, :direction, :confidence_score, :alpha_metrics, :risk_passed, :strategy_type, :ai_confidence_score, :ai_reasoning, :macro_context)"""
+                    ),
+                    {
+                        "symbol": symbol,
+                        "direction": direction,
+                        "confidence_score": confidence_score,
+                        "alpha_metrics": json.dumps(alpha_metrics),
+                        "risk_passed": risk_passed,
+                        "strategy_type": strategy_type,
+                        "ai_confidence_score": ai_confidence_score,
+                        "ai_reasoning": ai_reasoning,
+                        "macro_context": json.dumps(macro_context) if macro_context else None,
+                    },
+                )
+        except Exception as e:
+            metrics.postgres_write_errors.labels(table="signals").inc()
+            logger.error(f"record_signal failed: {e}")

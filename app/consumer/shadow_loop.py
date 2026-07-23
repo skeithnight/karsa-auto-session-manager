@@ -515,7 +515,41 @@ async def main() -> None:
             return
         await q.put((time.time(), symbol, sig))
 
-    consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
+    from app.alpha.micro_scalper import MicroScalper
+    micro_scalper = MicroScalper(redis)
+    
+    async def on_micro_signal(symbol: str, sig: Any) -> None:
+        try:
+            # Execute virtual trade
+            result = await shadow_executor.execute(
+                symbol=symbol,
+                side=sig.direction,
+                amount=Decimal("0.01"), # Fixed 0.01 amount for now
+                price=sig.entry_price,
+                is_post_only=True,
+            )
+            if result:
+                fill_price = Decimal(str(result.get("price", sig.entry_price)))
+                await shadow_pos_store.save(
+                    symbol=symbol,
+                    side=sig.direction,
+                    entry_price=fill_price,
+                    amount=Decimal("0.01"),
+                    atr=Decimal("0"),
+                    entry_confidence=str(sig.confidence),
+                    regime="MICRO_SCALPER"
+                )
+        except Exception as e:
+            logger.error(f"Failed to execute micro scalp for {symbol}: {e}")
+
+    consumer = MarketConsumer(
+        redis_client=redis, 
+        decision_engine=engine, 
+        on_signal=on_signal, 
+        on_candle=_on_candle,
+        micro_scalper=micro_scalper,
+        on_micro_signal=on_micro_signal
+    )
 
     # Read dynamic universe from Redis, fall back to static config
     universe_symbols = await _read_universe(redis)

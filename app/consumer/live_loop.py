@@ -223,32 +223,6 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — consecutive loss block", symbol)
         return
 
-    # AI Analyst gate
-    AI_CONFIDENCE_BYPASS_THRESHOLD = 100.0
-    if (
-        crypto_analyst
-        and signal.score >= 40.0
-        and signal.score <= AI_CONFIDENCE_BYPASS_THRESHOLD
-    ):
-        logger.info(f"AI Analyst validating {symbol} signal")
-        analyst_result = await crypto_analyst.analyze(
-            symbol=symbol,
-            direction=signal.direction,
-            confidence=signal.score,
-            regime=signal.regime.value,
-            spread_pct=0.0,
-            funding_rate=0.0,
-            oi_change=0.0,
-            price=signal.entry_price,
-            recent_trades="",
-        )
-        if not analyst_result or analyst_result.direction != signal.direction:
-            from app.core import metrics
-            reason = "unavailable" if not analyst_result else "direction_mismatch"
-            metrics.ai_analyst_rejections.labels(reason=reason).inc()
-            logger.info("skip %s - AI analyst rejected (%s)", symbol, reason)
-            return
-
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:
         logger.error(
@@ -971,6 +945,22 @@ async def main() -> None:  # noqa: PLR0915
     ohlcv_fetcher = OHLCVFetcher(exchange)
     multi_tf = MultiTFFilter(ohlcv_fetcher)
 
+    # AI Integration
+    crypto_analyst = None
+    try:
+        from app.core.ai_client import AIClient
+        from app.alpha.analyst import CryptoAnalyst
+        
+        ai_client = AIClient(
+            router_url=settings.nine_router_base_url,
+            auth_token=settings.nine_router_auth_token,
+            model=settings.nine_router_model,
+        )
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+    except Exception as e:
+        logger.warning(f"AI Client init failed: {e}")
+        crypto_analyst = None
+
     engine = DecisionEngine(
         classifier,
         router,
@@ -978,6 +968,7 @@ async def main() -> None:  # noqa: PLR0915
         trade_memory=trade_memory,
         redis_client=redis,
         multi_tf=multi_tf,
+        crypto_analyst=crypto_analyst,
     )
 
     position_store = PositionStore(redis)
@@ -1054,6 +1045,7 @@ async def main() -> None:  # noqa: PLR0915
         db_engine = DatabaseEngine()
         await db_engine.connect(settings.postgres_url)
         trade_store = _TradeStore(db_engine)
+        engine._trade_store = trade_store
     except Exception:
         logger.warning("TradeStore unavailable — trades will not be recorded")
 

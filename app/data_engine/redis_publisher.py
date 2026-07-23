@@ -135,3 +135,20 @@ class RedisPublisher:
             f"published {len(candles)} candles to {exchange_id}:{symbol}:{timeframe}"
         )
         return len(candles)
+
+    async def publish_tick(
+        self,
+        exchange_id: str,
+        symbol: str,
+        tick_data: dict[str, Any],
+    ) -> None:
+        """Publish a single tick/orderbook update to Redis Pub/Sub.
+
+        Args:
+            exchange_id: Exchange identifier.
+            symbol: Unified symbol.
+            tick_data: Dictionary containing tick/orderbook data (best_bid, best_ask, etc).
+        """
+        channel = f"karsa:ticks:{exchange_id}:{symbol.replace('/', '')}"
+        json_str = json.dumps(tick_data, cls=DecimalEncoder)
+        await self._redis.publish(channel, json_str)

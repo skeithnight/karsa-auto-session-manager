@@ -58,6 +58,7 @@ services:
       - KARSA_ROLE=live
       - SHADOW_MODE_ENABLED=false
       - PROMETHEUS_PORT=8001
+      - KARSA_WORKER_COUNT=256
     network_mode: "container:karsa-gluetun"
 
   karsa-shadow:
@@ -68,6 +69,7 @@ services:
       - KARSA_ROLE=shadow
       - SHADOW_MODE_ENABLED=true
       - PROMETHEUS_PORT=8002
+      - KARSA_WORKER_COUNT=256
     network_mode: "container:karsa-gluetun"
 
   karsa-backtest:

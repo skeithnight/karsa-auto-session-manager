@@ -90,7 +90,10 @@ CREATE TABLE trades (
     risk_snapshot JSONB NOT NULL,
     global_state_snapshot JSONB NOT NULL,
     order_id VARCHAR(50),
-    exchange_order_id VARCHAR(50)
+    exchange_order_id VARCHAR(50),
+    strategy_type VARCHAR(50) DEFAULT 'SWING',
+    is_micro_scalper BOOLEAN DEFAULT FALSE,
+    exit_reason VARCHAR(50)
 );
 
 CREATE INDEX idx_trades_timestamp ON trades(timestamp DESC);
@@ -115,6 +118,8 @@ Mirrors `trades` table structure + shadow-specific columns. Used when `SHADOW_MO
 | exit_time | TIMESTAMPTZ | NULL | UTC exit timestamp |
 | exit_reason | VARCHAR(50) | NULL | "sl_hit", "time_kill", "manual", etc. |
 | ai_confidence | INTEGER | NULL | AI confidence at entry |
+| strategy_type | VARCHAR(50) | 'SWING' | 'SWING', 'SNIPER', or 'MICRO_SCALPER' |
+| is_micro_scalper | BOOLEAN | FALSE | TRUE if trade is handled by micro_scalper |
 | created_at | TIMESTAMPTZ | NOW() | Row creation time |
 | entry_regime | VARCHAR(20) | NULL | Regime at entry |
 | initial_risk_per_unit | NUMERIC(20,8) | NULL | Risk per unit at entry |
@@ -144,11 +149,32 @@ CREATE TABLE signals (
     risk_passed BOOLEAN NOT NULL,
     risk_reason TEXT,
     executed BOOLEAN DEFAULT FALSE,
-    trade_id UUID REFERENCES trades(id)
+    trade_id UUID REFERENCES trades(id),
+    strategy_type VARCHAR(50) DEFAULT 'SWING',
+    ai_confidence_score INTEGER,
+    ai_reasoning TEXT,
+    macro_context JSONB
 );
 
 CREATE INDEX idx_signals_timestamp ON signals(timestamp DESC);
 CREATE INDEX idx_signals_direction_risk ON signals(direction, risk_passed);
+```
+
+### Table: `sniper_traps`
+Stores metadata for AI Node 1 (Maker-Sniper).
+```sql
+CREATE TABLE sniper_traps (
+    trap_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    symbol VARCHAR(20) NOT NULL,
+    target_price DECIMAL(20,8) NOT NULL,
+    ai_thesis TEXT,
+    ai_confidence_score INTEGER,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'FILLED', 'CANCELLED', 'EXPIRED')),
+    expires_at TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX idx_sniper_traps_symbol_status ON sniper_traps(symbol, status);
 ```
 
 ### Table: `system_events`
@@ -242,6 +268,9 @@ class TradeExecution(BaseModel):
     executed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     order_id: Optional[str] = None
     exchange_order_id: Optional[str] = None
+    strategy_type: str = "SWING"
+    is_micro_scalper: bool = False
+    exit_reason: Optional[str] = None
 
     model_config = {"json_encoders": {Decimal: str}}
 ```

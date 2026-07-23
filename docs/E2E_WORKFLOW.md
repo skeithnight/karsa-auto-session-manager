@@ -89,7 +89,7 @@ Two entry points exist:
 │      - Sends structured prompt to 9router (claude-haiku-3-5)        │
 │      - Final confidence = quant × 0.5 + ai × 0.5                    │
 │      - Gate: final_confidence >= 0.65                                │
-│      - AI failure → signal REJECTED (not bypassed)                  │
+│      - AI failure → returns 0 confidence, guaranteeing REJECT       │
 │                                                                     │
 │  Output: TradeSignal (symbol, side, confidence, regime, metadata)   │
 └──────────────────────────────┬──────────────────────────────────────┘
@@ -172,7 +172,7 @@ Two entry points exist:
 │  └─────────────┴──────────────────┴──────────┴──────────┴─────────┘ │
 │                                                                     │
 │  6d. Regime Shift Kill Switch                                       │
-│      Every cycle: current_regime != entry_regime → force close      │
+│      Requires 3 consecutive mismatch checks (hysteresis) → close    │
 │                                                                     │
 │  6e. CheckpointManager (every 5 min)                                │
 │      - HARD_FAIL: -2% in 30min or -3% ever → immediate exit         │
@@ -182,7 +182,7 @@ Two entry points exist:
 │                                                                     │
 │  6f. AI Position Judge (app/alpha/position_judge.py)                │
 │      - 2-tier: haiku (cheap) → sonnet (escalated)                   │
-│      - 3 consecutive HOLDs on loser → forced EXIT                   │
+│      - **3 consecutive HOLDs on loser → forced EXIT** (loop break)  │
 │      - Returns: EXIT / HOLD / TIGHTEN_STOP                          │
 │                                                                     │
 │  6g. TradeMemory (app/alpha/trade_memory.py)                        │
@@ -301,6 +301,12 @@ Same pipeline as live, with component substitution:
 | `TradeStore` | `ShadowTradeStore` (`shadow_trades` PG table) |
 
 Shadow mode skips startup reconciliation and position_reconciler.
+
+**Shadow Mode Mathematical Fidelity**:
+1. **Fee Asymmetry**: Simulates realistic maker (0.02%) vs taker (0.055%) fees based on order type.
+2. **Wick Miss Prevention**: Uses `worst_price_seen` from Redis for SL detection, not just the current tick.
+3. **Funding Rate Drag**: Deducts 8-hour funding fees on held virtual positions.
+4. **Pending State Machine**: Virtual limit orders expire after 600s TTL if not filled.
 
 ---
 

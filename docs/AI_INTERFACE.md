@@ -11,7 +11,7 @@ AI is **mandatory** in two safe positions. This document defines the exact contr
 
 | Position | When | Model | Latency Budget | Failure Mode |
 | :--- | :--- | :--- | :--- | :--- |
-| Pre-Entry CryptoAnalyst | After deterministic signal, before risk gate | `claude-haiku-3-5` | 15s timeout | Signal rejected |
+| Pre-Entry CryptoAnalyst | After deterministic signal, before risk gate | `claude-haiku-3-5` | 15s timeout | Returns 0 conf (REJECT) |
 | Position Judge (cheap) | Every 5min in ambiguous zone | `claude-haiku-3-5` | 15s timeout | Escalate to Tier 2 |
 | Position Judge (escalated) | After 2× cheap HOLD on losing position | `claude-sonnet-4-5` | 15s timeout | Conservative HOLD |
 

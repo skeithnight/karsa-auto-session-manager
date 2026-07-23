@@ -137,7 +137,10 @@ A conditional component substitution layer in `main.py`. When `SHADOW_MODE_ENABL
 *   Handles **Startup Reconciliation**: Queries Bybit REST API on boot to ensure local DB matches actual exchange positions.
 
 ### G. AI Layer (Off Hot-Path, MANDATORY)
-*   **Pre-Entry CryptoAnalyst** (`app/alpha/analyst.py`): MANDATORY step in signal pipeline. Runs after deterministic signal generation, before risk gate. Fetches 200 1H candles, computes TA indicators (RSI, BB, MACD, ATR, EMA), sends structured prompt to AI via 9router. Final confidence = quant_confidence × 0.5 + ai_confidence × 0.5. Gate: final_confidence >= 0.65. If AI call fails, signal is **rejected** (not bypassed).
+*   **Pre-Entry CryptoAnalyst** (`app/alpha/analyst.py`): MANDATORY step in signal pipeline. Runs after deterministic signal generation, before risk gate. Fetches 200 1H candles, computes TA indicators (RSI, BB, MACD, ATR, EMA), sends structured prompt to AI via 9router. Final confidence = quant_confidence × 0.5 + ai_confidence × 0.5. Gate: final_confidence >= 0.65. **Fail-Safe Defaults**:
+    * Parse failure → `FLAT` / `EXIT` (never `HOLD`).
+    * AI unavailable/timeout → Conservative `HOLD` (don't exit blindly) or `REJECT` (for new entries), mathematically halving the final confidence score to ensure rejection.
+    * 3 consecutive `HOLD`s on a losing position → Forced `EXIT`.
 *   **Position Judge** (`app/alpha/position_judge.py`): MANDATORY in CheckpointManager when position is in ambiguous zone (between HARD_FAIL and CLEAR_WIN). 2-tier: cheap pass (haiku, no TA) → escalate to stronger model if ambiguous. 3 consecutive HOLDs on losing position → forced EXIT.
 *   **Trade Memory** (`app/alpha/trade_memory.py`): Before AI analyst call, retrieves last 3 similar trades (same symbol + regime) from Redis sorted set and injects into prompt context. Stores PnL, hold duration, regime, exit reason on position close.
 *   **9router Proxy** (`app/core/ai_client.py`): Async HTTP client to 9router container at `127.0.0.1:20129`. OpenAI-compatible format. Returns None on any failure — but since AI is mandatory, signal is rejected on failure.
@@ -145,7 +148,7 @@ A conditional component substitution layer in `main.py`. When `SHADOW_MODE_ENABL
 *   **Models:** Pre-entry analyst: `claude-haiku-3-5` (~400ms). Position judge cheap: `claude-haiku-3-5`. Position judge escalated: `claude-sonnet-4-5`. Estimated cost: ~$0.60–1.20/day at 5 symbols.
 
 ### H. Dynamic Universe Scoring (`app/data/universe_scorer.py`)
-*   **Purpose:** Replace static symbol list with dynamic scoring based on market conditions. Adapts KCT's UniverseScorer pattern.
+*   **Purpose:** Replace static symbol list with dynamic scoring based on market conditions. Adapts KCT's UniverseScorer pattern. This is the **Primary Universe Driver**. The fallback chain is: `Bybit API (Top 150)` → `Validated .env config` → `Hard Fail`.
 *   **Scoring model (cross-exchange advantage):**
     *   Volume score (0-30): aggregate 24h volume across Binance+OKX+Bybit from Redis `global:state:{symbol}`.
     *   Momentum score (0-40): 1H price change % from `ohlcv_fetcher`. Positive momentum = higher score.
@@ -185,7 +188,7 @@ The system follows a 6-stage pipeline matching KCT's architecture, enhanced with
 - Stage 5: Executor only places trades when ASM session is active
 - Stage 6: Post-Entry management is active for any open position (ASM or manual)
 
-**Key insight:** The data pipeline runs continuously regardless of ASM state. Signals are generated and queued. The executor only processes them when ASM is active. This means the system is always "warm" — no cold-start delay when launching a session.
+**Key insight (Warm Start Advantage):** Because Stages 1–4 run continuously regardless of ASM state, the bot is always "warm". When a user activates a session via Telegram, Stage 5 execution begins instantly with zero cold-start data delay. Furthermore, **Execution is strictly gated by `karsa:auto:state:active == "1"`**. If Redis is down or the key is missing, the system **blocks all trades**. It never defaults to "open".
 
 ```mermaid
 graph TD

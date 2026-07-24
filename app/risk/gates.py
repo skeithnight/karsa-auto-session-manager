@@ -5,7 +5,11 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.gates")  # type: ignore[assignment]
 
 from app.risk.circuit_breaker import CircuitBreaker
 
@@ -60,6 +64,31 @@ class RiskGate:
             )
         return passed
 
+    def check_volatility_filter(
+        self, candle_range: Decimal, atr: Decimal, max_multiplier: Decimal = Decimal("3.0")
+    ) -> bool:
+        """Gate Layer 2: Reject if candle range > 3 * ATR (news spike / falling knife)."""
+        if atr <= Decimal("0"):
+            return True
+        passed = candle_range <= (atr * max_multiplier)
+        if not passed:
+            logger.warning(
+                f"Layer 2 Volatility gate FAILED: candle_range {candle_range} > {max_multiplier} * ATR {atr}"
+            )
+        return passed
+
+    def check_funding_filter(
+        self, direction: str, funding_rate: Decimal, threshold: Decimal = Decimal("0.0005")
+    ) -> bool:
+        """Gate Layer 7: Reject LONG if funding > 0.05% or SHORT if funding < -0.05%."""
+        if direction == "LONG" and funding_rate > threshold:
+            logger.warning(f"Layer 7 Funding gate FAILED: LONG with high positive funding {funding_rate}")
+            return False
+        elif direction == "SHORT" and funding_rate < -threshold:
+            logger.warning(f"Layer 7 Funding gate FAILED: SHORT with high negative funding {funding_rate}")
+            return False
+        return True
+
     def check_circuit_breaker(self) -> bool:
         """Gate 3: Daily PnL drawdown check.
 
@@ -81,6 +110,10 @@ class RiskGate:
         bid_price: Decimal,
         ask_price: Decimal,
         order_notional_usd: Decimal | None = None,
+        candle_range: Decimal | None = None,
+        atr: Decimal | None = None,
+        direction: str = "LONG",
+        funding_rate: Decimal | None = None,
     ) -> dict[str, Any]:
         """Run all gates sequentially. Returns decision dict."""
         mid_price = (bid_price + ask_price) / 2
@@ -96,8 +129,15 @@ class RiskGate:
         gates += [
             ("liquidity", self.check_liquidity(notional_usd)),
             ("spread_health", self.check_spread_health(bid_price, ask_price)),
-            ("circuit_breaker", self.check_circuit_breaker()),
         ]
+
+        if candle_range is not None and atr is not None:
+            gates.append(("volatility_filter", self.check_volatility_filter(candle_range, atr)))
+
+        if funding_rate is not None:
+            gates.append(("funding_filter", self.check_funding_filter(direction, funding_rate)))
+
+        gates.append(("circuit_breaker", self.check_circuit_breaker()))
 
         passed_gates = [name for name, ok in gates if ok]
         failed_gate = next((name for name, ok in gates if not ok), None)

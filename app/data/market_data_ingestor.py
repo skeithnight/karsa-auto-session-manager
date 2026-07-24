@@ -22,6 +22,7 @@ from decimal import Decimal
 from typing import Any
 
 import ccxt.async_support as ccxt
+import redis
 from loguru import logger
 
 from app.core import metrics
@@ -111,6 +112,10 @@ class MarketDataIngestor:
                 )
             except asyncio.CancelledError:
                 raise
+            except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as e:
+                logger.warning(f"MarketDataIngestor: Redis transient error: {e}. Backing off 3s...")
+                await asyncio.sleep(3)
+                continue
             except Exception:
                 logger.exception("MarketDataIngestor: poll cycle failed")
             await asyncio.sleep(self._interval)

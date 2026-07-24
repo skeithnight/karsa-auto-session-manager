@@ -31,8 +31,10 @@ from app.core.trade_store import TradeStore
 from app.data.market_data_ingestor import MarketDataIngestor
 from app.data.ohlcv_fetcher import OHLCVFetcher
 from app.risk.dynamic_risk_gate import DynamicRiskGate
+from app.alpha.ml_prefilter import MLPrefilter
 
 logger = logging.getLogger("karsa.live")
+ml_prefilter = MLPrefilter()
 
 
 def _configure_logging() -> None:
@@ -94,9 +96,9 @@ async def _wallet_metrics_loop(
                     continue
                 tracked_symbols.add(sym)
                 pos.get("side", "LONG")
-                entry = float(pos.get("entry_price", 0))
-                amount = float(pos.get("amount", 0))
-                sl_price = float(pos.get("sl_price", 0) or pos.get("virtual_sl", 0) or 0)
+                entry = Decimal(str(pos.get("entry_price", 0)))
+                amount = Decimal(str(pos.get("amount", 0)))
+                sl_price = Decimal(str(pos.get("sl_price", 0) or pos.get("virtual_sl", 0) or 0))
 
                 metrics.position_size.labels(symbol=sym).set(amount)
                 metrics.position_entry_price.labels(symbol=sym).set(entry)
@@ -164,6 +166,19 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.warning("skip %s — ASM state check failed (fail-closed), blocking trade", symbol)
         return
 
+    # --- Proactive Blocklist Check ---
+    try:
+        if position_store.redis:
+            is_blocked = await position_store.redis.get(f"karsa:blocked_symbol:{symbol}")
+            if is_blocked:
+                reason = is_blocked.decode('utf-8') if isinstance(is_blocked, bytes) else is_blocked
+                logger.debug(f"⛔ Signal {symbol} SKIPPED: Symbol is on temporary blocklist ({reason})")
+                from app.core import metrics
+                metrics.signals_blocked_unauthorized_total.inc()
+                return # Silently drop the signal, no need to waste AI/Risk Gate compute
+    except Exception as e:
+        logger.warning(f"Failed to check blocklist for {symbol}: {e}")
+
     # Check Auto-Adjustment Regime Overrides and Apply Dynamic Sizing
     try:
         raw_cfg = await position_store.redis.get("karsa:auto:config")
@@ -189,21 +204,9 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
                     metrics.regime_disabled_blocks.labels(symbol=symbol, regime=current_regime).inc()
                     return
 
-            # Apply Dynamic Sizing & Session Time-of-Day Sizing
-            from datetime import UTC, datetime
-            now_utc = datetime.now(UTC)
-            hour = now_utc.hour
-            if 0 <= hour < 7:
-                session_s_mult = Decimal("0.7")  # 30% size reduction during Asian dead hours
-            elif 12 <= hour < 16:
-                session_s_mult = Decimal("1.2")  # 20% size boost during London/NY overlap
-            elif 21 <= hour <= 23:
-                session_s_mult = Decimal("0.8")
-            else:
-                session_s_mult = Decimal("1.0")
-
+            # Apply Dynamic Sizing (Session sizing is now handled in decision_engine Kelly size)
             multiplier_val = sizing.get(current_regime, 1.0)
-            multiplier = Decimal(str(multiplier_val)) * session_s_mult
+            multiplier = Decimal(str(multiplier_val))
 
             if multiplier == Decimal("0"):
                 logger.warning(f"skip {symbol} — Multiplier for '{current_regime}' is 0.0 but bypassed DISABLE override.")
@@ -281,6 +284,27 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — consecutive loss block", symbol)
         return
 
+    # ML Prefilter Gate
+    signal_features = {
+        'cvd_slope': signal.cvd_slope,
+        'spread_bps': signal.spread_bps,
+        'session_mult': signal.session_mult,
+        'regime_encoded': signal.regime_encoded,
+        'atr_pct': signal.atr_pct,
+        'vol_factor': signal.vol_factor,
+        'ai_confidence_before': signal.score / 100.0,
+    }
+    ml_prob = ml_prefilter.predict_probability(signal_features)
+    if ml_prob < 0.55:
+        logger.info("🤖 ML Prefilter REJECTED %s (prob: %.2f%%)", symbol, ml_prob * 100)
+        from app.core import metrics
+        # Note: If ml_prefilter_rejections_total doesn't exist yet, we will increment a counter here
+        if hasattr(metrics, "ml_prefilter_rejections_total"):
+            metrics.ml_prefilter_rejections_total.inc()
+        return
+
+    logger.info("🤖 ML Prefilter PASSED %s (prob: %.2f%%). Sending to AI Analyst...", symbol, ml_prob * 100)
+
     # AI Analyst Gate (mandatory, fail-closed)
     if crypto_analyst:
         from app.core import metrics
@@ -345,7 +369,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.debug("SL pre-check failed for %s: %s", symbol, e)
         pass  # Don't block entry if check fails
 
-    # Execute via SmartOrderRouter
+    # Execute via SmartOrderRouter / BybitExecutor natively
     result = await executor.execute(
         symbol=symbol,
         side=signal.direction,
@@ -446,6 +470,13 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
             entry_price=fill_price,
             regime=signal.regime.value,
             risk_profile_json=signal.risk_profile.to_json(),
+            trace_id=signal.trace_id,
+            cvd_slope=signal.cvd_slope,
+            spread_bps=signal.spread_bps,
+            session_mult=signal.session_mult,
+            regime_encoded=signal.regime_encoded,
+            atr_pct=signal.atr_pct,
+            vol_factor=signal.vol_factor,
         )
 
     logger.info(
@@ -561,11 +592,11 @@ async def _position_exit_loop(
                     continue  # still open
 
                 # Position closed on exchange — determine TP/SL/breakeven
-                entry_price = float(pos.get("entry_price", 0))
-                amount = float(pos.get("amount", 0))
+                entry_price = Decimal(str(pos.get("entry_price", 0)))
+                amount = Decimal(str(pos.get("amount", 0)))
 
                 # Check if exit price was already stored by APM (most reliable — no API delay)
-                exit_price = float(pos.get("exit_price", 0))
+                exit_price = Decimal(str(pos.get("exit_price", 0)))
                 exit_reason = pos.get("exit_reason", "unknown")
 
                 # Fallback: fetch from Bybit closed PnL records
@@ -579,8 +610,8 @@ async def _position_exit_loop(
                                 pnl_records = pnl_result.get("closed_pnl", [])
                                 if pnl_records:
                                     last_record = pnl_records[0]
-                                    exit_price = float(last_record.get("avgExitPrice", last_record.get("avgPrice", 0)))
-                                    net_pnl = float(last_record.get("closedPnl", 0))
+                                    exit_price = Decimal(str(last_record.get("avgExitPrice", last_record.get("avgPrice", 0))))
+                                    net_pnl = Decimal(str(last_record.get("closedPnl", 0)))
                                     if exit_price > 0:
                                         if net_pnl > 0:
                                             exit_reason = "tp"
@@ -598,7 +629,7 @@ async def _position_exit_loop(
                                 )
                                 if orders:
                                     last = orders[0]
-                                    exit_price = float(last.get("average", last.get("price", 0)))
+                                    exit_price = Decimal(str(last.get("average", last.get("price", 0))))
                             except Exception:
                                 pass
 
@@ -610,7 +641,7 @@ async def _position_exit_loop(
                                 )
                                 if trades:
                                     last_trade = trades[-1]  # most recent trade
-                                    exit_price = float(last_trade.get("price", 0))
+                                    exit_price = Decimal(str(last_trade.get("price", 0)))
                             except Exception:
                                 pass
 
@@ -635,7 +666,7 @@ async def _position_exit_loop(
                         pnl = (entry_price - exit_price) * amount
 
                     # Deduct estimated Bybit Taker Fees (0.06% average per side)
-                    fee_pct = 0.0006
+                    fee_pct = Decimal("0.0006")
                     entry_fee = entry_price * amount * fee_pct
                     exit_fee = exit_price * amount * fee_pct
                     pnl -= (entry_fee + exit_fee)
@@ -806,13 +837,13 @@ async def _status_update_loop(
                 for pos in bybit_positions:
                     symbol = pos.get("symbol", "")
                     side = pos.get("side", "LONG").upper()
-                    pnl = float(pos.get("unrealized_pnl", 0))
+                    pnl = Decimal(str(pos.get("unrealized_pnl", 0)))
                     total_pnl += pnl
 
                     # Compute ROE% if we have leverage, otherwise raw asset %
-                    leverage = float(pos.get("leverage", 1))
-                    entry = float(pos.get("entry_price", 0))
-                    mark = float(pos.get("markPrice", pos.get("current_price", entry)))
+                    leverage = Decimal(str(pos.get("leverage", 1)))
+                    entry = Decimal(str(pos.get("entry_price", 0)))
+                    mark = Decimal(str(pos.get("markPrice", pos.get("current_price", entry))))
 
                     if entry > 0 and mark > 0 and leverage > 0:
                         raw_pct = ((mark - entry) / entry) if side in ("BUY", "LONG") else ((entry - mark) / entry)
@@ -826,8 +857,8 @@ async def _status_update_loop(
                 for pos in internal:
                     symbol = pos.get("symbol", "")
                     side = pos.get("side", "LONG")
-                    entry_price = float(pos.get("entry_price", 0))
-                    amount = float(pos.get("amount", 0))
+                    entry_price = Decimal(str(pos.get("entry_price", 0)))
+                    amount = Decimal(str(pos.get("amount", 0)))
                     ccxt_sym = symbol.replace("/", "")
                     live_price = price_map.get(ccxt_sym, entry_price)
 
@@ -1023,8 +1054,10 @@ async def main() -> None:  # noqa: PLR0915
 
     from app.alpha.multi_tf import MultiTFFilter
     from app.alpha.trade_memory import TradeMemory
+    from app.alpha.market_analyzer import MarketAnalyzer
 
     classifier = RegimeClassifier(redis_client=redis)
+    analyzer = MarketAnalyzer(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
     trade_memory = TradeMemory(redis)
@@ -1051,7 +1084,7 @@ async def main() -> None:  # noqa: PLR0915
         crypto_analyst = None
 
     engine = DecisionEngine(
-        classifier,
+        analyzer,
         router,
         risk_gate,
         trade_memory=trade_memory,
@@ -1212,7 +1245,16 @@ async def main() -> None:  # noqa: PLR0915
             return
         await q.put((time.time(), symbol, sig))
 
-    consumer = MarketConsumer(redis, engine, on_signal, _on_candle)
+    background_tasks = set()
+
+    async def on_candle(symbol: str, candle: list) -> None:
+        history = consumer._buffer.as_list(symbol)
+        if history:
+            task = asyncio.create_task(analyzer.update_on_candle_close(symbol, history))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+
+    consumer = MarketConsumer(redis, engine, on_signal, on_candle)
 
     # Read dynamic universe from Redis, fall back to static config
     universe_symbols = await _read_universe(redis)
@@ -1428,6 +1470,8 @@ async def main() -> None:  # noqa: PLR0915
         await shutdown_event.wait()
     finally:
         consumer.stop()
+        for t in background_tasks:
+            t.cancel()
         for wt in worker_tasks:
             wt.cancel()
         ingestor_task.cancel()

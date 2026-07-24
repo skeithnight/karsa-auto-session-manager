@@ -187,7 +187,9 @@ class PositionStore:
 
     async def list_all(self) -> list[dict[str, Any]]:
         """List all active positions."""
-        keys = await self.redis.keys("karsa:position:*")
+        keys = []
+        async for k in self.redis.scan_iter(match="karsa:position:*"):
+            keys.append(k)
         positions = []
         for key in keys:
             raw = await self.redis.get(key)
@@ -207,7 +209,9 @@ class PositionStore:
         Returns:
             Number of orphaned keys removed.
         """
-        keys = await self.redis.keys("karsa:position:*")
+        keys = []
+        async for k in self.redis.scan_iter(match="karsa:position:*"):
+            keys.append(k)
         removed = 0
         for key in keys:
             key_str = key if isinstance(key, str) else key.decode()

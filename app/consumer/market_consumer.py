@@ -121,6 +121,12 @@ class MarketConsumer:
                 if not self._running:
                     break
                 logger.info("MarketConsumer: reconnecting in %ds...", backoff)
+
+                # Flush stale candles and timestamps on reconnect to prevent corrupted regime math
+                for sym in self._buffer.symbols():
+                    self._buffer.clear(sym)
+                self._last_ts.clear()
+
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, max_backoff)
                 continue

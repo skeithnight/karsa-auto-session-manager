@@ -1,6 +1,18 @@
 """Prometheus metrics for Data Engine, Alpha Bridge, Risk Gate, Executor, ASM."""
 
-from prometheus_client import Counter, Gauge, Histogram
+from __future__ import annotations
+
+try:
+    from prometheus_client import Counter, Gauge, Histogram
+except ImportError:
+    class DummyMetric:
+        def __init__(self, *args, **kwargs): pass
+        def inc(self, *args, **kwargs): pass
+        def dec(self, *args, **kwargs): pass
+        def set(self, *args, **kwargs): pass
+        def observe(self, *args, **kwargs): pass
+        def labels(self, *args, **kwargs): return self
+    Counter = Gauge = Histogram = DummyMetric  # type: ignore[misc,assignment]
 
 # ── Data Engine ──────────────────────────────────────────────
 orderbook_received = Counter(
@@ -48,11 +60,20 @@ skew_value = Gauge(
 # ── Pipeline Funnel (flow-stage counters) ──────────────────
 funnel_universe_scanned = Counter("karsa_funnel_universe_scanned_total", "Funnel global")
 funnel_raw_signals = Counter("karsa_funnel_raw_signals_total", "Funnel global")
+ml_prefilter_rejections_total = Counter(
+    "karsa_ml_prefilter_rejections_total",
+    "Signals rejected by local XGBoost inference"
+)
 funnel_alpha_passed = Counter("karsa_funnel_alpha_passed_total", "Funnel global")
 funnel_ai_calls = Counter("karsa_funnel_ai_calls_total", "Funnel global")
 funnel_ai_approved = Counter("karsa_funnel_ai_approved_total", "Funnel global")
 funnel_risk_passed = Counter("karsa_funnel_risk_passed_total", "Funnel global")
 funnel_risk_rejected = Counter("karsa_funnel_risk_rejected_total", "Funnel global")
+risk_layer_rejections_total = Counter(
+    "karsa_risk_layer_rejections_total",
+    "9-layer risk engine rejections by layer",
+    ["layer"],
+)
 funnel_orders_placed = Counter("karsa_funnel_orders_placed_total", "Funnel global")
 funnel_positions_closed = Counter("karsa_funnel_positions_closed_total", "Funnel global")
 
@@ -166,6 +187,16 @@ orders_rejected = Counter(
     "karsa_orders_rejected_total",
     "Orders rejected by SOR or risk filters",
     ["symbol", "reason"],
+)
+
+execution_blocked_unauthorized_total = Counter(
+    "karsa_execution_blocked_unauthorized_total",
+    "Total number of orders blocked due to exchange authorization/agreement requirements"
+)
+
+signals_blocked_unauthorized_total = Counter(
+    "karsa_signals_blocked_unauthorized_total",
+    "Total number of signals dropped early due to symbol blocklist"
 )
 
 # ── ASM ──────────────────────────────────────────────────────

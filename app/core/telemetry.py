@@ -18,7 +18,12 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import UTC, datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc  # type: ignore[misc]
+from datetime import datetime
 
 logger = logging.getLogger("karsa.telemetry")
 
@@ -132,6 +137,14 @@ class TelemetryEmitter:
 
     def record_error(self) -> None:
         self.error_count += 1
+
+    def record_risk_rejection(self, layer: int | str) -> None:
+        """Record a risk layer rejection event for telemetry and Prometheus."""
+        from app.core import metrics as m
+
+        layer_key = f"layer_{layer}"
+        m.risk_layer_rejections_total.labels(layer=layer_key).inc()
+        logger.info(f"Telemetry: recorded risk rejection on {layer_key}")
 
     # ── Lifecycle ──────────────────
 

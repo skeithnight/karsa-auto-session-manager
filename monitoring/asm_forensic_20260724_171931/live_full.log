@@ -1,0 +1,2 @@
+2026-07-24 10:21:53.851 | DEBUG    | app.execution.bybit_client:fetch_positions:393 - fetch_positions: entering
+unexpected EOF

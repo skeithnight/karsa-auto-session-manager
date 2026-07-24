@@ -46,13 +46,32 @@ class SmartOrderRouter:
         self.redis = redis_client
         logger.debug("SmartOrderRouter.__init__: returning")
 
+    async def _handle_auth_block(self, symbol: str, e: Exception) -> bool:
+        """Handle Bybit 110126 error (unsigned agreement). Returns True if blocked."""
+        error_msg = str(e).lower()
+        if "110126" in error_msg or "sign the required agreement" in error_msg:
+            logger.warning(f"🚫 BYBIT AGREEMENT REQUIRED: {symbol}. Adding to 24h blocklist.")
+            await self.redis.setex(f"karsa:blocked_symbol:{symbol}", 86400, "unsigned_agreement")
+            from app.core import metrics
+            metrics.execution_blocked_unauthorized_total.inc()
+            
+            if self.alert_service:
+                await self.alert_service.send(
+                    f"🚨 **ACTION REQUIRED: Bybit Agreement**\n"
+                    f"Symbol: `{symbol}`\n"
+                    f"Reason: Contract requires manual agreement in Bybit UI.\n"
+                    f"Action: Bot has blocked this symbol for 24h. Please log in to Bybit and accept the terms."
+                )
+            return True
+        return False
+
     async def execute(
         self,
         symbol: str,
         side: str,
         amount: Decimal,
         price: Decimal,
-        price_tick: Decimal = Decimal("0.01"),
+        price_tick: Decimal | None = None,
         max_loss_usd: Decimal = Decimal("1.00"),
     ) -> dict[str, Any] | None:
         """Execute order with 3-step fallback + exchange-side SL on fill.
@@ -67,14 +86,14 @@ class SmartOrderRouter:
         # Normalize side: accept "LONG"/"SHORT" from signal, convert to "buy"/"sell"
         side = "buy" if side in ("buy", "LONG") else "sell"
         logger.debug(f"execute: entering symbol={symbol} side={side}")
+        if price_tick is None:
+            price_tick = self.client._price_ticks.get(symbol, Decimal("0.01"))
         order: dict[str, Any] | None = None
 
         # Reject invalid price
         if price <= 0:
             logger.warning(f"SOR: invalid price {price} for {symbol}, skipping")
             return None
-
-
 
         # Iceberg / TWAP Order Slicing
         notional = price * amount
@@ -164,6 +183,8 @@ class SmartOrderRouter:
             elif order.get("status") == "rejected":
                 logger.warning(f"Post-Only rejected: {order.get('rejectReason', 'unknown')}")
         except Exception as e:
+            if await self._handle_auth_block(symbol, e):
+                return None
             logger.warning(f"Post-Only failed: {e}")
             # If the order actually filled but we crashed during SL placement,
             # we MUST NOT proceed to step 2. We must return the filled order.
@@ -272,6 +293,8 @@ class SmartOrderRouter:
                 elif order.get("status") == "rejected":
                     logger.warning(f"Reprice rejected: {order.get('rejectReason', 'unknown')}")
             except Exception as e:
+                if await self._handle_auth_block(symbol, e):
+                    return None
                 logger.warning(f"Reprice failed: {e}")
                 if order and order.get("status") in ("open", "closed"):
                     logger.error(f"CRITICAL: Reprice filled but crashed after: {e}. Returning order to avoid duplicates.")
@@ -320,6 +343,8 @@ class SmartOrderRouter:
             logger.debug("execute: returning dict (Market fallback)")
             return market_order
         except Exception as e:
+            if await self._handle_auth_block(symbol, e):
+                return None
             metrics.orders_failed.labels(
                 symbol=symbol, error_type=type(e).__name__
             ).inc()
@@ -974,6 +999,8 @@ class SmartOrderRouter:
                     except Exception as ce:
                         logger.warning(f"SOR Fee-Aware: error cancelling thin-edge order for {symbol}: {ce}")
             except Exception as e:
+                if await self._handle_auth_block(symbol, e):
+                    return None
                 logger.warning(f"SOR Fee-Aware: Thin-edge Post-Only failed for {symbol}: {e}")
             metrics.orders_rejected.labels(symbol=symbol, reason="fee_aware_thin_edge").inc()
             return None

@@ -86,6 +86,12 @@ class PortfolioRiskManager:
         try:
             checks: list[CheckResult] = []
 
+            # 0. MTF Regime Alignment (Layer 3)
+            c = await self._check_mtf_regime_alignment(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
             # 1. Correlation trap
             c = await self._check_correlation_trap(signal)
             checks.append(c)
@@ -210,6 +216,37 @@ class PortfolioRiskManager:
         except Exception as e:
             logger.debug(f"PRM evaluate_capital_reallocation failed: {e}")
             return None
+
+    async def _check_mtf_regime_alignment(self, signal: object) -> CheckResult:
+        """Layer 3: Reject signal if 15m signal direction contradicts broader market regime in Redis."""
+        try:
+            direction = getattr(signal, "direction", "LONG")
+            if self._redis is None:
+                return CheckResult(passed=False, reason="Layer 3 MTF Mismatch: Redis unavailable (fail-safe BLOCK)")
+
+            raw = await self._redis.get("system:config:market_state")
+            if raw is None:
+                return CheckResult(passed=False, reason="Layer 3 MTF Mismatch: Market state unavailable in Redis (fail-safe BLOCK)")
+
+            import json
+            data = json.loads(raw)
+            regime = data.get("regime", "RANGE")
+
+            if regime == "TREND_BULL" and direction == "SHORT":
+                return CheckResult(
+                    passed=False, reason="Layer 3 MTF Mismatch: SHORT signal in TREND_BULL regime"
+                )
+            elif regime == "TREND_BEAR" and direction == "LONG":
+                return CheckResult(
+                    passed=False, reason="Layer 3 MTF Mismatch: LONG signal in TREND_BEAR regime"
+                )
+            elif regime == "CHOP":
+                return CheckResult(
+                    passed=False, reason="Layer 3 MTF Mismatch: Signal rejected in CHOP regime"
+                )
+            return CheckResult(passed=True)
+        except Exception:
+            return CheckResult(passed=False, reason="Layer 3 MTF Mismatch: Internal error (fail-safe BLOCK)")
 
     # ------------------------------------------------------------------
     # Check 1: Correlation trap

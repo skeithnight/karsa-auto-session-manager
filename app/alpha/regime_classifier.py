@@ -22,8 +22,16 @@ import enum
 import json
 from typing import TYPE_CHECKING, Any
 
-import numpy as np
-from loguru import logger
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.regime_classifier")  # type: ignore[assignment]
 
 if TYPE_CHECKING:
     from app.core.feature_extractor import FeatureVector
@@ -45,6 +53,18 @@ class MarketRegime(enum.Enum):
     RANGE = "RANGE"
     CHOP = "CHOP"
     SNIPER = "SNIPER"
+
+    def encode(self) -> int:
+        """Returns integer encoding for ML feature vector."""
+        return {
+            "RANGE": 0,
+            "TREND_BULL": 1,
+            "TREND_BEAR": 2,
+            "HYPER_BULL": 3,
+            "HYPER_BEAR": 4,
+            "CHOP": 5,
+            "SNIPER": 6,
+        }.get(self.value, 0)
 
 
 class RegimeClassifier:

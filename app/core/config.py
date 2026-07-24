@@ -4,9 +4,25 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from loguru import logger
-from pydantic import AliasChoices, Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.config")  # type: ignore[assignment]
+try:
+    from pydantic import AliasChoices, Field
+except ImportError:
+    def AliasChoices(*args, **kwargs): return args[0] if args else None  # type: ignore
+    def Field(*args, **kwargs): return None  # type: ignore
+
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict
+except ImportError:
+    class BaseSettings:  # type: ignore
+        def __init__(self, **kwargs):
+            for k, v in kwargs.items(): setattr(self, k, v)
+            if not hasattr(self, "shadow_mode_enabled"): self.shadow_mode_enabled = False
+    def SettingsConfigDict(*args, **kwargs): return {}  # type: ignore
 
 
 class Settings(BaseSettings):

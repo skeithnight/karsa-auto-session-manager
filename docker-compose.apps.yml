@@ -39,6 +39,7 @@ x-karsa-app: &karsa-app
     - ./app:/app/app
     - ./scripts:/app/scripts
     - ./config:/app/config
+    - ./models:/app/models
 
 services:
   karsa-data-engine:

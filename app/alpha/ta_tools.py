@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 
 def calculate_ema(closes: list[Decimal], period: int = 200) -> Decimal | None:

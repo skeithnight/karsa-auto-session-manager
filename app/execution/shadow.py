@@ -19,7 +19,9 @@ Components:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json as _json
+import redis
 import uuid
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_DOWN, Decimal
@@ -374,6 +376,9 @@ class ShadowAPM:
                 await asyncio.sleep(2)
             except asyncio.CancelledError:
                 raise
+            except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as e:
+                logger.warning(f"ShadowAPM: Redis transient error: {e}. Backing off 3s...")
+                await asyncio.sleep(3)
             except Exception:
                 logger.exception("ShadowAPM: error in monitoring loop")
                 await asyncio.sleep(5)

@@ -601,7 +601,7 @@ class BybitClient:
             reduceOnly=True,
             timeInForce="GTC",
         )
-        logger.info(f"Stop-loss placed: {result.get('orderId')} @ {stop_price}")
+        logger.info(f"Stop-loss placed: {result.get('orderId')} @ {stop_price:f}")
         return result
 
     async def place_take_profit(
@@ -616,7 +616,7 @@ class BybitClient:
         triggerDirection reversed vs SL: Buy-side TP fires on price >= trigger.
         """
         logger.debug(
-            f"place_take_profit: entering symbol={symbol} side={side} tp_price={tp_price}"
+            f"place_take_profit: entering symbol={symbol} side={side} tp_price={tp_price:f}"
         )
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
@@ -634,7 +634,7 @@ class BybitClient:
             reduceOnly=True,
             timeInForce="GTC",
         )
-        logger.info(f"Take-profit placed: {result.get('orderId')} @ {tp_price}")
+        logger.info(f"Take-profit placed: {result.get('orderId')} @ {tp_price:f}")
         return result
 
     async def reduce_position(
@@ -692,9 +692,9 @@ class BybitClient:
             "positionIdx": 0,
         }
         if stop_loss is not None:
-            params["stopLoss"] = str(self._round_price(symbol, stop_loss))
+            params["stopLoss"] = f"{self._round_price(symbol, stop_loss):f}"
         if take_profit is not None:
-            params["takeProfit"] = str(self._round_price(symbol, take_profit))
+            params["takeProfit"] = f"{self._round_price(symbol, take_profit):f}"
 
         result = await self._execute(self.session.set_trading_stop, **params)
         logger.info(

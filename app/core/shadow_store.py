@@ -29,7 +29,9 @@ class ShadowPositionStore(PositionStore):
 
     async def list_all(self) -> list[dict[str, Any]]:
         """List all active shadow positions (shadow: prefix)."""
-        keys = await self.redis.keys("shadow:position:*")
+        keys = []
+        async for k in self.redis.scan_iter(match="shadow:position:*"):
+            keys.append(k)
         positions = []
         for key in keys:
             raw = await self.redis.get(key)
@@ -48,7 +50,9 @@ class ShadowPositionStore(PositionStore):
         """Close DB trades that have no backing Redis position."""
         closed = 0
         try:
-            keys = await self.redis.keys("shadow:position:*")
+            keys = []
+            async for k in self.redis.scan_iter(match="shadow:position:*"):
+                keys.append(k)
             active = set()
             for key in keys:
                 raw = await self.redis.get(key)
@@ -111,6 +115,12 @@ class ShadowTradeStore(TradeStore):
         evidence_orderbook: bool = False,
         evidence_funding: bool = False,
         evidence_ai: bool = False,
+        cvd_slope: float | None = None,
+        spread_bps: float | None = None,
+        session_mult: float | None = None,
+        regime_encoded: int | None = None,
+        atr_pct: float | None = None,
+        vol_factor: float | None = None,
     ) -> int:
         """Record shadow trade entry. Returns trade id."""
         now = datetime.now(UTC)
@@ -122,12 +132,14 @@ class ShadowTradeStore(TradeStore):
                         regime, entry_time, ai_confidence, entry_regime,
                         initial_risk_per_unit, risk_profile_json, is_shadow,
                         trace_id, ai_confidence_before, ai_confidence_after, ai_latency_ms,
-                        evidence_trend, evidence_momentum, evidence_orderbook, evidence_funding, evidence_ai)
+                        evidence_trend, evidence_momentum, evidence_orderbook, evidence_funding, evidence_ai,
+                        cvd_slope, spread_bps, session_mult, regime_encoded, atr_pct, vol_factor)
                         VALUES (:symbol, :side, :amount, :entry_price, :regime,
                         :entry_time, :ai_confidence, :entry_regime,
                         :initial_risk_per_unit, :risk_profile_json, TRUE,
                         :trace_id, :ai_confidence_before, :ai_confidence_after, :ai_latency_ms,
-                        :evidence_trend, :evidence_momentum, :evidence_orderbook, :evidence_funding, :evidence_ai)
+                        :evidence_trend, :evidence_momentum, :evidence_orderbook, :evidence_funding, :evidence_ai,
+                        :cvd_slope, :spread_bps, :session_mult, :regime_encoded, :atr_pct, :vol_factor)
                         RETURNING id"""
                     ),
                     {
@@ -152,6 +164,12 @@ class ShadowTradeStore(TradeStore):
                         "evidence_orderbook": evidence_orderbook,
                         "evidence_funding": evidence_funding,
                         "evidence_ai": evidence_ai,
+                        "cvd_slope": cvd_slope,
+                        "spread_bps": spread_bps,
+                        "session_mult": session_mult,
+                        "regime_encoded": regime_encoded,
+                        "atr_pct": atr_pct,
+                        "vol_factor": vol_factor,
                     },
                 )
                 row = result.fetchone()

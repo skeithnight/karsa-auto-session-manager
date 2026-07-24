@@ -7,6 +7,8 @@ Ported from karsa-claude-trading src/utils/formatters/__init__.py.
 Import path updated: app.bot.utils.formatters (was src.utils.formatters).
 """
 
+from __future__ import annotations
+
 from decimal import Decimal
 
 from app.bot.utils.format import HTML, bold, code, fmt, italic, pre
@@ -333,7 +335,10 @@ def format_entry_alert(
 
 
 # Paginated trade history formatter
-from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
+try:
+    from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
+except ImportError:
+    TradeHistoryFormatter = None  # type: ignore[assignment]
 
 __all__ = [
     "format_price",

@@ -25,8 +25,16 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Any
 
-import numpy as np
-from loguru import logger
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.strategy_router")  # type: ignore[assignment]
 
 from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.regime_classifier import MarketRegime
@@ -53,7 +61,7 @@ STRATEGY_GATE_THRESHOLD: int = 65
 # Cross-asset volatility normalization: ATR as % of price reference point
 VOLATILITY_REFERENCE_ATR_PCT: float = 2.0  # typical BTC ATR_pct
 VOLATILITY_FACTOR_MIN: float = 0.7  # low-vol bonus (lower gate)
-VOLATILITY_FACTOR_MAX: float = 1.5  # high-vol penalty (higher gate)
+VOLATILITY_FACTOR_MAX: float = 1.30  # high-vol penalty (higher gate)
 
 
 class StrategyRouter:
@@ -68,6 +76,24 @@ class StrategyRouter:
         self.volatility_scaling = volatility_scaling
         self.collector = collector or EvidenceCollector()
         self.edge_calculator = edge_calculator
+
+    def check_alpha_confluence(
+        self, hurst: float, adx: float, volume_surge: bool, regime: MarketRegime
+    ) -> bool:
+        """KASM 2.1 Alpha Bridge Confluence Voting:
+        Requires (Hurst > 0.5 for trend or Hurst < 0.5 for range) AND (ADX > 20) AND volume_surge.
+        """
+        if regime == MarketRegime.CHOP:
+            return False
+        is_trend = regime in (
+            MarketRegime.TREND_BULL,
+            MarketRegime.TREND_BEAR,
+            MarketRegime.HYPER_BULL,
+            MarketRegime.HYPER_BEAR,
+        )
+        hurst_valid = (hurst > 0.50) if is_trend else (hurst < 0.50)
+        adx_valid = adx >= 20.0
+        return bool(hurst_valid and adx_valid and volume_surge)
 
     async def evaluate_signal(
         self,

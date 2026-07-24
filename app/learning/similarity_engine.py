@@ -4,7 +4,10 @@ Finds historically similar market contexts to inform current decisions.
 """
 from __future__ import annotations
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    np = None
 
 
 class SimilarityEngine:

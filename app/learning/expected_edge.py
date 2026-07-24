@@ -6,7 +6,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.expected_edge")  # type: ignore[assignment]
 
 from app.core.decision_context import DecisionContext
 from app.learning.similarity_engine import SimilarityEngine

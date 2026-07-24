@@ -114,23 +114,16 @@ async def _on_signal_shadow(
         logger.info("shadow skip %s — all slots full (%d/%d)", symbol, total_open, max_positions)
         return
 
-    # AI Analyst gate — skip for high-confidence signals (score >= 75) and CHOP regime
-    # CHOP has inherently conflicting indicators, so the AI systematically rejects
-    # CHOP signals. Bypass AI entirely for CHOP to get clean signal data.
-    AI_CONFIDENCE_BYPASS_THRESHOLD = 75.0
-
-    if (
-        crypto_analyst
-        and signal.score >= 40.0
-        and signal.score < AI_CONFIDENCE_BYPASS_THRESHOLD
-    ):
+    # AI Analyst gate (mandatory, mirroring live loop)
+    if crypto_analyst:
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         from app.core import metrics
         metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
+        metrics.funnel_ai_calls.inc()
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
             direction=signal.direction,
-            confidence=signal.score,
+            confidence=(signal.score / 100.0),
             regime=signal.regime.value,
             spread_pct=0.0,
             funding_rate=0.0,
@@ -138,7 +131,7 @@ async def _on_signal_shadow(
             price=signal.entry_price,
             recent_trades="",
         )
-        if not analyst_result or analyst_result.direction != signal.direction:
+        if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
             from app.core import metrics
 
             reason = "unavailable" if not analyst_result else "direction_mismatch"
@@ -147,6 +140,7 @@ async def _on_signal_shadow(
             return
 
         metrics.ai_analyst_approvals.inc()
+        metrics.funnel_ai_approved.inc()
 
     # PortfolioRiskManager gate
     if risk_manager is None:
@@ -165,6 +159,7 @@ async def _on_signal_shadow(
             metrics.risk_gate_reject.labels(
                 symbol=symbol, reason="portfolio_risk"
             ).inc()
+            metrics.funnel_risk_rejected.inc()
             logger.info(
                 "shadow skip %s - PortfolioRiskManager rejected: %s",
                 symbol,
@@ -175,6 +170,7 @@ async def _on_signal_shadow(
     from app.core import metrics
 
     metrics.risk_gate_pass.labels(symbol=symbol).inc()
+    metrics.funnel_risk_passed.inc()
 
     # Execute virtual trade
     result = await shadow_executor.execute(
@@ -214,7 +210,16 @@ async def _on_signal_shadow(
             entry_price=fill_price,
             regime=signal.regime.value,
             risk_profile_json=signal.risk_profile.to_json(),
+            trace_id=signal.trace_id,
+            cvd_slope=signal.cvd_slope,
+            spread_bps=signal.spread_bps,
+            session_mult=signal.session_mult,
+            regime_encoded=signal.regime_encoded,
+            atr_pct=signal.atr_pct,
+            vol_factor=signal.vol_factor,
         )
+        from app.core import metrics
+        metrics.funnel_orders_placed.inc()
 
     logger.info(
         "shadow executed %s %s @ %s (score=%.1f, regime=%s)",
@@ -363,8 +368,10 @@ async def main() -> None:
     from app.alpha.multi_tf import MultiTFFilter
     from app.alpha.trade_memory import TradeMemory
     from app.data.ohlcv_fetcher import OHLCVFetcher
+    from app.alpha.market_analyzer import MarketAnalyzer
 
     classifier = RegimeClassifier(redis_client=redis)
+    analyzer = MarketAnalyzer(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
     trade_memory = TradeMemory(redis)
@@ -375,7 +382,7 @@ async def main() -> None:
     multi_tf = MultiTFFilter(ohlcv_fetcher)
 
     engine = DecisionEngine(
-        classifier,
+        analyzer,
         router,
         risk_gate,
         trade_memory=trade_memory,
@@ -546,11 +553,20 @@ async def main() -> None:
         except Exception as e:
             logger.error(f"Failed to execute micro scalp for {symbol}: {e}")
 
+    background_tasks = set()
+
+    async def on_candle(symbol: str, candle: list) -> None:
+        history = consumer._buffer.as_list(symbol)
+        if history:
+            task = asyncio.create_task(analyzer.update_on_candle_close(symbol, history))
+            background_tasks.add(task)
+            task.add_done_callback(background_tasks.discard)
+
     consumer = MarketConsumer(
         redis_client=redis, 
         decision_engine=engine, 
         on_signal=on_signal, 
-        on_candle=_on_candle,
+        on_candle=on_candle,
         micro_scalper=micro_scalper,
         on_micro_signal=on_micro_signal
     )
@@ -597,6 +613,8 @@ async def main() -> None:
         await shutdown_event.wait()
     finally:
         consumer.stop()
+        for t in background_tasks:
+            t.cancel()
         for wt in worker_tasks:
             wt.cancel()
         ingestor_task.cancel()

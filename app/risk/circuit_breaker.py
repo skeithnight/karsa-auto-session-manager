@@ -10,11 +10,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-from datetime import UTC, datetime
+try:
+    from datetime import UTC
+except ImportError:
+    from datetime import timezone
+    UTC = timezone.utc  # type: ignore[misc]
+from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.circuit_breaker")  # type: ignore[assignment]
 
 from app.core import metrics
 

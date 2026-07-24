@@ -10,7 +10,11 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
-from pydantic import BaseModel, Field
+try:
+    from pydantic import BaseModel, Field
+except ImportError:
+    class BaseModel: pass  # type: ignore[no-redef]
+    def Field(*args, **kwargs): return None  # type: ignore[no-redef]
 
 from app.alpha.regime_classifier import MarketRegime
 from app.core.decision_lifecycle import DecisionLifecycle

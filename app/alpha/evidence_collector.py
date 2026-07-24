@@ -5,8 +5,16 @@ Gathers evidence for a specific strategy and computes total confidence.
 
 from __future__ import annotations
 
-import yaml
-from loguru import logger
+try:
+    import yaml
+except ImportError:
+    yaml = None
+
+try:
+    from loguru import logger
+except ImportError:
+    import logging
+    logger = logging.getLogger("karsa.evidence_collector")  # type: ignore[assignment]
 
 from app.core.decision_context import DecisionContext
 
@@ -18,6 +26,8 @@ class EvidenceCollector:
         self.profile = self._load_profile(profile_path)
 
     def _load_profile(self, path: str) -> dict:
+        if yaml is None:
+            return {"regimes": {}}
         try:
             with open(path) as f:
                 return yaml.safe_load(f)

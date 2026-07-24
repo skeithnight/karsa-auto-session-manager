@@ -7,11 +7,23 @@ regimes:
       trend_alignment: 20.0
       momentum: 20.0
       volatility_expansion: 10.0
+  HYPER_BULL:
+    base_confidence: 55.0
+    weights:
+      trend_alignment: 20.0
+      momentum: 25.0
+      volatility_expansion: 10.0
   TREND_BEAR:
     base_confidence: 50.0
     weights:
       trend_alignment: 20.0
       momentum: 20.0
+      volatility_expansion: 10.0
+  HYPER_BEAR:
+    base_confidence: 55.0
+    weights:
+      trend_alignment: 20.0
+      momentum: 25.0
       volatility_expansion: 10.0
   RANGE:
     base_confidence: 40.0

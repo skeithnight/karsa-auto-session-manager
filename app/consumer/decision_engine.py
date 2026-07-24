@@ -14,6 +14,7 @@ import numpy as np
 
 from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
+from app.alpha.market_analyzer import MarketAnalyzer
 from app.alpha.strategy_router import StrategyRouter
 from app.core.decision_context import DecisionContext
 from app.core.feature_extractor import FeatureExtractor
@@ -72,6 +73,12 @@ class TradeSignal:
     candles: list[list] = field(repr=False)
     expires_at: float | None = None
     trace_id: str | None = None
+    vol_factor: float = 1.0
+    session_mult: float = 1.0
+    spread_bps: float = 0.0
+    cvd_slope: float = 0.0
+    atr_pct: float = 0.0
+    regime_encoded: int = 0
     context: DecisionContext | None = None
 
     @property
@@ -92,7 +99,7 @@ class DecisionEngine:
 
     def __init__(
         self,
-        classifier: RegimeClassifier,
+        analyzer: MarketAnalyzer,
         router: StrategyRouter,
         risk_gate: DynamicRiskGate,
         gate_threshold: float = _GATE_THRESHOLD,
@@ -106,7 +113,7 @@ class DecisionEngine:
         crypto_analyst: object | None = None,
         trade_store: object | None = None,
     ) -> None:
-        self._classifier = classifier
+        self._analyzer = analyzer
         self._risk_gate = risk_gate
         self._gate = Decimal(str(gate_threshold))
         self._base_size = base_size
@@ -263,8 +270,9 @@ class DecisionEngine:
         stage_timings["feature_extraction"] = t_feat - t_start
         metrics.pipeline_stage_latency_seconds.labels(stage="feature_extraction").observe(stage_timings["feature_extraction"])
 
-        # Step 1: Regime classification
-        regime = self._classifier.classify(features, snapshot)
+        # Step 1: Regime classification (Read immutable state)
+        market_state = self._analyzer.current_state
+        regime = MarketRegime(market_state.regime)
 
         t_regime = time.perf_counter()
         stage_timings["regime_classification"] = t_regime - t_feat
@@ -350,12 +358,12 @@ class DecisionEngine:
                     ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
                     continue
 
-                # Momentum Exemption: if the token is up/down > 15% in 24h, it has detached from the macro trend.
+                # Momentum Exemption: if the token is up/down > 8% in 24h, it has detached from the macro trend.
                 if len(arr) >= 24:
                     close_now = arr[-1][4]
                     close_24h_ago = arr[-24][4]
                     pct_change = (close_now - close_24h_ago) / close_24h_ago
-                    if direction == "LONG" and pct_change > 0.15 or direction == "SHORT" and pct_change < -0.15:
+                    if direction == "LONG" and pct_change > 0.08 or direction == "SHORT" and pct_change < -0.08:
                         momentum_exemption = True
 
                 # Macro Anchor (Lead-Lag) Hard Block & Penalty
@@ -434,10 +442,9 @@ class DecisionEngine:
             else:
                 session_mult, session_name = 0.8, "PACIFIC"
 
-            score = score * session_mult
             logger.info(
-                f"evaluate: {symbol} {direction} Session Volatility Filter ({session_name}): "
-                f"multiplier={session_mult}x -> adjusted_score={score:.1f}"
+                f"evaluate: {symbol} {direction} Session ({session_name}): "
+                f"sizing_multiplier={session_mult}x (score={score:.1f} unpenalized)"
             )
 
             effective_gate = float(self._gate) * vol_factor
@@ -497,7 +504,7 @@ class DecisionEngine:
 
                 metrics.signal_confidence_passed_total.labels(regime=regime.value).inc()
                 metrics.funnel_alpha_passed.inc()
-                signal = await self._build_signal(symbol, direction, regime, score, arr, context)
+                signal = await self._build_signal(symbol, direction, regime, score, arr, context, session_mult)
                 # Unfreeze briefly to set stage_timings
                 object.__setattr__(signal, "stage_timings", stage_timings)
 
@@ -600,6 +607,7 @@ class DecisionEngine:
         score: float,
         arr: np.ndarray,
         context: DecisionContext | None = None,
+        session_mult: float = 1.0,
     ) -> TradeSignal:
         """Build a TradeSignal from pipeline outputs.
 
@@ -669,6 +677,7 @@ class DecisionEngine:
                 self._wallet_balance
                 * scaled_risk_pct
                 * profile.size_multiplier
+                * Decimal(str(session_mult))
                 / risk_distance
             )
             # Cap notional to 40% of equity (PRM single position limit)
@@ -682,6 +691,7 @@ class DecisionEngine:
                 self._base_size
                 * Decimal("100")
                 * profile.size_multiplier
+                * Decimal(str(session_mult))
                 / risk_distance
             )
 
@@ -689,6 +699,11 @@ class DecisionEngine:
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
         import uuid
+
+        cvd_slope = float(context.features.cvd_slope) if context and context.features and context.features.cvd_slope is not None else 0.0
+        spread_bps = float(context.features.spread_pct) * 10000.0 if context and context.features and context.features.spread_pct is not None else 0.0
+        atr_pct = float(context.features.atr_pct) if context and context.features and context.features.atr_pct is not None else 0.0
+        vol_factor = float(context.evidence[-1].value) if context and context.evidence else 1.0 # Volatility factor is not strictly required but handled if present
 
         return TradeSignal(
             symbol=symbol,
@@ -705,6 +720,12 @@ class DecisionEngine:
             timestamp_ms=ts_ms,
             candles=arr.tolist(),
             trace_id=uuid.uuid4().hex,
+            vol_factor=vol_factor,
+            session_mult=session_mult,
+            spread_bps=spread_bps,
+            cvd_slope=cvd_slope,
+            atr_pct=atr_pct,
+            regime_encoded=regime.encode(),
             context=context,
         )
 

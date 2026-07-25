@@ -25,6 +25,14 @@ MOMENTUM_MAX = Decimal("40")  # 0-40
 SQUEEZE_MAX = Decimal("30")  # 0-30
 OVEREXTENSION_MAX = Decimal("40")  # penalty -40 to 0
 FUNDING_MAX = Decimal("50")  # 0-50 (massive boost for extreme funding)
+VOLUME_ANOMALY_MAX = Decimal("25")  # 0-25 bonus for whale accumulation detection
+
+# Volume Anomaly Thresholds (cross-ref: docs/plan/big_gainers_secure_plan.md §Phase 2)
+VOLUME_ANOMALY_RATIO = Decimal("3")  # 3x average = anomaly
+VOLUME_ANOMALY_PRICE_THRESHOLD = Decimal("0.05")  # <5% price move = accumulation
+
+# Strong Performer Thresholds (cross-ref: docs/plan/big_gainers_secure_plan.md §Phase 2)
+STRONG_PERFORMER_48H_THRESHOLD = Decimal("0.15")  # +15% in 48h
 
 # Selection thresholds
 DEFAULT_TOP_N = 40
@@ -151,7 +159,41 @@ class UniverseScorer:
         funding_rate = await self.fetcher.fetch_funding_rate(symbol)
         funding_score = min(abs(funding_rate) * Decimal("50000"), FUNDING_MAX)
 
-        total = volume_score + momentum_score + overextension_penalty + squeeze_score + funding_score
+        # --- Volume Anomaly Detection (Phase 2) ---
+        # Detect whale accumulation: volume spiking but price stable
+        volume_anomaly_score = Decimal("0")
+        if len(candles) >= 24:
+            # candles = [timestamp, open, high, low, close, volume]
+            current_volume = Decimal(str(candles[-1][5]))  # latest 1H volume
+            # FIX (Refinement 1): Use last 4 candles for 4H average, not 24
+            avg_volume_4h = sum(Decimal(str(c[5])) for c in candles[-4:]) / Decimal("4")
+
+            if avg_volume_4h > 0:
+                volume_ratio = current_volume / avg_volume_4h
+
+                # Volume spiking but price hasn't moved yet = accumulation
+                price_change_4h = abs((closes[-1] - closes[-4]) / closes[-4]) if closes[-4] > 0 else Decimal("0")
+
+                if volume_ratio > VOLUME_ANOMALY_RATIO and price_change_4h < VOLUME_ANOMALY_PRICE_THRESHOLD:
+                    # 3x volume + <5% price move = whale accumulation
+                    volume_anomaly_score = min(
+                        (volume_ratio - VOLUME_ANOMALY_RATIO) * Decimal("5"),
+                        VOLUME_ANOMALY_MAX
+                    )
+                    logger.info(f"{symbol}: VOLUME ANOMALY detected — {volume_ratio:.1f}x avg, price stable")
+
+        # --- Strong Performer Flag (Phase 2, prep for Phase 3 Dip Buyer) ---
+        strong_performer = False
+        if len(closes) >= 48:
+            price_48h_ago = closes[-48]
+            if price_48h_ago > 0:
+                move_48h = (closes[-1] - price_48h_ago) / price_48h_ago
+                if move_48h > STRONG_PERFORMER_48H_THRESHOLD:
+                    strong_performer = True
+                    # DISABLE overextension penalty for strong performers
+                    overextension_penalty = Decimal("0")
+
+        total = volume_score + momentum_score + overextension_penalty + squeeze_score + funding_score + volume_anomaly_score
 
         return {
             "symbol": symbol,
@@ -160,6 +202,8 @@ class UniverseScorer:
             "overextension_penalty": round(overextension_penalty, 2),
             "squeeze_score": round(squeeze_score, 2),
             "funding_score": round(funding_score, 2),
+            "volume_anomaly_score": round(volume_anomaly_score, 2),
+            "strong_performer": strong_performer,
             "total_score": round(total, 2),
             "sector": get_sector(symbol),
         }

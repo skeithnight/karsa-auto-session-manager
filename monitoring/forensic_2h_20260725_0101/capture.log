@@ -1,0 +1,33 @@
+=== 2-Hour Forensic Capture ===
+Start: 2026-07-24T18:04:01Z
+Snapshots: 240 (every 30s)
+
+PIDs: live=5489 shadow=5491 data=5495
+[2026-07-24T18:08:36Z] Snapshot 10/240 | live=       4 shadow=       2
+[2026-07-24T18:13:41Z] Snapshot 20/240 | live=       4 shadow=       1
+[2026-07-24T18:18:46Z] Snapshot 30/240 | live=       3 shadow=       1
+[2026-07-24T18:23:50Z] Snapshot 40/240 | live=       2 shadow=       1
+[2026-07-24T18:28:54Z] Snapshot 50/240 | live=       2 shadow=       1
+[2026-07-24T18:33:58Z] Snapshot 60/240 | live=       1 shadow=       1
+[2026-07-24T18:39:02Z] Snapshot 70/240 | live=       1 shadow=       1
+[2026-07-24T18:44:06Z] Snapshot 80/240 | live=       1 shadow=       1
+[2026-07-24T18:49:10Z] Snapshot 90/240 | live=       1 shadow=       1
+[2026-07-24T18:54:14Z] Snapshot 100/240 | live=       1 shadow=       1
+[2026-07-24T18:59:18Z] Snapshot 110/240 | live=       1 shadow=       1
+[2026-07-24T19:04:22Z] Snapshot 120/240 | live=       1 shadow=       6
+[2026-07-24T19:09:25Z] Snapshot 130/240 | live=       1 shadow=       5
+[2026-07-24T19:14:29Z] Snapshot 140/240 | live=       1 shadow=       1
+[2026-07-24T19:19:34Z] Snapshot 150/240 | live=       1 shadow=       1
+[2026-07-24T19:24:37Z] Snapshot 160/240 | live=       1 shadow=       1
+[2026-07-24T19:29:41Z] Snapshot 170/240 | live=       1 shadow=       1
+[2026-07-24T19:34:46Z] Snapshot 180/240 | live=       1 shadow=       1
+[2026-07-24T19:39:50Z] Snapshot 190/240 | live=       1 shadow=       1
+[2026-07-24T19:44:54Z] Snapshot 200/240 | live=       1 shadow=       1
+[2026-07-24T19:49:58Z] Snapshot 210/240 | live=       1 shadow=       1
+[2026-07-24T19:55:06Z] Snapshot 220/240 | live=       1 shadow=       1
+[2026-07-24T20:00:16Z] Snapshot 230/240 | live=       1 shadow=       1
+[2026-07-24T20:05:20Z] Snapshot 240/240 | live=       1 shadow=       4
+
+=== Capture Complete ===
+End: 2026-07-24T20:05:51Z
+Snapshots:      240

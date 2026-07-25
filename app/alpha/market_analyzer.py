@@ -220,15 +220,16 @@ class MarketAnalyzer:
         return float(np.mean(tr[-14:]))
 
     def _calculate_hurst(self, prices: np.ndarray) -> float:
-        if len(prices) < 32:
-            return 0.5
-        returns = np.diff(np.log(prices[prices > 0]))
-        if len(returns) < 32:
-            return 0.5
-        variance = np.var(returns)
-        if variance == 0:
-            return 0.5
-        return 0.5 + float(np.mean(returns[:10])) * 0.01  # Lightweight estimation guard
+        """R/S Hurst exponent. H > 0.5 = trending, H < 0.5 = mean-reverting.
+
+        Delegates to RegimeClassifier's correct R/S implementation to ensure
+        a single source of truth for Hurst across the entire system.
+        Previously this method returned 0.5 + noise, causing chronic
+        under-detection of RANGE regimes.
+        """
+        from app.alpha.regime_classifier import RegimeClassifier
+
+        return RegimeClassifier._calculate_hurst(prices)
 
     def _predict_hmm(self, closes: np.ndarray) -> str:
         """Inference-only HMM prediction using pre-trained weights or returns heuristic."""

@@ -106,17 +106,22 @@ If no setup exists, return confidence 0 and target_entry_price 0.
 class CryptoAnalyst:
     """AI pre-entry analyst. Runs in ambiguous confidence zone only."""
 
+    # Transient error codes that warrant retry with backoff
+    _RETRYABLE_STATUS_CODES = {404, 502, 503, 504}
+
     def __init__(
         self,
         ai_client: AIClient,
         ohlcv_fetcher: OHLCVFetcher,
         redis_client: Any = None,
         cache_ttl: int = 300,
+        is_shadow: bool = False,
     ) -> None:
         self.ai_client = ai_client
         self.fetcher = ohlcv_fetcher
         self.redis = redis_client
         self.cache_ttl = cache_ttl
+        self.is_shadow = is_shadow
         self.circuit_breaker = AICircuitBreaker(failure_threshold=3, reset_timeout_seconds=300)
 
     async def analyze(
@@ -235,27 +240,45 @@ class CryptoAnalyst:
         if recent_trades:
             prompt = recent_trades + "\n\n" + prompt
 
-        try:
-            metrics.ai_request_total.inc()
-            response = await asyncio.wait_for(
-                self.ai_client.complete(prompt, max_tokens=1024),
-                timeout=30.0
-            )
-            self.circuit_breaker.record_success()
-        except TimeoutError:
-            self.circuit_breaker.record_failure()
-            metrics.ai_timeout_total.inc()
-            logger.warning(f"Analyst: AI request timed out for {symbol}")
-            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_TIMEOUT", model_used="circuit_breaker")
-        except Exception as e:
-            self.circuit_breaker.record_failure()
-            logger.warning(f"Analyst: AI request failed for {symbol}: {e}")
-            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_REQUEST_FAILED", model_used="circuit_breaker")
+        # Retry loop with exponential backoff for transient AI failures (404/503).
+        # Shadow mode skips retries — pass through immediately (fail-open).
+        # Live mode retries up to 3 times: 1s, 2s, 4s backoff.
+        max_retries = 0 if self.is_shadow else 2  # 0 retries = immediate fail, 2 retries = 3 total attempts
+        response = None
+        last_error_reason = "AI_REQUEST_FAILED"
+        for attempt in range(max_retries + 1):
+            try:
+                metrics.ai_request_total.inc()
+                response = await asyncio.wait_for(
+                    self.ai_client.complete(prompt, max_tokens=1024),
+                    timeout=30.0
+                )
+                self.circuit_breaker.record_success()
+                break  # Success — exit retry loop
+            except TimeoutError:
+                self.circuit_breaker.record_failure()
+                metrics.ai_timeout_total.inc()
+                last_error_reason = "AI_TIMEOUT"
+                if attempt < max_retries:
+                    wait_s = 2 ** attempt  # 1s, 2s
+                    logger.warning(f"Analyst: AI timeout for {symbol}, retry {attempt + 1}/{max_retries} in {wait_s}s")
+                    await asyncio.sleep(wait_s)
+                else:
+                    logger.warning(f"Analyst: AI request timed out for {symbol} after {max_retries + 1} attempts")
+            except Exception as e:
+                self.circuit_breaker.record_failure()
+                last_error_reason = "AI_REQUEST_FAILED"
+                if attempt < max_retries:
+                    wait_s = 2 ** attempt
+                    logger.warning(f"Analyst: AI request failed for {symbol}: {e}, retry {attempt + 1}/{max_retries} in {wait_s}s")
+                    await asyncio.sleep(wait_s)
+                else:
+                    logger.warning(f"Analyst: AI request failed for {symbol}: {e} after {max_retries + 1} attempts")
 
         if not response:
             metrics.ai_analyst_calls.labels(result="unavailable").inc()
-            logger.warning(f"Analyst: AI unavailable for {symbol}")
-            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning="AI_REQUEST_FAILED", model_used="circuit_breaker")
+            logger.warning(f"Analyst: AI unavailable for {symbol} ({last_error_reason})")
+            return AnalystResult(direction="FLAT", ai_confidence=0, reasoning=last_error_reason, model_used="circuit_breaker")
 
         result = self._parse_response(response)
         if result is None:

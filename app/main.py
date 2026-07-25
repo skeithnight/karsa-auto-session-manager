@@ -1471,7 +1471,7 @@ async def main() -> None:
         model=settings.nine_router_model,
     )
     # AI mandatory — always create (Issue #8: toggles removed)
-    crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client)
+    crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis_client, is_shadow=False)
     position_judge = PositionJudge(ai_client, ohlcv_fetcher, redis_client)
 
     trade_reconciler = TradeReconciler(bybit_client, trade_store, alert_service)

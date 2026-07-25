@@ -52,7 +52,7 @@ class TestScoreSymbol:
     def setup_method(self):
         self.scorer = _mock_scorer(symbols=["BTC/USDT"])
         self.scorer.redis.get_global_state.return_value = _make_state()
-        self.scorer.fetcher.fetch.return_value = _make_candles(25)
+        self.scorer.fetcher.fetch.return_value = _make_candles(168)
 
     @pytest.mark.asyncio
     async def test_score_symbol_basic(self):
@@ -95,12 +95,26 @@ class TestOverextension:
         scorer = _mock_scorer(symbols=["BTC/USDT"])
         scorer.redis.get_global_state.return_value = _make_state()
 
-        # 25 candles: first 21 at ~100, last 4 ramp to 140 (>30% above 100)
-        candles = _make_candles(21, start_price=100.0, step=0.5)
-        for i in range(4):
-            close = 131.0 + i * 3  # 131, 134, 137, 140
+        # 168 candles with V-shape to avoid triggering strong_performer:
+        # - Candles 1-120: flat at 100
+        # - Candles 121-147: drop to 70 (candle[-21] = 70)
+        # - Candles 148-168: recover to 100 (candle[-1] = 100)
+        # This way:
+        # - overextension: |100 - 70| / 70 = 42.9% > 30% ✓
+        # - strong_performer: (100 - 100) / 100 = 0% < 15% ✓ (candle[-48] ≈ 100)
+        candles = _make_candles(120, start_price=100.0, step=0.1)
+        # Drop from 100 to 70 over 27 candles
+        for i in range(27):
+            close = 100.0 - (i + 1) * (30.0 / 27)  # 98.89, 97.78, ..., 70.0
             candles.append(
-                [1_700_000_000_000 + (21 + i) * 900_000,
+                [1_700_000_000_000 + (120 + i) * 900_000,
+                 close - 0.5, close + 1.0, close - 1.0, close, 2_000_000.0]
+            )
+        # Recover from 70 to 100 over 21 candles
+        for i in range(21):
+            close = 70.0 + (i + 1) * (30.0 / 21)  # 71.43, 72.86, ..., 100.0
+            candles.append(
+                [1_700_000_000_000 + (147 + i) * 900_000,
                  close - 0.5, close + 1.0, close - 1.0, close, 2_000_000.0]
             )
         scorer.fetcher.fetch.return_value = candles
@@ -204,3 +218,130 @@ class TestRefreshFallback:
         assert result == config_symbols[:5]
         assert len(result) == 5
         scorer.redis.set.assert_called_once()
+
+
+class TestVolumeAnomaly:
+    """Test volume anomaly detection (Phase 2)."""
+
+    @pytest.mark.asyncio
+    async def test_volume_anomaly_detected(self):
+        """3x volume + stable price should trigger anomaly bonus."""
+        scorer = _mock_scorer(symbols=["BTC/USDT"])
+        scorer.redis.get_global_state.return_value = _make_state()
+
+        # Build 168 candles (7 days) with:
+        # - First 164 candles: normal volume (1M)
+        # - Candles 165-167: low volume (0.5M)
+        # - Last candle (168): spike to 4.5M (ratio > 3x vs avg of last 4)
+        candles = []
+        for i in range(164):
+            close = 100.0 + (i % 5) * 0.1  # Oscillate around 100
+            candles.append(
+                [1_700_000_000_000 + i * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 1_000_000.0]
+            )
+        # Candles 165-167: low volume (0.5M), price stable
+        for i in range(3):
+            close = 100.0 + i * 0.01
+            candles.append(
+                [1_700_000_000_000 + (164 + i) * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 500_000.0]
+            )
+        # Last candle (168): 5M volume, price stable
+        # avg of last 4 = (0.5M + 0.5M + 0.5M + 5M) / 4 = 1.625M, ratio = 5M / 1.625M = 3.08
+        close = 100.03
+        candles.append(
+            [1_700_000_000_000 + 167 * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 5_000_000.0]
+        )
+        scorer.fetcher.fetch.return_value = candles
+
+        result = await scorer.score_symbol("BTC/USDT")
+        assert result is not None
+        assert result["volume_anomaly_score"] > 0
+
+    @pytest.mark.asyncio
+    async def test_no_volume_anomaly_normal(self):
+        """Normal volume should not trigger anomaly."""
+        scorer = _mock_scorer(symbols=["BTC/USDT"])
+        scorer.redis.get_global_state.return_value = _make_state()
+
+        # All candles with same volume
+        candles = _make_candles(168, start_price=100.0, step=0.1)
+        scorer.fetcher.fetch.return_value = candles
+
+        result = await scorer.score_symbol("BTC/USDT")
+        assert result is not None
+        assert result["volume_anomaly_score"] == 0
+
+    @pytest.mark.asyncio
+    async def test_volume_anomaly_price_moved(self):
+        """3x volume + price moved >5% should NOT trigger anomaly (not accumulation)."""
+        scorer = _mock_scorer(symbols=["BTC/USDT"])
+        scorer.redis.get_global_state.return_value = _make_state()
+
+        # Build 168 candles with price ramping up significantly in last 4
+        candles = _make_candles(164, start_price=100.0, step=0.1)
+        # Last 4 candles: 3x volume, price jumping 6%
+        for i in range(4):
+            close = 106.0 + i * 0.5  # Big price move
+            candles.append(
+                [1_700_000_000_000 + (164 + i) * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 3_000_000.0]
+            )
+        scorer.fetcher.fetch.return_value = candles
+
+        result = await scorer.score_symbol("BTC/USDT")
+        assert result is not None
+        # Price moved >5%, so no anomaly bonus
+        assert result["volume_anomaly_score"] == 0
+
+
+class TestStrongPerformer:
+    """Test strong performer flag (Phase 2, prep for Phase 3 Dip Buyer)."""
+
+    @pytest.mark.asyncio
+    async def test_strong_performer_flag(self):
+        """+15% in 48h should set strong_performer=True and disable overextension penalty."""
+        scorer = _mock_scorer(symbols=["BTC/USDT"])
+        scorer.redis.get_global_state.return_value = _make_state()
+
+        # Build 168 candles: first 120 flat, last 48 ramping up 15%+
+        candles = []
+        for i in range(120):
+            close = 100.0
+            candles.append(
+                [1_700_000_000_000 + i * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 1_000_000.0]
+            )
+        for i in range(48):
+            close = 100.0 + (i + 1) * 0.35  # Ramp from 100.35 to 117.15 (~17%)
+            candles.append(
+                [1_700_000_000_000 + (120 + i) * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 1_000_000.0]
+            )
+        scorer.fetcher.fetch.return_value = candles
+
+        result = await scorer.score_symbol("BTC/USDT")
+        assert result is not None
+        assert result["strong_performer"] is True
+        # Overextension penalty should be disabled for strong performers
+        assert result["overextension_penalty"] == 0
+
+    @pytest.mark.asyncio
+    async def test_not_strong_performer(self):
+        """+10% in 48h should NOT set strong_performer (below 15% threshold)."""
+        scorer = _mock_scorer(symbols=["BTC/USDT"])
+        scorer.redis.get_global_state.return_value = _make_state()
+
+        # Build 168 candles: first 120 flat, last 48 ramping up only 10%
+        candles = []
+        for i in range(120):
+            close = 100.0
+            candles.append(
+                [1_700_000_000_000 + i * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 1_000_000.0]
+            )
+        for i in range(48):
+            close = 100.0 + (i + 1) * 0.21  # Ramp from 100.21 to 110.29 (~10%)
+            candles.append(
+                [1_700_000_000_000 + (120 + i) * 900_000, close - 0.5, close + 1.0, close - 1.0, close, 1_000_000.0]
+            )
+        scorer.fetcher.fetch.return_value = candles
+
+        result = await scorer.score_symbol("BTC/USDT")
+        assert result is not None
+        assert result["strong_performer"] is False

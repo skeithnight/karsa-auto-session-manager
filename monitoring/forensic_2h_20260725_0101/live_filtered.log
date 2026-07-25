@@ -1,0 +1,56 @@
+{"ts":"2026-07-24 18:11:41,890","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: Half-Breakeven locked for GWEI/USDT to 0.025065801838386740920"}
+{"ts":"2026-07-24 18:16:01,322","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:02,882","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:04,210","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:07,092","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+2026-07-24 18:16:09.506 | INFO     | app.alpha.trade_memory:store:65 - Trade memory: stored TOWNS/USDT pnl=-3.217092267038210676348043908% exit=sl
+{"ts":"2026-07-24 18:16:09,506","level":"INFO","logger":"karsa.live","trace_id":"","msg":"exit detected: TOWNS/USDT LONG pnl=-0.37 reason=sl"}
+{"ts":"2026-07-24 18:16:09,958","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:12,877","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:15,781","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:18,685","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:21,872","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:16:25,178","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: TOWNS/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:21:23,848","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: STAGNATION exit BANK/USDT after 30min (R=-0.09)"}
+{"ts":"2026-07-24 18:21:26,309","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: force closed BANK/USDT — stagnation_exit_30min"}
+2026-07-24 18:21:28.052 | INFO     | app.alpha.trade_memory:store:65 - Trade memory: stored BANK/USDT pnl=-0.9326355340848094471282877079% exit=stagnation_exit_30min
+{"ts":"2026-07-24 18:21:28,052","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: trade_memory stored BANK/USDT pnl=-0.93% reason=stagnation_exit_30min"}
+{"ts":"2026-07-24 18:22:27,536","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: synced orphan BANK/USDT LONG from Bybit"}
+{"ts":"2026-07-24 18:22:28,545","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: computed ATR for BANK/USDT = 0.01841063031302641"}
+{"ts":"2026-07-24 18:22:28,757","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM reconcile: BANK/USDT updated 8 field(s): ['entry_price', 'amount', 'current_sl', 'stop_loss', 'take_profit', 'atr', 'initial_risk_per_unit', 'entry_time']"}
+{"ts":"2026-07-24 18:22:40,320","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: regime shift kill switch BANK/USDT —  → RANGE (5 checks)"}
+{"ts":"2026-07-24 18:22:42,214","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: force closed BANK/USDT — regime_shift__to_RANGE"}
+{"ts":"2026-07-24 18:22:43,892","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: trade_memory store failed for BANK/USDT: [<class 'decimal.ConversionSyntax'>]"}
+{"ts":"2026-07-24 18:30:51,710","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: STAGNATION exit GWEI/USDT after 30min (R=0.18)"}
+{"ts":"2026-07-24 18:30:53,849","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: force closed GWEI/USDT — stagnation_exit_30min"}
+2026-07-24 18:30:55.604 | INFO     | app.alpha.trade_memory:store:65 - Trade memory: stored GWEI/USDT pnl=1.244175862403354333835641952% exit=stagnation_exit_30min
+{"ts":"2026-07-24 18:30:55,605","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: trade_memory stored GWEI/USDT pnl=1.24% reason=stagnation_exit_30min"}
+{"ts":"2026-07-24 18:30:55,823","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: STAGNATION exit ACE/USDT after 30min (R=-0.62)"}
+{"ts":"2026-07-24 18:30:58,145","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: force closed ACE/USDT — stagnation_exit_30min"}
+2026-07-24 18:30:58.745 | INFO     | app.alpha.trade_memory:store:65 - Trade memory: stored ACE/USDT pnl=-3.362565469955242357870678982% exit=stagnation_exit_30min
+{"ts":"2026-07-24 18:30:58,745","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: trade_memory stored ACE/USDT pnl=-3.36% reason=stagnation_exit_30min"}
+{"ts":"2026-07-24 18:31:59,797","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: synced orphan ACE/USDT LONG from Bybit"}
+{"ts":"2026-07-24 18:32:00,226","level":"INFO","logger":"karsa.live","trace_id":"","msg":"APM: computed ATR for ACE/USDT = 0.004346245325521363"}
+{"ts":"2026-07-24 18:32:00,442","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM reconcile: ACE/USDT updated 8 field(s): ['entry_price', 'amount', 'current_sl', 'stop_loss', 'take_profit', 'atr', 'initial_risk_per_unit', 'entry_time']"}
+{"ts":"2026-07-24 18:32:10,294","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: regime shift kill switch ACE/USDT —  → RANGE (5 checks)"}
+{"ts":"2026-07-24 18:32:11,500","level":"CRITICAL","logger":"karsa.live","trace_id":"","msg":"APM reconcile: ACE/USDT is a phantom trade (does not exist on Bybit). Ignoring reconciliation."}
+{"ts":"2026-07-24 18:32:12,937","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: force closed ACE/USDT — regime_shift__to_RANGE"}
+{"ts":"2026-07-24 18:32:14,673","level":"WARNING","logger":"karsa.live","trace_id":"","msg":"APM: trade_memory store failed for ACE/USDT: [<class 'decimal.ConversionSyntax'>]"}
+2026-07-24 18:35:41.927 | WARNING  | app.execution.bybit_client:_execute:173 - pybit_error attempt=1: HTTPSConnectionPool(host='api.bybit.com', port=443): Read timed out. (read timeout=10)
+2026-07-24 19:00:10.487 | INFO     | app.core.observability:log_reject_reason:112 - [OBSERVABILITY] {"type": "reject_reason", "timestamp": 1784919610.487359, "symbol": "KAITO/USDT", "reason": "Low Score", "details": {"score": 54.0, "gate": 97.5, "direction": "LONG"}}
+2026-07-24 19:00:10.488 | INFO     | app.core.observability:log_reject_reason:112 - [OBSERVABILITY] {"type": "reject_reason", "timestamp": 1784919610.488627, "symbol": "KAITO/USDT", "reason": "Low Score", "details": {"score": 0.0, "gate": 75.0, "direction": "SHORT"}}
+{"ts":"2026-07-24 19:00:30,859","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for AKE/USDT (passed)"}
+{"ts":"2026-07-24 19:00:39,863","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for RE/USDT (passed)"}
+{"ts":"2026-07-24 19:00:40,884","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for ESPORTS/USDT (passed)"}
+{"ts":"2026-07-24 19:00:41,497","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for B2/USDT (passed)"}
+{"ts":"2026-07-24 19:00:41,813","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for TOWNS/USDT (passed)"}
+{"ts":"2026-07-24 19:00:43,921","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for SOXL/USDT (passed)"}
+{"ts":"2026-07-24 19:00:44,190","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for ACE/USDT (passed)"}
+{"ts":"2026-07-24 19:00:44,243","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for SNDK/USDT (passed)"}
+{"ts":"2026-07-24 19:00:45,835","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for GWEI/USDT (passed)"}
+{"ts":"2026-07-24 19:00:45,994","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for SNXX/USDT (passed)"}
+{"ts":"2026-07-24 19:00:47,146","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for BANK/USDT (passed)"}
+{"ts":"2026-07-24 19:00:48,112","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for KORU/USDT (passed)"}
+{"ts":"2026-07-24 19:00:49,111","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for SKHYNIX/USDT (passed)"}
+{"ts":"2026-07-24 19:00:49,665","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for AERGO/USDT (passed)"}
+{"ts":"2026-07-24 19:00:51,777","level":"INFO","logger":"app.consumer.decision_engine","trace_id":"","msg":"shadow_score_and_record: AI analysis complete for INTC/USDT (passed)"}

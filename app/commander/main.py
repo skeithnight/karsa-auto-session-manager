@@ -279,8 +279,10 @@ async def shadow_feedback_task(
                 is_disabled = (current_status == "DISABLE" or current_size == 0.0)
                 
                 if not is_disabled:
-                    # Degradation Logic
-                    if expectancy < 0:
+                    # Degradation Logic — progressive sizing reduction, not hard disable
+                    # Only DISABLE for truly catastrophic expectancy (< -$2.0)
+                    # For mildly negative: reduce sizing proportionally to preserve opportunity
+                    if expectancy < -2.0:
                         overrides[regime] = "DISABLE"
                         sizing[regime] = 0.0
                         cooldown[regime] = {
@@ -291,11 +293,22 @@ async def shadow_feedback_task(
                         changed = True
                         alerts.append(
                             f"🛡️ <b>Auto-Adjustment Alert</b>\n"
-                            f"Shadow Mode detected negative expectancy in <b>{regime}</b> regime.\n"
+                            f"Shadow Mode detected catastrophic expectancy in <b>{regime}</b> regime.\n"
                             f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}% | {stats['wins']}/{stats['total']})\n"
                             f"Net PnL: ${stats['net_pnl']:.2f}\n\n"
-                            f"🔴 Live trading for {regime} is now <b>DISABLED (Size 0.0x)</b> to protect capital."
+                            f"🔴 Live trading for {regime} is now <b>DISABLED (Size 0.0x)</b> — severe capital erosion."
                         )
+                    elif expectancy < -0.5:
+                        # Mild negative — reduce to 0.3x, keep trading to collect more data
+                        if current_size != 0.3:
+                            sizing[regime] = 0.3
+                            changed = True
+                            alerts.append(
+                                f"⚠️ <b>Auto-Adjustment Alert</b>\n"
+                                f"Shadow Mode detected mild negative expectancy in <b>{regime}</b> regime.\n"
+                                f"Expectancy: ${expectancy:.2f} (Win Rate: {stats['win_rate']:.1f}%)\n\n"
+                                f"🟨 Live trading size for {regime} reduced to <b>0.3x</b> — keeping small positions for data."
+                            )
                     elif expectancy < 1.0:
                         if current_size != 0.5:
                             sizing[regime] = 0.5

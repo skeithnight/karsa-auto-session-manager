@@ -253,16 +253,7 @@ class DecisionEngine:
             except Exception as e:
                 logger.debug("Spread balloon check failed for %s: %s", symbol, e)
 
-        # Build standardized market snapshot and features
-        snapshot = MarketSnapshot(
-            symbol=symbol,
-            timestamp_ms=int(arr[-1][0]),
-            candles=arr,
-            global_prices=global_prices,
-            orderbook_delta=orderbook_delta,
-            funding_rate=funding_rate,
-            oi_change=oi_change,
-        )
+        # Feature extraction uses the snapshot built above (with all fields including cvd_slope, liquidity_walls)
         store = FeatureStore(snapshot)
         features = FeatureExtractor.extract(store)
 
@@ -402,6 +393,21 @@ class DecisionEngine:
 
             score = context.total_confidence
 
+            # P24: Adaptive Symbol Performance Multiplier from TradeMemory.
+            # Penalizes toxic symbols (<30% win rate → 0.7x) and boosts golden symbols (>60% → 1.2x).
+            # Requires 10+ historical trades for statistical significance.
+            if self._trade_memory is not None:
+                try:
+                    symbol_mult = await self._trade_memory.get_symbol_performance_multiplier(symbol)
+                    if symbol_mult != 1.0:
+                        logger.info(
+                            "evaluate: %s %s applying symbol performance multiplier %.1fx (score %.1f -> %.1f)",
+                            symbol, direction, symbol_mult, score, score * symbol_mult,
+                        )
+                        score *= symbol_mult
+                except Exception:
+                    logger.debug("evaluate: symbol performance multiplier failed for %s", symbol)
+
             # Momentum Exemption: Do not penalize explosive gainers for their volatility
             if momentum_exemption:
                 logger.info(
@@ -448,13 +454,36 @@ class DecisionEngine:
             )
 
             effective_gate = float(self._gate) * vol_factor
+
+            # --- Dip Buyer Boost (Phase 3) ---
+            # Strong performers (+15% in 48h) in dip zone (-5% to -10% from high)
+            # get a 10% gate reduction (still passes all risk checks)
+            dip_buy_boost = False
+            if len(arr) >= 48:
+                close_now = float(arr[-1][4])
+                close_48h = float(arr[-48][4])
+                if close_48h > 0:
+                    move_48h = (close_now - close_48h) / close_48h
+                    if move_48h > 0.15:  # +15% in 48h = strong performer
+                        # Check if current price is in dip zone (-5% to -10% from 48h high)
+                        high_48h = max(float(arr[i][2]) for i in range(-48, 0))  # high prices
+                        dip_from_high = (high_48h - close_now) / high_48h
+                        if 0.05 <= dip_from_high <= 0.10:
+                            dip_buy_boost = True
+                            effective_gate *= 0.90  # 10% gate reduction
+                            logger.info(
+                                "evaluate: %s DIP BUY candidate — %.1f%% pullback from 48h high, gate reduced to %.1f",
+                                symbol, dip_from_high * 100, effective_gate,
+                            )
+
             logger.debug(
-                "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f)",
+                "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f dip_buy=%s)",
                 symbol,
                 direction,
                 score,
                 effective_gate,
                 vol_factor,
+                dip_buy_boost,
             )
 
             if score >= effective_gate:
@@ -668,9 +697,47 @@ class DecisionEngine:
             amount = self._base_size
         elif self._wallet_balance > 0:
             kelly_sizer = KellySizer()
-            # Calculate Fractional Kelly (25%) risk percentage
+            # P16: Feed real trade history to KellySizer for adaptive position sizing.
+            # Previously wins=0/losses=0 was always passed, making Kelly dead code.
+            kelly_wins = 0
+            kelly_losses = 0
+            kelly_avg_win = 0.0
+            kelly_avg_loss = 0.0
+            if self._trade_memory is not None:
+                try:
+                    recent = await self._trade_memory.get_recent(symbol, count=30)
+                    if recent:
+                        win_pnls = [t["pnl_pct"] for t in recent if t.get("pnl_pct", 0) > 0]
+                        loss_pnls = [abs(t["pnl_pct"]) for t in recent if t.get("pnl_pct", 0) < 0]
+                        kelly_wins = len(win_pnls)
+                        kelly_losses = len(loss_pnls)
+                        kelly_avg_win = sum(win_pnls) / len(win_pnls) if win_pnls else 0.0
+                        kelly_avg_loss = sum(loss_pnls) / len(loss_pnls) if loss_pnls else 0.0
+                except Exception:
+                    logger.debug("_build_signal: Kelly trade memory read failed for %s", symbol)
             scaled_risk_pct = kelly_sizer.calculate_risk_pct(
-                wins=0, losses=0, avg_win_usd=0.0, avg_loss_usd=0.0, fallback_score=score
+                wins=kelly_wins, losses=kelly_losses,
+                avg_win_usd=kelly_avg_win, avg_loss_usd=kelly_avg_loss,
+                fallback_score=score,
+            )
+
+            # --- Conviction Scaling (Phase 1) ---
+            # Read conviction from Redis and multiply with Kelly result
+            # Weak regimes → smaller positions, strong regimes → full size
+            conviction = 1.0
+            if self._redis is not None:
+                try:
+                    import json as _json
+                    regime_raw = await self._redis.get("system:config:regime")
+                    if regime_raw:
+                        regime_data = _json.loads(regime_raw)
+                        conviction = regime_data.get("conviction", 1.0)
+                except Exception:
+                    logger.debug("_build_signal: conviction read failed, using 1.0")
+            scaled_risk_pct *= Decimal(str(conviction))
+            logger.info(
+                "evaluate: %s conviction=%.3f → scaled_risk_pct=%.6f (after conviction)",
+                symbol, conviction, float(scaled_risk_pct),
             )
 
             amount = (

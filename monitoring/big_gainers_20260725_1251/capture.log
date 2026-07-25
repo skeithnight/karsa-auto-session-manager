@@ -1,0 +1,720 @@
+=== Big Gainers Alpha Monitor ===
+Start: 2026-07-25T12:51:50+07:00
+Duration: 3600s (30s intervals)
+
+[2026-07-25T12:51:50+07:00] snap=1 elapsed=0s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:52:21+07:00] snap=2 elapsed=31s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:52:51+07:00] snap=3 elapsed=61s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:53:22+07:00] snap=4 elapsed=92s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:53:52+07:00] snap=5 elapsed=122s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:54:23+07:00] snap=6 elapsed=153s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:54:53+07:00] snap=7 elapsed=183s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:55:24+07:00] snap=8 elapsed=214s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:55:54+07:00] snap=9 elapsed=244s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:56:24+07:00] snap=10 elapsed=274s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:56:55+07:00] snap=11 elapsed=305s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:57:25+07:00] snap=12 elapsed=335s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:57:56+07:00] snap=13 elapsed=366s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:58:26+07:00] snap=14 elapsed=396s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:58:57+07:00] snap=15 elapsed=427s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:59:27+07:00] snap=16 elapsed=457s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T12:59:58+07:00] snap=17 elapsed=488s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:00:28+07:00] snap=18 elapsed=518s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:00:59+07:00] snap=19 elapsed=549s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:01:29+07:00] snap=20 elapsed=579s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:02:00+07:00] snap=21 elapsed=610s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:02:30+07:00] snap=22 elapsed=640s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:03:01+07:00] snap=23 elapsed=671s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:03:31+07:00] snap=24 elapsed=701s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:04:02+07:00] snap=25 elapsed=732s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:04:32+07:00] snap=26 elapsed=762s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:05:03+07:00] snap=27 elapsed=793s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:05:33+07:00] snap=28 elapsed=823s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:06:03+07:00] snap=29 elapsed=853s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:06:34+07:00] snap=30 elapsed=884s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:07:04+07:00] snap=31 elapsed=914s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:07:35+07:00] snap=32 elapsed=945s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:08:05+07:00] snap=33 elapsed=975s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:08:36+07:00] snap=34 elapsed=1006s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:09:06+07:00] snap=35 elapsed=1036s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:09:37+07:00] snap=36 elapsed=1067s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:10:07+07:00] snap=37 elapsed=1097s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:10:38+07:00] snap=38 elapsed=1128s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:11:08+07:00] snap=39 elapsed=1158s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:11:39+07:00] snap=40 elapsed=1189s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:12:09+07:00] snap=41 elapsed=1219s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:12:40+07:00] snap=42 elapsed=1250s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:13:10+07:00] snap=43 elapsed=1280s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:13:41+07:00] snap=44 elapsed=1311s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:14:11+07:00] snap=45 elapsed=1341s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:14:42+07:00] snap=46 elapsed=1372s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:15:12+07:00] snap=47 elapsed=1402s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:15:43+07:00] snap=48 elapsed=1433s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:16:13+07:00] snap=49 elapsed=1463s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:16:44+07:00] snap=50 elapsed=1494s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:17:14+07:00] snap=51 elapsed=1524s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:17:44+07:00] snap=52 elapsed=1554s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:18:15+07:00] snap=53 elapsed=1585s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:18:45+07:00] snap=54 elapsed=1615s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:19:16+07:00] snap=55 elapsed=1646s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:19:46+07:00] snap=56 elapsed=1676s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:20:17+07:00] snap=57 elapsed=1707s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:20:47+07:00] snap=58 elapsed=1737s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:21:18+07:00] snap=59 elapsed=1768s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:21:48+07:00] snap=60 elapsed=1798s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:22:19+07:00] snap=61 elapsed=1829s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:22:49+07:00] snap=62 elapsed=1859s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:23:20+07:00] snap=63 elapsed=1890s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:23:50+07:00] snap=64 elapsed=1920s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:24:21+07:00] snap=65 elapsed=1951s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:24:51+07:00] snap=66 elapsed=1981s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:25:22+07:00] snap=67 elapsed=2011s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:25:52+07:00] snap=68 elapsed=2042s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:26:22+07:00] snap=69 elapsed=2072s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:26:53+07:00] snap=70 elapsed=2103s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:27:23+07:00] snap=71 elapsed=2133s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:27:54+07:00] snap=72 elapsed=2164s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:28:24+07:00] snap=73 elapsed=2194s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:28:55+07:00] snap=74 elapsed=2225s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:29:25+07:00] snap=75 elapsed=2255s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:29:56+07:00] snap=76 elapsed=2286s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:30:26+07:00] snap=77 elapsed=2316s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:30:57+07:00] snap=78 elapsed=2347s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:31:27+07:00] snap=79 elapsed=2377s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:31:58+07:00] snap=80 elapsed=2408s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:32:28+07:00] snap=81 elapsed=2438s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:32:58+07:00] snap=82 elapsed=2468s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:33:29+07:00] snap=83 elapsed=2499s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:33:59+07:00] snap=84 elapsed=2529s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:34:30+07:00] snap=85 elapsed=2560s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:35:00+07:00] snap=86 elapsed=2590s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:35:31+07:00] snap=87 elapsed=2621s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:36:01+07:00] snap=88 elapsed=2651s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:36:32+07:00] snap=89 elapsed=2682s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:37:02+07:00] snap=90 elapsed=2712s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:37:33+07:00] snap=91 elapsed=2743s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:38:03+07:00] snap=92 elapsed=2773s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:38:34+07:00] snap=93 elapsed=2804s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:39:04+07:00] snap=94 elapsed=2834s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:39:35+07:00] snap=95 elapsed=2865s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:40:05+07:00] snap=96 elapsed=2895s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:40:36+07:00] snap=97 elapsed=2926s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:41:06+07:00] snap=98 elapsed=2956s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:41:36+07:00] snap=99 elapsed=2986s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:42:07+07:00] snap=100 elapsed=3017s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:42:37+07:00] snap=101 elapsed=3047s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:43:08+07:00] snap=102 elapsed=3078s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:43:38+07:00] snap=103 elapsed=3108s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:44:09+07:00] snap=104 elapsed=3139s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:44:39+07:00] snap=105 elapsed=3169s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:45:10+07:00] snap=106 elapsed=3200s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:45:40+07:00] snap=107 elapsed=3230s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:46:11+07:00] snap=108 elapsed=3261s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:46:42+07:00] snap=109 elapsed=3292s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:47:12+07:00] snap=110 elapsed=3322s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:47:43+07:00] snap=111 elapsed=3353s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:48:13+07:00] snap=112 elapsed=3383s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:48:44+07:00] snap=113 elapsed=3414s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:49:14+07:00] snap=114 elapsed=3444s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:49:45+07:00] snap=115 elapsed=3475s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:50:15+07:00] snap=116 elapsed=3505s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:50:46+07:00] snap=117 elapsed=3536s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:51:16+07:00] snap=118 elapsed=3566s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+[2026-07-25T13:51:47+07:00] snap=119 elapsed=3597s regime= live_pos=       1 shadow_pos=       1 conviction_logs=0
+0 moon_bag=0
+0 volume_anomaly=0
+0 dip_buyer=0
+0 errors=0
+0
+=== Monitor Complete ===
+End: 2026-07-25T13:52:17+07:00

@@ -32,7 +32,27 @@ APM_BREAKEVEN_LOCK_R = Decimal("1.0")  # fallback when ATR unavailable
 APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
 
 # Regime shift hysteresis: require N consecutive shifted checks
-REGIME_SHIFT_CONFIRM_COUNT: int = 3
+REGIME_SHIFT_CONFIRM_COUNT: int = 5
+
+# Regime family mapping — shifts within the same family are noise, not real regime changes.
+# RANGE→RANGE_LOW_VOL or RANGE→RANGE_HIGH_VOL should NOT trigger the kill switch.
+REGIME_FAMILY: dict[str, str] = {
+    "RANGE": "RANGE",
+    "RANGE_LOW_VOL": "RANGE",
+    "RANGE_HIGH_VOL": "RANGE",
+    "CHOP": "CHOP",
+    "SNIPER": "SNIPER",
+    "TREND_BULL": "TREND",
+    "TREND_BEAR": "TREND",
+    "HYPER_BULL": "HYPER",
+    "HYPER_BEAR": "HYPER",
+    "UNKNOWN": "UNKNOWN",  # Orphan positions with lost historical context
+}
+
+# Orphan sync grace period — don't re-sync a symbol force-closed within this window (seconds).
+# Prevents the orphan→force-close→re-sync phantom loop observed in forensic reports.
+# Set to 120s (was 60s) — Bybit holds positions ~61s after closure during high load.
+ORPHAN_RE_ENTRY_GRACE_S: int = 120
 
 
 def _safe_dec(value: object, default: str = "0") -> Decimal:
@@ -64,6 +84,7 @@ class ActivePositionManager:
         self._trade_memory = trade_memory
         self._log = logger_ or logger
         self._regime_shift_counts: dict[str, int] = {}
+        self._recently_force_closed: dict[str, float] = {}  # symbol → timestamp of force close
 
     # ------------------------------------------------------------------
     # Main loop
@@ -94,6 +115,15 @@ class ActivePositionManager:
                     ep_side = "LONG" if ep.get("side") == "buy" else "SHORT"
                     ccxt_sym = ep_sym[:-4] + "/" + ep_sym[-4:] if len(ep_sym) > 4 else ep_sym
                     if (ccxt_sym, ep_side) not in existing_syms:
+                        # Orphan sync grace period: skip if this symbol was force-closed recently.
+                        # Prevents the orphan→force-close→re-sync phantom loop (forensic P0).
+                        recently_closed_at = self._recently_force_closed.get(ccxt_sym, 0)
+                        if recently_closed_at > 0 and (now - recently_closed_at) < ORPHAN_RE_ENTRY_GRACE_S:
+                            self._log.debug(
+                                f"APM: skipping orphan {ccxt_sym} {ep_side} — "
+                                f"force-closed {now - recently_closed_at:.0f}s ago (grace={ORPHAN_RE_ENTRY_GRACE_S}s)"
+                            )
+                            continue
                         entry = Decimal(str(ep.get("entry_price", 0)))
                         amount = Decimal(str(ep.get("contracts", 0)))
                         if entry > 0 and amount > 0:
@@ -103,6 +133,19 @@ class ActivePositionManager:
                                 entry_price=entry,
                                 amount=amount,
                             )
+                            # Mark orphan with UNKNOWN regime — historical context is lost.
+                            # Prevents false-positive regime kill switches on guessed data.
+                            try:
+                                saved_pos = await self._store.get(ccxt_sym, ep_side)
+                                if saved_pos:
+                                    saved_pos["entry_regime"] = "UNKNOWN"
+                                    saved_pos["regime"] = "UNKNOWN"
+                                    from app.core.position_store import _normalize_side
+                                    side_key = _normalize_side(ep_side)
+                                    redis_key = f"karsa:position:{ccxt_sym}:{side_key}"
+                                    await self._store.redis.set(redis_key, _json.dumps(saved_pos))  # type: ignore[attr-defined]
+                            except Exception:
+                                pass
                             # Re-read the saved pos to get full dict for reconciliation
                             saved = await self._store.get(ccxt_sym, ep_side)
                             if saved:
@@ -297,7 +340,14 @@ class ActivePositionManager:
             if exchange_pos is None:
                 from app.core import metrics
                 metrics.phantom_trade_detected_total.labels(symbol=symbol).inc()
-                self._log.critical(f"APM reconcile: {symbol} is a phantom trade (does not exist on Bybit). Ignoring reconciliation.")
+                self._log.critical(f"APM reconcile: {symbol} is a phantom trade (does not exist on Bybit). PURGING from Redis.")
+                # Immediate cleanup — don't wait for SL hit. Phantom positions are stale state.
+                try:
+                    api_side = "buy" if side == "LONG" else "sell"
+                    await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
+                    self._log.warning(f"APM: phantom {symbol} {side} purged from Redis")
+                except Exception as e:
+                    self._log.error(f"APM: failed to purge phantom {symbol}: {e}")
                 return False
 
             if exchange_pos:
@@ -679,6 +729,114 @@ class ActivePositionManager:
         elif scale_tier < 2 and r_mult >= Decimal("3.0"):
             await self._scale_out_position(pos, Decimal("0.33"), entry_price, side)
             pos["scale_tier"] = 2
+
+        # ─── MOON BAG TIERED EXIT (Phase 4) ─────────────────────────────────
+        # 80% closed at +1.5R, 20% rides with breakeven SL and ultra-wide trailing
+        tranche_state = pos.get("tranche_state", "INITIAL")
+        if tranche_state == "INITIAL" and r_mult >= Decimal("1.5"):
+            amount = Decimal(str(pos.get("amount", "0")))
+            if amount > 0:
+                # Calculate close amount (80% of position)
+                close_amount = (amount * Decimal("0.8")).quantize(Decimal("0.001"))
+                moon_bag_amount = amount - close_amount
+
+                if close_amount > 0:
+                    self._log.warning(
+                        f"APM MOON BAG: {symbol} {side} hit +{r_mult:.2f}R — executing TIERED EXIT "
+                        f"(80% closed, 20% moon bag)"
+                    )
+
+                    try:
+                        # 1. Execute 80% partial close (reduceOnly)
+                        api_side = "buy" if side == "LONG" else "sell"
+                        await self._client.reduce_position(
+                            symbol=symbol.replace("/", ""),
+                            side=api_side,
+                            amount=close_amount,
+                        )
+
+                        # 2. Update position state immediately
+                        pos["tranche_state"] = "MOON_BAG_ACTIVE"
+                        pos["amount"] = str(moon_bag_amount)
+                        pos["moon_bag_amount"] = str(moon_bag_amount)
+
+                        # 3. Set Breakeven SL for remaining 20% via CCXT
+                        try:
+                            await self._client.set_stop_loss(  # type: ignore[attr-defined]
+                                symbol=symbol.replace("/", ""),
+                                stopLossPrice=float(entry_price),
+                            )
+                            pos["moon_bag_sl"] = str(entry_price)
+                            pos["current_sl"] = str(entry_price)
+                            pos["stop_loss"] = str(entry_price)
+                            sl_price = entry_price
+                            self._log.info(
+                                f"APM MOON BAG: {symbol} SL set to breakeven {entry_price}"
+                            )
+                        except Exception as e:
+                            # FAIL-SAFE: Close remaining 20% if SL placement fails
+                            self._log.critical(
+                                f"APM MOON BAG: FAILED to set SL for {symbol}: {e}. "
+                                f"Emergency closing remaining 20% to protect capital."
+                            )
+                            await self._client.reduce_position(
+                                symbol=symbol.replace("/", ""),
+                                side=api_side,
+                                amount=moon_bag_amount,
+                            )
+                            pos["amount"] = "0"
+                            return
+
+                        # 4. Alert
+                        if self._alert:
+                            asyncio.create_task(self._alert.send(
+                                f"🌙 {symbol} {side} MOON BAG: 80% closed at +{r_mult:.1f}R, "
+                                f"20% ({moon_bag_amount}) riding with breakeven SL"
+                            ))
+
+                    except Exception as e:
+                        self._log.error(f"APM MOON BAG: tiered exit FAILED for {symbol}: {e}")
+                        # Don't update state — will retry next cycle
+
+        # Moon Bag Ultra-Wide Trailing (5x ATR for moon bag positions)
+        if tranche_state == "MOON_BAG_ACTIVE":
+            atr = Decimal(str(pos.get("atr", "0")))
+            if atr > 0:
+                highest = Decimal(str(pos.get("highest_since_partial", "0") or "0"))
+                if live_price > highest:
+                    highest = live_price
+                    pos["highest_since_partial"] = str(highest)
+
+                # Moon bag trailing: 5x ATR from highest since partial close
+                if side == "LONG":
+                    new_sl = highest - (atr * Decimal("5"))
+                    if new_sl > sl_price:
+                        sl_price = new_sl
+                        try:
+                            api_side = "buy" if side == "LONG" else "sell"
+                            sl_order_id = pos.get("sl_order_id", "")
+                            await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, Decimal(str(pos.get("amount", "0"))))  # type: ignore[attr-defined]
+                            pos["current_sl"] = str(new_sl)
+                            pos["stop_loss"] = str(new_sl)
+                            pos["moon_bag_sl"] = str(new_sl)
+                            self._log.info(f"APM MOON BAG: {symbol} trailing SL amended to {new_sl} (5x ATR)")
+                        except Exception as e:
+                            self._log.debug(f"APM MOON BAG: trailing amend failed for {symbol}: {e}")
+                else:
+                    new_sl = highest + (atr * Decimal("5"))
+                    if new_sl < sl_price:
+                        sl_price = new_sl
+                        try:
+                            api_side = "buy" if side == "LONG" else "sell"
+                            sl_order_id = pos.get("sl_order_id", "")
+                            await self._client.amend_stop_loss(sl_order_id, symbol, api_side, new_sl, Decimal(str(pos.get("amount", "0"))))  # type: ignore[attr-defined]
+                            pos["current_sl"] = str(new_sl)
+                            pos["stop_loss"] = str(new_sl)
+                            pos["moon_bag_sl"] = str(new_sl)
+                            self._log.info(f"APM MOON BAG: {symbol} trailing SL amended to {new_sl} (5x ATR)")
+                        except Exception as e:
+                            self._log.debug(f"APM MOON BAG: trailing amend failed for {symbol}: {e}")
+        # ────────────────────────────────────────────────────────────────────────
 
         # ATR-based BE trigger: price must move beyond noise threshold
         atr = Decimal(str(pos.get("atr", "0")))
@@ -1195,9 +1353,23 @@ class ActivePositionManager:
         """Kill switch: force close if regime shifted N consecutive checks.
         Returns True if the position was closed, False otherwise.
         """
+        # UNKNOWN regime: orphan positions with lost historical context are exempt.
+        # We don't have enough information to determine if a regime shift occurred.
+        if entry_regime == "UNKNOWN":
+            return False
+
         try:
             current_regime = await self._regime.get_current_regime(symbol)  # type: ignore[attr-defined]
             current_value = current_regime.value if hasattr(current_regime, "value") else str(current_regime)
+
+            # Regime family guard: shifts within the same family are noise, not real regime changes.
+            # RANGE→RANGE_LOW_VOL or TREND_BULL→TREND_BEAR should NOT trigger the kill switch.
+            entry_family = REGIME_FAMILY.get(entry_regime, entry_regime)
+            current_family = REGIME_FAMILY.get(current_value, current_value)
+            if entry_family == current_family:
+                # Same family — noise, not a real regime shift. Reset counter.
+                self._regime_shift_counts.pop(symbol, None)
+                return False
 
             if current_value != entry_regime:
                 self._regime_shift_counts[symbol] = self._regime_shift_counts.get(symbol, 0) + 1
@@ -1258,12 +1430,16 @@ class ActivePositionManager:
                     raise RuntimeError("Bybit accepted the order but position is still open (Price Protection or partial fill).")
 
             exchange_closed = True
+            # Track force-close timestamp for orphan sync grace period (prevents phantom loop)
+            self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
 
         except Exception as e:
             err_str = str(e)
             if "110017" in err_str or "position is zero" in err_str:
                 exchange_closed = True
                 fill_price = Decimal("0")
+                # Track force-close timestamp even for "already closed" (prevents phantom re-sync)
+                self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
                 self._log.warning(f"APM: {symbol} already closed on exchange (handled in phase 1)")
             else:
                 self._log.exception(f"APM: CRITICAL force close failed for {symbol}")

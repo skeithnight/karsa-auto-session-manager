@@ -31,11 +31,27 @@ def _build_engine(
     gate: float = 65.0,
 ) -> DecisionEngine:
     """Build a DecisionEngine with mocked sub-components."""
-    classifier = MagicMock()
-    classifier.classify.return_value = regime
+    # Mock MarketAnalyzer (used for regime classification)
+    analyzer = MagicMock()
+    analyzer.current_state = MagicMock()
+    analyzer.current_state.regime = regime.value
 
     router = MagicMock()
-    router.evaluate_signal.return_value = (score, 1.0)
+    # evaluate_signal is async, returns (DecisionContext, vol_factor)
+    mock_context = MagicMock()
+    mock_context.total_confidence = score
+    mock_context.evidence = []
+    mock_context.features = MagicMock()
+    mock_context.features.cvd_slope = 0.0
+    mock_context.features.spread_pct = 0.0
+    mock_context.features.atr_pct = 50.0
+    mock_context.features.liquidity_walls = {}
+    mock_context.to_dict.return_value = {"total_confidence": score}
+
+    async def _mock_evaluate_signal(*args, **kwargs):
+        return (mock_context, 1.0)
+
+    router.evaluate_signal = _mock_evaluate_signal
 
     risk_gate = MagicMock()
     risk_gate.get_profile.return_value = MagicMock(
@@ -50,12 +66,15 @@ def _build_engine(
         to_json=lambda: '{"test": true}',
     )
 
-    return DecisionEngine(
-        classifier=classifier,
+    engine = DecisionEngine(
+        analyzer=analyzer,
         router=router,
         risk_gate=risk_gate,
         gate_threshold=gate,
     )
+    # Override the router that __init__ created with our mock
+    engine._router = router
+    return engine
 
 
 @pytest.mark.asyncio
@@ -162,3 +181,56 @@ class TestDecisionEngineEntrySlippage:
         assert result is not None
         close = Decimal(str(_make_candles(100)[-1][4]))
         assert result.entry_price < close
+
+
+@pytest.mark.asyncio
+class TestDipBuyerBoost:
+    """Test dip-buyer gate reduction (Phase 3)."""
+
+    def _make_dip_candles(self) -> list[list]:
+        """Build 100 candles: strong rally then -7% dip for dip-buy candidate."""
+        candles = []
+        # First 52 candles: flat at 80
+        for i in range(52):
+            close = 80.0
+            candles.append(
+                [1700000000000 + i * 3600000, close - 1, close + 1, close - 1, close, 1000.0]
+            )
+        # Candles 53-100: ramp from 80 to 120 (+50%), then dip to ~111.6 (-7% from 120)
+        # closes[-48] = 80, closes[-1] = 111.6, move_48h = 39.5% > 15% ✓
+        # high_48h = 121, dip_from_high = 7.8% (in 5-10% zone) ✓
+        for i in range(48):
+            if i < 30:
+                close = 80.0 + (i + 1) * (40.0 / 30)  # Ramp to 120
+            else:
+                close = 120.0 - (i - 29) * (8.4 / 18)  # Dip to 111.6
+            candles.append(
+                [1700000000000 + (52 + i) * 3600000, close - 1, close + 1, close - 1, close, 1000.0]
+            )
+        return candles
+
+    async def test_dip_buyer_reduces_gate(self) -> None:
+        """Strong performer in dip zone should get 10% gate reduction."""
+        engine = _build_engine(regime=MarketRegime.TREND_BULL, score=70.0, gate=75.0)
+        candles = self._make_dip_candles()
+        # Score 70 < gate 75, but with 10% reduction → effective gate = 67.5
+        result = await engine.evaluate("BTC/USDT", candles)
+        assert result is not None  # Would have been rejected without dip-buy boost
+
+    async def test_dip_buyer_no_boost_when_not_in_dip(self) -> None:
+        """Strong performer NOT in dip zone should NOT get boost."""
+        engine = _build_engine(regime=MarketRegime.TREND_BULL, score=70.0, gate=75.0)
+        # Build candles with +20% but no dip (still near highs)
+        candles = []
+        for i in range(52):
+            close = 100.0
+            candles.append(
+                [1700000000000 + i * 3600000, close - 1, close + 1, close - 1, close, 1000.0]
+            )
+        for i in range(48):
+            close = 100.0 + (i + 1) * (20.0 / 48)  # Ramp to 120, no dip
+            candles.append(
+                [1700000000000 + (52 + i) * 3600000, close - 1, close + 1, close - 1, close, 1000.0]
+            )
+        result = await engine.evaluate("BTC/USDT", candles)
+        assert result is None  # Score 70 < gate 75, no boost

@@ -321,12 +321,59 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
             price=signal.entry_price,
             recent_trades="",
         )
+        # --- Debug logging for AI rejection diagnosis ---
         if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
             reason = "unavailable" if not analyst_result else f"rejected_{analyst_result.direction}"
             from app.core import metrics
             metrics.ai_analyst_rejections.labels(reason=reason).inc()
-            logger.info("live skip %s - AI analyst rejected (%s)", symbol, reason)
-            return
+
+            # Detailed debug log showing AI reasoning
+            if analyst_result:
+                logger.warning(
+                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
+                    f"AI: {analyst_result.direction} (confidence={analyst_result.ai_confidence}) | "
+                    f"AI Reason: {analyst_result.reasoning} | "
+                    f"AI Recommendation: {analyst_result.decision_recommendation} | "
+                    f"Regime: {signal.regime.value if hasattr(signal.regime, 'value') else signal.regime}"
+                )
+            else:
+                logger.warning(
+                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
+                    f"AI: NONE (unavailable)"
+                )
+
+            # --- Soft Gate (Step 4): Score penalty instead of hard veto ---
+            # FLAT = AI is unsure, light penalty (not hard reject)
+            # Direction mismatch = AI disagrees, heavier penalty
+            # Unavailable = hard reject
+            if analyst_result:
+                if analyst_result.direction == signal.direction:
+                    # AI agrees: Boost confidence
+                    new_score = signal.score + 10
+                    object.__setattr__(signal, "score", new_score)
+                    logger.info(f"AI CONFIRMED: {symbol} {signal.direction}. Score boosted +10 → {new_score:.1f}")
+                elif analyst_result.direction == "FLAT":
+                    # AI is unsure (FLAT): Light penalty — AI doesn't disagree, just lacks conviction
+                    penalty = max(2, int(analyst_result.ai_confidence * 0.10))  # e.g., 25% confidence = -2 points (minimum)
+                    new_score = signal.score - penalty
+                    object.__setattr__(signal, "score", new_score)
+                    logger.warning(
+                        f"AI FLAT: {symbol} (conf={analyst_result.ai_confidence}). "
+                        f"Light penalty -{penalty}. New score: {new_score:.1f}"
+                    )
+                else:
+                    # AI actively disagrees (different direction): Heavier penalty
+                    penalty = int(analyst_result.ai_confidence * 0.25)  # e.g., 60% confidence = -15 points
+                    new_score = signal.score - penalty
+                    object.__setattr__(signal, "score", new_score)
+                    logger.warning(
+                        f"AI DISAGREES: {symbol} (AI={analyst_result.direction}, conf={analyst_result.ai_confidence}). "
+                        f"Penalized score by {penalty}. New score: {new_score:.1f}"
+                    )
+                # Signal continues through pipeline — gate check will reject if score too low
+            else:
+                # AI unavailable — hard reject
+                return
 
         from app.core import metrics
         metrics.ai_analyst_approvals.inc()
@@ -1078,7 +1125,7 @@ async def main() -> None:  # noqa: PLR0915
             auth_token=settings.nine_router_auth_token,
             model=settings.nine_router_model,
         )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
     except Exception as e:
         logger.warning(f"AI Client init failed: {e}")
         crypto_analyst = None
@@ -1154,7 +1201,7 @@ async def main() -> None:  # noqa: PLR0915
             auth_token=settings.nine_router_auth_token,
             model=settings.nine_router_model,
         )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
     except Exception as e:
         crypto_analyst = None
         logger.warning(f"Could not initialize CryptoAnalyst in live loop: {e}")
@@ -1187,7 +1234,10 @@ async def main() -> None:  # noqa: PLR0915
         bybit_client=bybit,
     )
 
-    WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "10"))
+    # Actor Model: single execution worker to serialize trade execution.
+    # Prevents max_positions race condition where multiple signals pass the
+    # position count check simultaneously before any of them write to Redis.
+    WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "1"))
     signal_queues = [asyncio.Queue(maxsize=100) for _ in range(WORKER_COUNT)]
 
     async def _signal_worker(worker_id: int, q: asyncio.Queue) -> None:
@@ -1279,6 +1329,36 @@ async def main() -> None:  # noqa: PLR0915
                 logger.warning(f"failed to pre-fill {sym}: {e}")
     except Exception as e:
         logger.warning(f"OHLCVFetcher init failed — no candle pre-fill: {e}")
+
+    # ─── BOOTSTRAP PHASE ─────────────────────────────────────────────────
+    # Feed pre-filled candles to MarketAnalyzer so it can classify regimes
+    # immediately, instead of waiting for new candles from Redis Pub/Sub.
+    # This eliminates the 30-60min cold-start degradation window.
+    bootstrap_ready_count = 0
+    bootstrap_total = len(initial_symbols)
+    try:
+        for sym in initial_symbols:
+            candles = consumer._buffer.as_list(sym)
+            if candles and len(candles) >= 50:
+                try:
+                    await analyzer.update_on_candle_close(sym, candles)
+                    bootstrap_ready_count += 1
+                except Exception as e:
+                    logger.debug(f"bootstrap: MarketAnalyzer update failed for {sym}: {e}")
+            else:
+                logger.debug(f"bootstrap: {sym} has {len(candles)} candles, need 50")
+        bootstrap_pct = (bootstrap_ready_count / bootstrap_total * 100) if bootstrap_total > 0 else 0
+        logger.info(
+            f"bootstrap: {bootstrap_ready_count}/{bootstrap_total} symbols ready "
+            f"({bootstrap_pct:.0f}%) — MarketAnalyzer seeded with historical candles"
+        )
+        if bootstrap_pct < 80:
+            logger.warning(
+                f"bootstrap: only {bootstrap_pct:.0f}% of universe ready — "
+                f"signals may be degraded until more candles arrive"
+            )
+    except Exception as e:
+        logger.warning(f"bootstrap: MarketAnalyzer seeding failed: {e}")
 
     # Startup state reconciliation — sync exchange positions with internal stores
     try:

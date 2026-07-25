@@ -131,13 +131,60 @@ async def _on_signal_shadow(
             price=signal.entry_price,
             recent_trades="",
         )
+        # --- Debug logging for AI rejection diagnosis ---
         if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
             from app.core import metrics
 
             reason = "unavailable" if not analyst_result else "direction_mismatch"
             metrics.ai_analyst_rejections.labels(reason=reason).inc()
-            logger.info("shadow skip %s - AI analyst rejected (%s)", symbol, reason)
-            return
+
+            # Detailed debug log showing AI reasoning
+            if analyst_result:
+                logger.warning(
+                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
+                    f"AI: {analyst_result.direction} (confidence={analyst_result.ai_confidence}) | "
+                    f"AI Reason: {analyst_result.reasoning} | "
+                    f"AI Recommendation: {analyst_result.decision_recommendation} | "
+                    f"Regime: {signal.regime.value}"
+                )
+            else:
+                logger.warning(
+                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
+                    f"AI: NONE (unavailable)"
+                )
+
+            # --- Soft Gate (Step 4): Score penalty instead of hard veto ---
+            # FLAT = AI is unsure, light penalty (not hard reject)
+            # Direction mismatch = AI disagrees, heavier penalty
+            # Unavailable = hard reject
+            if analyst_result:
+                if analyst_result.direction == signal.direction:
+                    # AI agrees: Boost confidence
+                    new_score = signal.score + 10
+                    object.__setattr__(signal, "score", new_score)
+                    logger.info(f"AI CONFIRMED: {symbol} {signal.direction}. Score boosted +10 → {new_score:.1f}")
+                elif analyst_result.direction == "FLAT":
+                    # AI is unsure (FLAT): Light penalty — AI doesn't disagree, just lacks conviction
+                    penalty = max(2, int(analyst_result.ai_confidence * 0.10))  # e.g., 25% confidence = -2 points (minimum)
+                    new_score = signal.score - penalty
+                    object.__setattr__(signal, "score", new_score)
+                    logger.warning(
+                        f"AI FLAT: {symbol} (conf={analyst_result.ai_confidence}). "
+                        f"Light penalty -{penalty}. New score: {new_score:.1f}"
+                    )
+                else:
+                    # AI actively disagrees (different direction): Heavier penalty
+                    penalty = int(analyst_result.ai_confidence * 0.25)  # e.g., 60% confidence = -15 points
+                    new_score = signal.score - penalty
+                    object.__setattr__(signal, "score", new_score)
+                    logger.warning(
+                        f"AI DISAGREES: {symbol} (AI={analyst_result.direction}, conf={analyst_result.ai_confidence}). "
+                        f"Penalized score by {penalty}. New score: {new_score:.1f}"
+                    )
+                # Signal continues through pipeline — gate check will reject if score too low
+            else:
+                # AI unavailable — hard reject
+                return
 
         metrics.ai_analyst_approvals.inc()
         metrics.funnel_ai_approved.inc()
@@ -423,7 +470,7 @@ async def main() -> None:
             model=settings.nine_router_model,
         )
         # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis)
+        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=True)
     except Exception as e:
         logger.warning(f"Could not initialize CryptoAnalyst in shadow loop: {e}")
 

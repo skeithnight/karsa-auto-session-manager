@@ -1,0 +1,4 @@
+2026-07-25 03:01:18.671 | INFO     | app.execution.shadow:execute:193 - SHADOW ENTRY: ACE/USDT LONG 37.41226367639699107714293537 @ 0.10591793 (mid=0.105865, fee=0.00, fee_type=maker, status=PENDING_VIRTUAL_FILL)
+2026-07-25 03:01:18.958 | INFO     | app.execution.shadow:execute:193 - SHADOW ENTRY: SLX/USDT LONG 48.80369851132142603743720876 @ 0.12768881 (mid=0.127625, fee=0.00, fee_type=maker, status=PENDING_VIRTUAL_FILL)
+2026-07-25 03:11:20.465 | WARNING  | app.execution.shadow:_manage_time_exit:419 - ShadowAPM: STAGNATION exit SLX/USDT after 10min (R=0.00)
+2026-07-25 03:11:20.476 | WARNING  | app.execution.shadow:_manage_time_exit:419 - ShadowAPM: STAGNATION exit ACE/USDT after 10min (R=0.00)

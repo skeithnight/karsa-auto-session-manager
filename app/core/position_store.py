@@ -93,6 +93,11 @@ class PositionStore:
             "moved_to_breakeven": False,
             "tp_placed": False,
             "scaled_out": False,
+            # Moon Bag Tiered Exit (Phase 4)
+            "tranche_state": "INITIAL",  # INITIAL | MOON_BAG_ACTIVE
+            "moon_bag_amount": "",
+            "moon_bag_sl": "",
+            "highest_since_partial": "",
         }
         if virtual_sl:
             data["virtual_sl"] = virtual_sl

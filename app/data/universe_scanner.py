@@ -154,7 +154,7 @@ class DynamicUniverseScanner:
             if not symbol.endswith(":USDT"):
                 continue
             market = self._session.markets.get(symbol)
-            if not market or not market.get("swap"):
+            if not market or not market.get("swap") or not market.get("active", True):
                 continue
             vol_usd = float(ticker.get("quoteVolume") or 0)
             if vol_usd < self._min_vol:

@@ -62,7 +62,17 @@ app/
 │   ├── state_reconciliation.py  # Startup reconciliation (Postgres ↔ Bybit)
 │   ├── dependencies.py     # Dependency injection container
 │   ├── telemetry.py        # System telemetry collection
-│   └── migrate.py          # DB migration runner
+│   ├── migrate.py          # DB migration runner
+│   ├── decision_context.py # Decision context dataclass for pipeline
+│   ├── decision_trace.py   # Decision tracing for audit trail
+│   ├── decision_lifecycle.py # Decision lifecycle management
+│   ├── feature_registry.py # Feature registry for ML models
+│   ├── feature_store.py    # Feature store for ML inference
+│   ├── feature_extractor.py # Feature extraction from market data
+│   ├── market_snapshot.py  # Market snapshot dataclass
+│   ├── portfolio_snapshot.py # Portfolio snapshot for risk calc
+│   ├── observability.py    # Observability/telemetry utilities
+│   └── context.py          # Context module
 ├── data/                  # Key 1 — Global Data Engine
 │   ├── ccxt_manager.py     # CCXT Pro WS + load_markets() symbol validation
 │   ├── normalizer.py       # ONLY place raw exchange dicts get touched directly
@@ -85,7 +95,10 @@ app/
 │   ├── analyst.py            # AI pre-entry analyst (MANDATORY, via 9router)
 │   ├── position_judge.py     # AI position judge (MANDATORY, 2-tier escalation)
 │   ├── multi_tf.py           # Multi-timeframe confirmation (4H trend filter)
-│   └── trade_memory.py       # Trade history injection for AI context
+│   ├── trade_memory.py       # Trade history injection for AI context
+│   ├── market_analyzer.py    # Market structure analysis (regime, Hurst, ADX)
+│   ├── market_state.py       # Market state dataclass
+│   └── ml_prefilter.py       # ML-based signal pre-filter
 ├── execution/               # Key 4 — Bybit Executor + APM (Phase 6)
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market
@@ -98,6 +111,8 @@ app/
 │   ├── sector_cap.py         # Sector diversity cap (max 2 per sector)
 │   ├── dynamic_risk_gate.py  # [BUILT] Regime-specific RiskProfile (Phase 6)
 │   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade: correlation, exposure, CB (Phase 6)
+│   ├── garch_volatility_forecaster.py  # GARCH volatility targeting for Kelly sizing
+│   ├── kelly_sizer.py        # Kelly criterion position sizing with GARCH adjustment
 │   └── portfolio_hedge.py    # [PLANNED] Cross-portfolio delta hedge (post-MVP)
 ├── consumer/                 # Market data consumer (live + shadow loops)
 │   ├── market_consumer.py    # CCXT WS consumer, normalizes feeds into GlobalState
@@ -111,7 +126,13 @@ app/
 │   ├── engine.py             # Core backtest runner: replays candles through pipeline
 │   ├── orchestrator.py       # Multi-symbol/strategy backtest coordinator
 │   ├── worker.py             # Worker process for parallel backtest execution
-│   └── formatter.py          # Results formatting (tables, equity curves)
+│   ├── formatter.py          # Results formatting (tables, equity curves)
+│   └── optimizer.py          # Walk-forward optimizer for parameter tuning
+├── learning/                 # Statistical learning modules
+│   ├── expected_edge.py      # Expected edge calculation
+│   ├── similarity_engine.py  # Trade similarity matching
+│   ├── statistical_learning.py # Statistical learning algorithms
+│   └── decision_registry.py  # Decision registry for learning
 ├── analytics/                # Performance analytics
 │   ├── performance.py        # Sharpe, Sortino, max drawdown, win rate calculations
 │   └── reconciliation.py     # Trade reconciliation (expected vs actual fills)
@@ -123,6 +144,7 @@ app/
 ├── watchdog/                 # Key 6
 │   ├── monitor.py              # Heartbeat monitor, latency tracker, event loop lag
 │   ├── dead_mans_switch.py     # External health ping
+│   ├── system_watchdog.py      # System watchdog with health checks
 │   └── system_doctor.py      # AI-driven diagnostic agent (triggered on circuit breaker)
 └── bot/                      # Key 7 — Telegram Command Interface
     ├── handlers.py           # All command & callback handlers

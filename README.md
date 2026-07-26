@@ -17,7 +17,7 @@ Everything runs as a single Python `asyncio` process specifically designed to pr
 
 ## 🏗 System Architecture (The 7 Keys)
 
-![Karsa E2E Workflow](assets/karsa_asm_e2e_workfow.png)
+![Karsa E2E Workflow](assets/karsa_asm_e2e.png)
 
 Our architecture is split into critical paths ensuring robustness and modularity:
 

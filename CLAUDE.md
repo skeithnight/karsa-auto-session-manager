@@ -62,6 +62,10 @@ Apps = `docker-compose.apps.yml` (data-engine, live, shadow, backtest, commander
 | `make down` | Stop everything |
 | `make logs` | Tail app logs |
 | `make logs-infra` | Tail infra logs |
+| `make cleanup` | Prune Docker disk usage (safe — unused only) |
+| `make disk-check` | Alert if disk usage > 80% |
+| `make db-maintenance` | Daily DB backup + cleanup (retention: 30d candles, 7d signals) |
+| `make db-backup` | Backup DB only (no cleanup) |
 
 **Never** run `docker compose up -d --build` without specifying apps file — it recreates infra containers (kills 9router state). Always use `make rebuild` or target apps file explicitly.
 

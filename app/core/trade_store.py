@@ -314,6 +314,36 @@ class TradeStore:
                 for r in rows.fetchall()
             ]
 
+    async def get_recent_trades(self, limit: int = 50) -> list[dict[str, Any]]:
+        """Get most recent closed trades. Used by PRM drawdown velocity check."""
+        try:
+            async with self.db.engine.connect() as conn:
+                rows = await conn.execute(
+                    text("""SELECT symbol, side, amount, entry_price, exit_price,
+                        pnl, regime, entry_time, exit_time, exit_reason
+                        FROM trades WHERE exit_time IS NOT NULL
+                        ORDER BY exit_time DESC LIMIT :limit"""),
+                    {"limit": limit},
+                )
+                return [
+                    {
+                        "symbol": r[0],
+                        "side": r[1],
+                        "amount": r[2],
+                        "entry_price": r[3],
+                        "exit_price": r[4],
+                        "realized_pnl": r[5],
+                        "regime": r[6],
+                        "entry_time": str(r[7]) if r[7] else "",
+                        "exit_time": str(r[8]) if r[8] else "",
+                        "exit_reason": r[9],
+                    }
+                    for r in rows.fetchall()
+                ]
+        except Exception as e:
+            logger.debug(f"get_recent_trades failed: {e}")
+            return []
+
     async def get_open_trade_by_symbol(self, symbol: str) -> dict[str, Any] | None:
         """Get the most recent open trade for a symbol (exit_time IS NULL)."""
         async with self.db.engine.connect() as conn:

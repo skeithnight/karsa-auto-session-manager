@@ -73,6 +73,8 @@ class PortfolioRiskManager:
         self._max_gross_pct = Decimal(_s.max_gross_exposure_pct)
         self._max_net_pct = Decimal(_s.max_net_exposure_pct)
         self._max_single_pct = Decimal(_s.max_single_position_pct)
+        self._velocity_threshold = Decimal(_s.velocity_1h_loss_pct)
+        self._velocity_pause_seconds = int(_s.velocity_pause_seconds)
         self._macro_filter = MacroFilter(check_interval_seconds=900)
         self._macro_task = asyncio.create_task(self._update_macro_loop())
 
@@ -124,6 +126,12 @@ class PortfolioRiskManager:
 
             # 5. Macro Kill-Switch
             c = await self._check_macro_kill_switch(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
+            # 6. Drawdown Velocity Breaker (Sprint 1)
+            c = await self._check_drawdown_velocity()
             checks.append(c)
             if not c.passed:
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
@@ -505,6 +513,115 @@ class PortfolioRiskManager:
             return CheckResult(
                 passed=False, reason="consecutive loss CB check unavailable"
             )
+
+    # ------------------------------------------------------------------
+    # Check 6: Drawdown Velocity Breaker (Sprint 1)
+    # ------------------------------------------------------------------
+
+    async def _check_drawdown_velocity(self) -> CheckResult:
+        """Sprint 1: Block if rolling 1-hour PnL loss exceeds velocity threshold.
+
+        Detects HOW FAST the account is losing — losing $5 over 24h is variance,
+        losing $5 in 30 minutes means the regime has fundamentally shifted.
+
+        Reads/writes Redis: system:velocity_pause
+        Config: velocity_1h_loss_pct (default -1.5%), velocity_pause_seconds (default 7200s)
+        """
+        try:
+            if self._redis is None:
+                return CheckResult(passed=True)
+
+            import json as _json
+
+            # Check if already in velocity pause
+            raw_pause = await self._redis.get("system:velocity_pause")
+            if raw_pause:
+                pause_data = _json.loads(raw_pause)
+                pause_until = pause_data.get("pause_until", 0)
+                now_ts = datetime.now(UTC).timestamp()
+                if now_ts < pause_until:
+                    remaining_min = (pause_until - now_ts) / 60
+                    logger.warning(
+                        "PRM: velocity pause ACTIVE — %.0f min remaining", remaining_min
+                    )
+                    return CheckResult(
+                        passed=False,
+                        reason=f"velocity pause: {remaining_min:.0f}min remaining",
+                    )
+                else:
+                    # Pause expired — clear it
+                    await self._redis.delete("system:velocity_pause")
+                    logger.info("PRM: velocity pause expired — resuming trading")
+
+            # Calculate rolling 1-hour PnL from recent trades
+            if not self._trade_store:
+                return CheckResult(passed=True)
+
+            trades = await self._trade_store.get_recent_trades(limit=50)  # type: ignore
+            if not trades:
+                return CheckResult(passed=True)
+
+            now = datetime.now(UTC)
+            one_hour_ago = now - timedelta(hours=1)
+            rolling_1h_pnl = Decimal("0")
+
+            for t in trades:
+                try:
+                    exit_time_str = t.get("exit_time", "")
+                    if not exit_time_str:
+                        continue
+                    exit_time = datetime.fromisoformat(exit_time_str)
+                    if exit_time.tzinfo is None:
+                        exit_time = exit_time.replace(tzinfo=UTC)
+                    if exit_time >= one_hour_ago:
+                        pnl = Decimal(str(t.get("realized_pnl", "0")))
+                        rolling_1h_pnl += pnl
+                except (ValueError, TypeError):
+                    continue
+
+            # Get current equity for percentage calculation
+            try:
+                wallet = await self._bybit_client.get_wallet_balance()  # type: ignore
+                equity = Decimal(str(wallet.get("balance", wallet.get("available", "0"))))
+            except Exception:
+                equity = Decimal("0")
+
+            if equity <= 0:
+                return CheckResult(passed=True)
+
+            # Check velocity threshold
+            loss_pct = rolling_1h_pnl / equity
+            threshold = Decimal(self._velocity_threshold)
+
+            if loss_pct < threshold:
+                # VELOCITY PAUSE triggered
+                pause_seconds = self._velocity_pause_seconds
+                pause_until_ts = now.timestamp() + pause_seconds
+                pause_data = _json.dumps({
+                    "status": "TRIGGERED",
+                    "reason": f"1h PnL {rolling_1h_pnl:.2f} ({loss_pct:.2%}) exceeds {threshold:.2%}",
+                    "pause_until": pause_until_ts,
+                    "triggered_at": now.isoformat(),
+                    "rolling_1h_pnl": str(rolling_1h_pnl),
+                })
+                await self._redis.set("system:velocity_pause", pause_data)
+
+                logger.warning(
+                    "PRM VELOCITY BREAKER: 1h PnL %.2f (%.2%%) exceeds threshold %.2%% — "
+                    "pausing for %d seconds",
+                    float(rolling_1h_pnl), float(loss_pct * 100),
+                    float(threshold * 100), pause_seconds,
+                )
+                return CheckResult(
+                    passed=False,
+                    reason=f"velocity breaker: 1h PnL {rolling_1h_pnl:.2f} ({loss_pct:.2%}) < {threshold:.2%}",
+                )
+
+            return CheckResult(passed=True)
+
+        except Exception:
+            logger.exception("PRM: drawdown velocity check failed — fail-safe PASS")
+            return CheckResult(passed=True)  # fail-open for velocity check (non-critical)
 
     # ------------------------------------------------------------------
     # Daily reset loop

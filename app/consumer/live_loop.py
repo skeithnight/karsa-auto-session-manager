@@ -1546,6 +1546,26 @@ async def main() -> None:  # noqa: PLR0915
         name="live-wallet-metrics",
     )
 
+    # ── Sprint 3: HMM Regime Classification Loop ─────────────────────
+    from app.alpha.hmm_regime_classifier import HMMRegimeClassifier
+    hmm_classifier = HMMRegimeClassifier(redis_client=redis)
+    hmm_task = asyncio.create_task(
+        hmm_classifier.run_classification_loop(
+            ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=3600,
+        ),
+        name="live-hmm",
+    )
+
+    # ── Sprint 3: GARCH Volatility Forecast Loop ─────────────────────
+    from app.risk.garch_volatility_forecaster import GARCHVolatilityForecaster
+    garch_forecaster = GARCHVolatilityForecaster(redis_client=redis)
+    garch_task = asyncio.create_task(
+        garch_forecaster.run_forecast_loop(
+            ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=3600,
+        ),
+        name="live-garch",
+    )
+
     try:
         await shutdown_event.wait()
     finally:
@@ -1567,6 +1587,8 @@ async def main() -> None:  # noqa: PLR0915
         if balance_task:
             balance_task.cancel()
         wallet_metrics_task.cancel()
+        hmm_task.cancel()
+        garch_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):

@@ -433,6 +433,130 @@ class DecisionEngine:
             # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
             score = score * macro_penalty
 
+            # --- Sprint 1: Funding Rate Carry Strategy ---
+            # If funding is extremely negative for 3+ periods, add carry bonus
+            if self._redis is not None and direction == "LONG":
+                try:
+                    from app.core.config import get_settings
+                    _s = get_settings()
+                    carry_bonus, carry_reason = await self._router.evaluate_carry_signal(
+                        symbol=symbol,
+                        direction=direction,
+                        redis_client=self._redis,
+                        config=_s,
+                    )
+                    if carry_bonus > 0:
+                        score += carry_bonus
+                        logger.info(
+                            "evaluate: %s %s CARRY BONUS +%d (%s) → score=%.1f",
+                            symbol, direction, carry_bonus, carry_reason, score,
+                        )
+                except Exception as e:
+                    logger.debug(f"evaluate: carry signal failed for {symbol}: {e}")
+
+            # --- Sprint 1: Funding Term Structure Scoring ---
+            # Squeeze imminent signals from term structure (current vs predicted funding)
+            if self._redis is not None:
+                try:
+                    term_signal = await self._redis.get(f"karsa:market:{symbol}:funding_term_signal")
+                    if term_signal:
+                        term_signal = term_signal.decode() if isinstance(term_signal, bytes) else str(term_signal)
+                        if term_signal == "SQUEEZE_IMMINENT_LONG" and direction == "LONG":
+                            score += 25
+                            logger.info(
+                                "evaluate: %s %s FUNDING TERM STRUCTURE: SQUEEZE_IMMINENT_LONG +25 → score=%.1f",
+                                symbol, direction, score,
+                            )
+                        elif term_signal == "SQUEEZE_IMMINENT_SHORT" and direction == "SHORT":
+                            score += 25
+                            logger.info(
+                                "evaluate: %s %s FUNDING TERM STRUCTURE: SQUEEZE_IMMINENT_SHORT +25 → score=%.1f",
+                                symbol, direction, score,
+                            )
+                except Exception as e:
+                    logger.debug(f"evaluate: funding term structure check failed for {symbol}: {e}")
+
+            # --- Sprint 2: Liquidation Heatmap Signal ---
+            # Detect liquidation cascade zones from OI delta patterns
+            if self._redis is not None:
+                try:
+                    from app.core.config import get_settings
+                    _s2 = get_settings()
+                    liq_bonus, liq_reason = await self._router.evaluate_liquidation_heatmap(
+                        symbol=symbol,
+                        direction=direction,
+                        redis_client=self._redis,
+                        config=_s2,
+                    )
+                    if liq_bonus > 0:
+                        score += liq_bonus
+                        logger.info(
+                            "evaluate: %s %s LIQ_HEATMAP BONUS +%d (%s) → score=%.1f",
+                            symbol, direction, liq_bonus, liq_reason, score,
+                        )
+                except Exception as e:
+                    logger.debug(f"evaluate: liquidation heatmap failed for {symbol}: {e}")
+
+            # --- Sprint 2: Cross-Asset Momentum Signal ---
+            # Check if BTC, ETH, and altcoins are aligned in the same direction
+            if self._redis is not None:
+                try:
+                    xa_bonus, xa_reason = await self._router.evaluate_cross_asset_momentum(
+                        symbol=symbol,
+                        direction=direction,
+                        redis_client=self._redis,
+                        config=_s2 if '_s2' in dir() else None,
+                    )
+                    if xa_bonus > 0:
+                        score += xa_bonus
+                        logger.info(
+                            "evaluate: %s %s CROSS_ASSET BONUS +%d (%s) → score=%.1f",
+                            symbol, direction, xa_bonus, xa_reason, score,
+                        )
+                except Exception as e:
+                    logger.debug(f"evaluate: cross-asset momentum failed for {symbol}: {e}")
+
+            # --- Sprint 2: Token Unlock Calendar Filter ---
+            # Penalize tokens with upcoming large token unlocks (sell pressure)
+            if self._redis is not None:
+                try:
+                    from datetime import timedelta
+                    unlock_penalty = await self._check_token_unlock(symbol, direction)
+                    if unlock_penalty > 0:
+                        score -= unlock_penalty
+                        logger.info(
+                            "evaluate: %s %s TOKEN_UNLOCK PENALTY -%d → score=%.1f",
+                            symbol, direction, unlock_penalty, score,
+                        )
+                except Exception as e:
+                    logger.debug(f"evaluate: token unlock check failed for {symbol}: {e}")
+
+            # --- Sprint 3: HMM Regime Prediction Signal ---
+            # Read HMM state from Redis (published by HMMRegimeClassifier loop)
+            if self._redis is not None:
+                try:
+                    from app.core.config import get_settings
+                    _s3 = get_settings()
+                    hmm_raw = await self._redis.get(_s3.hmm_redis_key)
+                    if hmm_raw:
+                        import json as _json
+                        hmm_data = _json.loads(hmm_raw)
+                        hmm_signal = hmm_data.get("signal")
+                        if hmm_signal == "HMM_BREAKOUT_IMMINENT" and direction == "LONG":
+                            score += _s3.hmm_score_breakout_bonus
+                            logger.info(
+                                "evaluate: %s %s HMM_BREAKOUT_IMMINENT +%d → score=%.1f",
+                                symbol, direction, _s3.hmm_score_breakout_bonus, score,
+                            )
+                        elif hmm_signal == "HMM_CHOP_IMMINENT":
+                            score -= _s3.hmm_score_chop_penalty
+                            logger.info(
+                                "evaluate: %s %s HMM_CHOP_IMMINENT -%d → score=%.1f",
+                                symbol, direction, _s3.hmm_score_chop_penalty, score,
+                            )
+                except Exception as e:
+                    logger.debug(f"evaluate: HMM signal check failed for {symbol}: {e}")
+
             # Session / Time-of-Day Volatility Filtering
             from datetime import UTC, datetime
             now_utc = datetime.now(UTC)
@@ -620,6 +744,66 @@ class DecisionEngine:
             logger.exception("consecutive_loss_check failed for %s", symbol)
             return False
 
+    async def _check_token_unlock(self, symbol: str, direction: str) -> int:
+        """Sprint 2: Check if token has upcoming large unlock (sell pressure).
+
+        Reads unlock schedule from Redis (populated by data engine or external feed).
+        If unlock is within window and impact is significant, returns penalty score.
+
+        Returns:
+            Penalty score (0 if no unlock concern).
+        """
+        if self._redis is None:
+            return 0
+
+        try:
+            from app.core.config import get_settings
+            from datetime import datetime, timedelta, timezone
+
+            settings = get_settings()
+            unlock_window = timedelta(hours=settings.unlock_window_hours)
+            impact_threshold = float(settings.unlock_impact_threshold_pct)
+            penalty = settings.unlock_penalty_score
+
+            # Check Redis for unlock schedule
+            unlock_key = f"karsa:unlock:{symbol}"
+            raw_unlock = await self._redis.get(unlock_key)
+            if not raw_unlock:
+                return 0
+
+            import json as _json
+            unlock_data = _json.loads(raw_unlock)
+
+            unlock_time_str = unlock_data.get("unlock_time")
+            unlock_pct = unlock_data.get("unlock_pct_of_supply", 0)
+
+            if not unlock_time_str or unlock_pct < impact_threshold:
+                return 0
+
+            unlock_time = datetime.fromisoformat(unlock_time_str)
+            # Make timezone-aware if naive
+            if unlock_time.tzinfo is None:
+                unlock_time = unlock_time.replace(tzinfo=timezone.utc)
+            now = datetime.now(timezone.utc)
+
+            # Check if unlock is within window
+            time_to_unlock = unlock_time - now
+            if timedelta(0) <= time_to_unlock <= unlock_window:
+                logger.info(
+                    "TOKEN_UNLOCK: %s unlock in %.1fh (%.2f%% supply) — penalty %d",
+                    symbol,
+                    time_to_unlock.total_seconds() / 3600,
+                    unlock_pct * 100,
+                    penalty,
+                )
+                return penalty
+
+            return 0
+
+        except Exception as e:
+            logger.debug(f"Token unlock check failed for {symbol}: {e}")
+            return 0
+
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
         """Determine which directions to evaluate based on regime."""
         if regime in (MarketRegime.TREND_BULL, MarketRegime.HYPER_BULL):
@@ -721,6 +905,108 @@ class DecisionEngine:
                 fallback_score=score,
             )
 
+            # --- Sprint 1: Drawdown-Adaptive Sizing (Anti-Martingale) ---
+            # Track equity peak and adjust Kelly based on drawdown state
+            try:
+                if self._redis is not None:
+                    from app.core.config import get_settings
+                    _s = get_settings()
+
+                    # Read/update equity peak
+                    raw_peak = await self._redis.get("global:state:equity_peak")
+                    equity_peak = Decimal(str(raw_peak)) if raw_peak else Decimal("0")
+
+                    current_equity = Decimal(str(self._wallet_balance))
+
+                    # Update peak if current equity is higher
+                    if current_equity > equity_peak:
+                        equity_peak = current_equity
+                        await self._redis.set("global:state:equity_peak", str(equity_peak))
+
+                    if equity_peak > 0 and current_equity > 0:
+                        # Apply drawdown-adaptive multiplier
+                        dd_severe = Decimal(_s.dd_severe_threshold)
+                        dd_moderate = Decimal(_s.dd_moderate_threshold)
+                        dd_near_peak = Decimal(_s.dd_near_peak_threshold)
+                        dd_severe_mult = Decimal(_s.dd_severe_mult)
+                        dd_moderate_mult = Decimal(_s.dd_moderate_mult)
+                        dd_near_peak_mult = Decimal(_s.dd_near_peak_mult)
+
+                        drawdown = (equity_peak - current_equity) / equity_peak
+
+                        if drawdown > dd_severe:
+                            multiplier = dd_severe_mult
+                            logger.warning(
+                                "DD-ADAPTIVE: SEVERE dd=%.1f%% → %.2fx sizing",
+                                float(drawdown * 100), float(multiplier),
+                            )
+                        elif drawdown > dd_moderate:
+                            multiplier = dd_moderate_mult
+                            logger.info(
+                                "DD-ADAPTIVE: MODERATE dd=%.1f%% → %.2fx sizing",
+                                float(drawdown * 100), float(multiplier),
+                            )
+                        elif drawdown < dd_near_peak:
+                            multiplier = dd_near_peak_mult
+                            logger.info(
+                                "DD-ADAPTIVE: NEAR PEAK dd=%.1f%% → %.2fx sizing (house money)",
+                                float(drawdown * 100), float(multiplier),
+                            )
+                        else:
+                            multiplier = Decimal("1.0")
+
+                        scaled_risk_pct = (scaled_risk_pct * multiplier).quantize(Decimal("0.0001"))
+                        scaled_risk_pct = max(Decimal("0.005"), min(Decimal("0.020"), scaled_risk_pct))
+            except Exception as e:
+                logger.debug(f"DD-ADAPTIVE: failed for {symbol}: {e}")
+
+            # --- Sprint 2: Half-Kelly with Uncertainty ---
+            # Reduce position size when Kelly estimate is unreliable
+            try:
+                win_rate_history = []
+                if self._trade_memory is not None:
+                    try:
+                        recent = await self._trade_memory.get_recent(symbol, count=20)
+                        if recent:
+                            # Calculate rolling win rates
+                            wins_so_far = 0
+                            for i, t in enumerate(recent):
+                                if t.get("pnl_pct", 0) > 0:
+                                    wins_so_far += 1
+                                win_rate_history.append(wins_so_far / (i + 1))
+                    except Exception:
+                        pass
+
+                scaled_risk_pct = kelly_sizer.apply_uncertainty_adjustment(
+                    base_risk_pct=scaled_risk_pct,
+                    wins=kelly_wins,
+                    losses=kelly_losses,
+                    win_rate_history=win_rate_history,
+                )
+            except Exception as e:
+                logger.debug(f"UNCERTAINTY: failed for {symbol}: {e}")
+
+            # --- Sprint 3: GARCH Volatility Targeting ---
+            # Adjust position size based on GARCH volatility forecast vs historical
+            try:
+                forecasted_vol = None
+                historical_vol = None
+                if self._redis is not None:
+                    garch_raw = await self._redis.get("system:garch:forecast")
+                    if garch_raw:
+                        import json as _json
+                        garch_data = _json.loads(garch_raw)
+                        forecasted_vol = garch_data.get("forecasted_vol")
+                        historical_vol = garch_data.get("historical_vol")
+
+                scaled_risk_pct = kelly_sizer.apply_volatility_targeting(
+                    base_risk_pct=scaled_risk_pct,
+                    forecasted_vol=forecasted_vol,
+                    historical_vol=historical_vol,
+                )
+            except Exception as e:
+                logger.debug(f"GARCH VOL TARGETING: failed for {symbol}: {e}")
+
             # --- Conviction Scaling (Phase 1) ---
             # Read conviction from Redis and multiply with Kelly result
             # Weak regimes → smaller positions, strong regimes → full size
@@ -734,6 +1020,18 @@ class DecisionEngine:
                         conviction = regime_data.get("conviction", 1.0)
                 except Exception:
                     logger.debug("_build_signal: conviction read failed, using 1.0")
+
+            # CONVICTION FLOOR: Reject signals in weak/ambiguous regimes entirely.
+            # Low conviction = choppy market = noise trades = losses.
+            # This is the #1 win rate improvement lever.
+            CONVICTION_FLOOR = 0.35
+            if conviction < CONVICTION_FLOOR:
+                logger.info(
+                    "evaluate: %s REJECTED — conviction=%.3f < floor %.3f (regime too weak)",
+                    symbol, conviction, CONVICTION_FLOOR,
+                )
+                return None
+
             scaled_risk_pct *= Decimal(str(conviction))
             logger.info(
                 "evaluate: %s conviction=%.3f → scaled_risk_pct=%.6f (after conviction)",

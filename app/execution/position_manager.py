@@ -25,11 +25,16 @@ from loguru import logger
 APM_MONITOR_INTERVAL_S: int = 2
 APM_ERROR_BACKOFF_S: int = 5
 APM_RECONCILE_INTERVAL_S: int = 300
-APM_BREAKEVEN_FEE_PCT = Decimal("0.0012")
+APM_BREAKEVEN_FEE_PCT = Decimal("0.0025")  # 0.25% — covers 0.12% round-trip fees + locks ~0.13% profit
 APM_TREND_TRAIL_ATR_MULT = Decimal("2.5")
-APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")
-APM_BREAKEVEN_LOCK_R = Decimal("1.0")  # fallback when ATR unavailable
+APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")  # Trailing activates at +1.5R (after breakeven at +0.75R)
+APM_BREAKEVEN_LOCK_R = Decimal("0.75")  # Breakeven at +0.75R (was 1.0R) — lock profit earlier
 APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
+
+# Sprint 1: Trailing Limit Exit (Maker-Only)
+TRAILING_LIMIT_OFFSET_PCT = Decimal("0.0005")  # 0.05% from best bid/ask for limit order
+TRAILING_LIMIT_TIMEOUT_S: int = 60  # 60s before market fallback
+TRAILING_LIMIT_ACTIVATE_R = Decimal("1.5")  # Activate at +1.5R profit
 
 # Regime shift hysteresis: require N consecutive shifted checks
 REGIME_SHIFT_CONFIRM_COUNT: int = 5
@@ -345,7 +350,12 @@ class ActivePositionManager:
                 try:
                     api_side = "buy" if side == "LONG" else "sell"
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
-                    self._log.warning(f"APM: phantom {symbol} {side} purged from Redis")
+                    # FIX: Mark as recently force-closed to prevent orphan re-sync loop.
+                    # Without this, the orphan sync re-pulls the phantom from Bybit on the
+                    # next APM cycle, creating a phantom→sync→phantom loop that bleeds -$0.37
+                    # per iteration (358 iterations = -$132.88 total loss).
+                    self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
+                    self._log.warning(f"APM: phantom {symbol} {side} purged from Redis (grace={ORPHAN_RE_ENTRY_GRACE_S}s)")
                 except Exception as e:
                     self._log.error(f"APM: failed to purge phantom {symbol}: {e}")
                 return False
@@ -760,18 +770,21 @@ class ActivePositionManager:
                         pos["amount"] = str(moon_bag_amount)
                         pos["moon_bag_amount"] = str(moon_bag_amount)
 
-                        # 3. Set Breakeven SL for remaining 20% via CCXT
+                        # 3. Set Breakeven SL for remaining 20% via BybitClient
                         try:
-                            await self._client.set_stop_loss(  # type: ignore[attr-defined]
+                            moon_bag_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
+                            await self._client.place_stop_loss(  # type: ignore[attr-defined]
                                 symbol=symbol.replace("/", ""),
-                                stopLossPrice=float(entry_price),
+                                side=api_side,
+                                stop_price=moon_bag_sl,
+                                amount=moon_bag_amount,
                             )
-                            pos["moon_bag_sl"] = str(entry_price)
-                            pos["current_sl"] = str(entry_price)
-                            pos["stop_loss"] = str(entry_price)
-                            sl_price = entry_price
+                            pos["moon_bag_sl"] = str(moon_bag_sl)
+                            pos["current_sl"] = str(moon_bag_sl)
+                            pos["stop_loss"] = str(moon_bag_sl)
+                            sl_price = moon_bag_sl
                             self._log.info(
-                                f"APM MOON BAG: {symbol} SL set to breakeven {entry_price}"
+                                f"APM MOON BAG: {symbol} SL set to breakeven {moon_bag_sl} (entry+fee)"
                             )
                         except Exception as e:
                             # FAIL-SAFE: Close remaining 20% if SL placement fails
@@ -836,6 +849,112 @@ class ActivePositionManager:
                             self._log.info(f"APM MOON BAG: {symbol} trailing SL amended to {new_sl} (5x ATR)")
                         except Exception as e:
                             self._log.debug(f"APM MOON BAG: trailing amend failed for {symbol}: {e}")
+        # ────────────────────────────────────────────────────────────────────────
+
+        # ─── SPRINT 1: TRAILING LIMIT EXIT (Maker-Only) ────────────────────
+        # Instead of relying on wide 5x ATR trailing stops (which exit via market),
+        # place a tight limit order that trails the current price for maker fills.
+        # Fail-safe: if limit not filled within 60s, cancel and market exit.
+        tl_state = pos.get("trailing_limit_state", "INACTIVE")
+
+        if tl_state == "INACTIVE" and r_mult >= TRAILING_LIMIT_ACTIVATE_R:
+            # Activate trailing limit exit
+            pos["trailing_limit_state"] = "TRAILING_LIMIT_ACTIVE"
+            pos["trailing_limit_placed_at"] = str(datetime.now(UTC).timestamp())
+            tl_state = "TRAILING_LIMIT_ACTIVE"
+            self._log.info(
+                f"APM TRAILING LIMIT: Activating for {symbol} {side} at +{r_mult:.2f}R"
+            )
+
+        if tl_state == "TRAILING_LIMIT_ACTIVE":
+            import time as _time
+            now_ts = _time.time()
+            placed_at = float(pos.get("trailing_limit_placed_at", now_ts))
+
+            # FAIL-SAFE: Timeout check — if limit order not filled within timeout, market exit
+            timeout_s = TRAILING_LIMIT_TIMEOUT_S
+            if now_ts - placed_at > timeout_s:
+                self._log.warning(
+                    f"APM TRAILING LIMIT: TIMEOUT for {symbol} after {timeout_s}s — "
+                    f"canceling limit, executing market exit"
+                )
+                # Cancel any existing limit order
+                existing_order_id = pos.get("trailing_limit_order_id", "")
+                if existing_order_id:
+                    try:
+                        await self._client.cancel_order(existing_order_id, symbol)  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
+
+                # Market exit
+                await self._force_close_position(pos, f"trailing_limit_timeout_{timeout_s}s")
+                pos["trailing_limit_state"] = "FILLED"
+                return
+
+            # Calculate ideal limit exit price (tight trail)
+            offset_pct = TRAILING_LIMIT_OFFSET_PCT
+            if side == "LONG":
+                # Place limit SELL slightly below best bid for maker fill
+                ideal_exit = live_price * (Decimal("1") - offset_pct)
+                # Only move limit UP (never down — that would worsen our fill)
+                current_limit = Decimal(str(pos.get("trailing_limit_price", "0")))
+                if current_limit <= 0 or ideal_exit > current_limit:
+                    new_limit_price = ideal_exit
+                else:
+                    new_limit_price = current_limit
+            else:
+                # Place limit BUY slightly above best ask for maker fill
+                ideal_exit = live_price * (Decimal("1") + offset_pct)
+                # Only move limit DOWN (never up)
+                current_limit = Decimal(str(pos.get("trailing_limit_price", "0")))
+                if current_limit <= 0 or ideal_exit < current_limit:
+                    new_limit_price = ideal_exit
+                else:
+                    new_limit_price = current_limit
+
+            existing_order_id = pos.get("trailing_limit_order_id", "")
+
+            # Check if we already have a limit order — if price improved, replace it
+            needs_new_order = False
+            if not existing_order_id:
+                needs_new_order = True
+            else:
+                # Check if price moved enough to warrant repricing (> 0.05% improvement)
+                old_price = Decimal(str(pos.get("trailing_limit_price", "0")))
+                if old_price > 0:
+                    price_improvement = abs(new_limit_price - old_price) / old_price
+                    if price_improvement > offset_pct:
+                        needs_new_order = True
+                        # Cancel old order
+                        try:
+                            await self._client.cancel_order(existing_order_id, symbol)  # type: ignore[attr-defined]
+                        except Exception:
+                            pass
+
+            if needs_new_order:
+                try:
+                    api_side = "buy" if side == "LONG" else "sell"
+                    amount = Decimal(str(pos.get("amount", "0")))
+                    if amount > 0 and new_limit_price > 0:
+                        # Place reduce-only limit order for maker fill
+                        order = await self._client.create_limit_order(  # type: ignore[attr-defined]
+                            symbol,
+                            api_side,
+                            amount,
+                            new_limit_price,
+                            params={"reduceOnly": True},
+                        )
+                        order_id = order.get("orderId", order.get("id", ""))
+                        pos["trailing_limit_order_id"] = str(order_id)
+                        pos["trailing_limit_price"] = str(new_limit_price)
+                        pos["trailing_limit_placed_at"] = str(now_ts)
+                        self._log.info(
+                            f"APM TRAILING LIMIT: {symbol} {side} limit placed @ {new_limit_price} "
+                            f"(live={live_price}, offset={offset_pct})"
+                        )
+                except Exception as e:
+                    self._log.debug(f"APM TRAILING LIMIT: order placement failed for {symbol}: {e}")
+
         # ────────────────────────────────────────────────────────────────────────
 
         # ATR-based BE trigger: price must move beyond noise threshold

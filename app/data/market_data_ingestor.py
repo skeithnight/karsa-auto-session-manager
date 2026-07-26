@@ -62,6 +62,10 @@ class MarketDataIngestor:
         self.cvd_slope: dict[str, float] = {}
         self.liquidity_walls: dict[str, dict[str, float | None]] = {}
 
+        # Funding Term Structure (Sprint 1)
+        self.predicted_funding_rate: dict[str, float] = {}
+        self.funding_term_signal: dict[str, str] = {}  # NEUTRAL / SQUEEZE_IMMINENT_LONG / SQUEEZE_IMMINENT_SHORT
+
         # Spoofing Detection (CPU-Optimized for Top 5 Levels)
         self.spoofing_bid: dict[str, bool] = {}
         self.spoofing_ask: dict[str, bool] = {}
@@ -330,17 +334,81 @@ class MarketDataIngestor:
                 mid = str((best_bid + best_ask) / 2)
                 await self._redis.set(f"shadow:price:{symbol}", mid, ex=300)
 
+                # Sprint 2: Store price history for Cross-Asset Momentum
+                try:
+                    import json as _json
+                    history_key = f"karsa:price:history:{symbol}"
+                    raw_history = await self._redis.get(history_key)
+                    price_history = _json.loads(raw_history) if raw_history else []
+
+                    price_history.append({
+                        "price": float(mid),
+                        "timestamp": time.time(),
+                    })
+                    # Keep last 60 entries (about 30 minutes at 30s interval)
+                    if len(price_history) > 60:
+                        price_history = price_history[-60:]
+                    await self._redis.set(history_key, _json.dumps(price_history), ex=3600)
+                except Exception:
+                    logger.debug("MarketDataIngestor: price history store failed for %s", symbol)
+
     async def _fetch_funding_rate(self, symbol: str, ccxt_sym: str) -> None:
-        """Fetch current funding rate.
+        """Fetch current funding rate AND predicted next funding rate.
 
         CHOP thresholds:
           rate < -0.0005 -> shorts paying longs -> LONG confluence (+30)
           rate >  0.0005 -> longs paying shorts -> SHORT confluence (+30)
+
+        Funding Term Structure (Sprint 1):
+          Compares current vs predicted rate to detect squeeze exhaustion.
+          If current < -0.01% AND predicted > current (shorts exhausting):
+            SQUEEZE_IMMINENT signal (+25 to LONG score).
         """
         funding = await self._session.fetch_funding_rate(ccxt_sym)  # type: ignore[union-attr]
         rate = float(funding.get("fundingRate") or 0.0)
         self.funding_rate[symbol] = rate
         await self._publish(symbol, "funding_rate", str(rate))
+
+        # ─── Funding Term Structure (Sprint 1) ────────────────────
+        # Extract predicted next funding rate from Bybit response
+        predicted = None
+        try:
+            info = funding.get("info", {})
+            # Bybit V5 returns nextFundingTime and fundingRate in premiumIndex
+            # Predicted rate may be in 'nextFundingRate' or computed from info
+            predicted = info.get("nextFundingRate")
+            if predicted is not None:
+                predicted = float(predicted)
+        except (AttributeError, TypeError, ValueError):
+            predicted = None
+
+        # Fallback: if no predicted rate, use current rate (neutral)
+        if predicted is None:
+            predicted = rate
+
+        self.predicted_funding_rate[symbol] = predicted
+        await self._publish(symbol, "predicted_funding_rate", str(predicted))
+
+        # Compute term structure signal
+        # If current is negative and predicted is less negative (shorts exhausting)
+        # OR current is positive and predicted is less positive (longs exhausting)
+        if rate < -0.0001 and predicted > rate:
+            # Shorts exhausting — squeeze imminent for LONG
+            term_signal = "SQUEEZE_IMMINENT_LONG"
+        elif rate > 0.0001 and predicted < rate:
+            # Longs exhausting — squeeze imminent for SHORT
+            term_signal = "SQUEEZE_IMMINENT_SHORT"
+        else:
+            term_signal = "NEUTRAL"
+
+        self.funding_term_signal[symbol] = term_signal
+        await self._publish(symbol, "funding_term_signal", term_signal)
+
+        if term_signal != "NEUTRAL":
+            logger.info(
+                "FUNDING_TERM: %s %s (current=%.6f, predicted=%.6f)",
+                symbol, term_signal, rate, predicted,
+            )
 
     async def _fetch_oi(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch open interest and compute change vs previous poll.
@@ -363,6 +431,29 @@ class MarketDataIngestor:
         self.oi_change[symbol] = change
         self._prev_oi[symbol] = current_oi
         await self._publish(symbol, "oi_change", str(round(change, 6)))
+
+        # Sprint 2: Store OI history for Liquidation Heatmap
+        try:
+            import json as _json
+            history_key = f"karsa:oi:history:{symbol}"
+            raw_history = await self._redis.get(history_key)
+            oi_history = _json.loads(raw_history) if raw_history else []
+
+            # Get current price for context
+            raw_price = await self._redis.get(f"shadow:price:{symbol}")
+            current_price = float(raw_price) if raw_price else 0.0
+
+            oi_history.append({
+                "oi_change": change,
+                "price": current_price,
+                "timestamp": time.time(),
+            })
+            # Keep last 20 entries (about 10 minutes at 30s interval)
+            if len(oi_history) > 20:
+                oi_history = oi_history[-20:]
+            await self._redis.set(history_key, _json.dumps(oi_history), ex=3600)
+        except Exception:
+            logger.debug("MarketDataIngestor: OI history store failed for %s", symbol)
 
     async def _publish(self, symbol: str, field: str, value: str) -> None:
         """Publish a single value to Redis key."""

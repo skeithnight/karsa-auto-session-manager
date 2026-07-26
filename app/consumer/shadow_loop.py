@@ -654,7 +654,27 @@ async def main() -> None:
         _orphan_cleanup_loop(shadow_pos_store, shadow_trade_store), name="shadow-orphan"
     )
 
-    logger.info("karsa-shadow started")
+    # ── Sprint 3: HMM Regime Classification Loop ─────────────────────
+    from app.alpha.hmm_regime_classifier import HMMRegimeClassifier
+    hmm_classifier = HMMRegimeClassifier(redis_client=redis)
+    hmm_task = asyncio.create_task(
+        hmm_classifier.run_classification_loop(
+            ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=3600,
+        ),
+        name="shadow-hmm",
+    )
+
+    # ── Sprint 3: GARCH Volatility Forecast Loop ─────────────────────
+    from app.risk.garch_volatility_forecaster import GARCHVolatilityForecaster
+    garch_forecaster = GARCHVolatilityForecaster(redis_client=redis)
+    garch_task = asyncio.create_task(
+        garch_forecaster.run_forecast_loop(
+            ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=3600,
+        ),
+        name="shadow-garch",
+    )
+
+    logger.info("karsa-shadow started (with Sprint 3 HMM + GARCH loops)")
 
     try:
         await shutdown_event.wait()
@@ -669,6 +689,8 @@ async def main() -> None:
         consumer_task.cancel()
         apm_task.cancel()
         orphan_task.cancel()
+        hmm_task.cancel()
+        garch_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):

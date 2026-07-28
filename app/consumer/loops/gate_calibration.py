@@ -1,7 +1,9 @@
 """Gate Calibration Loop.
 
 Calibrates dynamic gate threshold from historical EV every hour.
-Uses rolling average of winning trade EVs to set threshold.
+Uses rolling average of winning trade PnL to set threshold.
+
+Writes to Redis: karsa:gate:dynamic_threshold
 """
 
 from __future__ import annotations
@@ -21,7 +23,7 @@ async def gate_calibration_loop(
 ) -> None:
     """Calibrate dynamic gate threshold every hour.
 
-    Reads recent trades and computes dynamic threshold from winning trade EVs.
+    Reads recent trades and computes dynamic threshold from winning trade PnL.
     Writes to Redis: karsa:gate:dynamic_threshold
 
     Args:
@@ -32,50 +34,54 @@ async def gate_calibration_loop(
     """
     while not shutdown_event.is_set():
         try:
-            trades = await trade_store.get_recent_trades(count=100)
-            if not trades:
+            # Get recent trades (TradeStore uses `limit` parameter)
+            trades = await trade_store.get_recent_trades(limit=200)
+            if not trades or len(trades) < 20:
+                logger.debug("gate_calibration: insufficient trades (%d)", len(trades) if trades else 0)
                 await asyncio.sleep(interval_s)
                 continue
 
-            # Filter to winning trades with EV data
+            # Filter to winning trades
+            # Note: TradeStore returns `realized_pnl`, not `expected_value`
+            # We use realized_pnl as a proxy for EV
             winning_trades = [
                 t for t in trades
-                if t.get("realized_pnl", 0) > 0 and t.get("expected_value") is not None
+                if float(t.get("realized_pnl", 0)) > 0
             ]
 
             if len(winning_trades) < 5:
-                logger.debug("gate_calibration: not enough winning trades (%d)", len(winning_trades))
+                logger.debug("gate_calibration: too few winning trades (%d)", len(winning_trades))
                 await asyncio.sleep(interval_s)
                 continue
 
-            # Calculate median EV of winning trades
-            evs = [t["expected_value"] for t in winning_trades]
-            evs.sort()
-            median_ev = evs[len(evs) // 2]
+            # Calculate median PnL of winning trades (as proxy for EV)
+            import statistics
+            winning_pnls = [float(t.get("realized_pnl", 0)) for t in winning_trades]
+            median_pnl = statistics.median(winning_pnls)
 
-            # Set threshold at 80% of median EV
-            threshold = max(50.0, min(90.0, median_ev * 0.8))
-
-            # Count winning/total trades
-            winning_count = len(winning_trades)
-            total_count = len(trades)
+            # Scale to 0-100 range for gate threshold
+            # Assuming typical PnL range is -0.1 to 0.1 (10%)
+            # Scale: 0.01 PnL → 50 threshold, 0.1 PnL → 90 threshold
+            dynamic_threshold = max(50.0, min(90.0, 50.0 + median_pnl * 400))
 
             # Write to Redis
             import json as _json
             await redis_client.set(
                 "karsa:gate:dynamic_threshold",
                 _json.dumps({
-                    "threshold": threshold,
-                    "median_ev": median_ev,
-                    "winning_trades": winning_count,
-                    "total_trades": total_count,
+                    "threshold": round(dynamic_threshold, 2),
+                    "median_pnl": round(median_pnl, 6),
+                    "winning_trades": len(winning_trades),
+                    "total_trades": len(trades),
                 })
             )
-            logger.debug(
-                "gate_calibration: threshold=%.1f median_ev=%.4f (%d/%d trades)",
-                threshold, median_ev, winning_count, total_count,
+            logger.info(
+                "gate_calibration: threshold=%.1f (median_pnl=%.4f, wins=%d/%d)",
+                dynamic_threshold, median_pnl, len(winning_trades), len(trades),
             )
 
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error("gate_calibration_loop failed: %s", e)
 

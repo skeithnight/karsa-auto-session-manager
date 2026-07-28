@@ -315,14 +315,27 @@ class DecisionEngineV2:
         return best_signal
 
     async def _check_ranking_gate(self) -> str:
-        """Read cached ranking decision from Redis."""
+        """Read cached ranking decision from Redis.
+
+        Returns plain string: 'PROMOTE', 'NEEDS_MORE_EVIDENCE', or 'REJECT'.
+        Normalizes any emoji-decorated strings to plain values.
+        """
         if self._redis is None:
             return "PROMOTE"
         try:
             raw = await self._redis.get("karsa:ranking:decision")
             if raw is None:
                 return "PROMOTE"
-            return raw.decode() if isinstance(raw, bytes) else str(raw)
+            decision = raw.decode() if isinstance(raw, bytes) else str(raw)
+            # Normalize: strip emoji and whitespace
+            decision = decision.replace("✅", "").replace("❌", "").replace("⚠️", "").strip()
+            # Map to standard values
+            if "PROMOTE" in decision.upper():
+                return "PROMOTE"
+            elif "REJECT" in decision.upper():
+                return "REJECT"
+            else:
+                return "NEEDS_MORE_EVIDENCE"
         except Exception:
             return "PROMOTE"
 

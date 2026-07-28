@@ -2,6 +2,8 @@
 
 Refreshes ELO ratings for strategies every 5 minutes.
 Reads recent trades and computes ELO updates.
+
+Writes to Redis: karsa:elo:{regime}:{direction}
 """
 
 from __future__ import annotations
@@ -30,66 +32,86 @@ async def elo_refresh_loop(
         shutdown_event: Event to signal shutdown.
         interval_s: Interval in seconds (default: 300).
     """
+    K_FACTOR = 32.0
+    BASELINE_ELO = 1500.0
+    processed_key = "karsa:elo:last_processed_time"
+
     while not shutdown_event.is_set():
         try:
-            trades = await trade_store.get_recent_trades(count=50)
+            # Get recent trades (TradeStore uses `limit` parameter)
+            trades = await trade_store.get_recent_trades(limit=50)
             if not trades:
                 await asyncio.sleep(interval_s)
                 continue
 
-            # Group trades by strategy (regime:direction)
-            strategy_trades: dict[str, list] = {}
-            for trade in trades:
-                regime = trade.get("regime", "RANGE")
-                direction = trade.get("side", "LONG")
-                key = f"{regime}:{direction}"
-                if key not in strategy_trades:
-                    strategy_trades[key] = []
-                strategy_trades[key].append(trade)
+            # Get last processed trade time to avoid reprocessing
+            last_time = None
+            try:
+                raw = await redis_client.get(processed_key)
+                if raw:
+                    last_time = raw.decode() if isinstance(raw, bytes) else str(raw)
+            except Exception:
+                pass
 
-            # Compute ELO for each strategy
             import json as _json
-            for strategy_key, strades in strategy_trades.items():
-                try:
-                    # Read current ELO
-                    raw = await redis_client.get(f"karsa:elo:{strategy_key}")
-                    if raw:
-                        data = _json.loads(raw)
-                        current_elo = data.get("elo", 1500.0)
-                        wins = data.get("wins", 0)
-                        losses = data.get("losses", 0)
-                    else:
-                        current_elo = 1500.0
-                        wins = 0
-                        losses = 0
 
-                    # Calculate win rate from recent trades
-                    for t in strades:
-                        pnl = t.get("realized_pnl", 0)
-                        if pnl > 0:
-                            wins += 1
-                        elif pnl < 0:
-                            losses += 1
+            for trade in trades:
+                # Use exit_time as unique key
+                trade_time = trade.get("exit_time", "")
+                if not trade_time:
+                    continue
+                if last_time and trade_time <= last_time:
+                    continue
 
-                    # Simple ELO update
-                    win_rate = wins / max(1, wins + losses)
-                    expected = 1.0 / (1.0 + 10 ** ((1500 - current_elo) / 400))
-                    k_factor = 32.0
-                    new_elo = current_elo + k_factor * (win_rate - expected)
+                regime = trade.get("regime", "UNKNOWN")
+                direction = trade.get("side", "LONG")
+                pnl_pct = float(trade.get("realized_pnl", 0))
+                strategy_key = f"{regime}:{direction}"
 
-                    # Write updated ELO
-                    await redis_client.set(
-                        f"karsa:elo:{strategy_key}",
-                        _json.dumps({
-                            "elo": new_elo,
-                            "wins": wins,
-                            "losses": losses,
-                            "win_rate": win_rate,
-                        })
+                # Read current ELO
+                elo_raw = await redis_client.get(f"karsa:elo:{strategy_key}")
+                current_elo = BASELINE_ELO
+                wins = 0
+                losses = 0
+                if elo_raw:
+                    try:
+                        elo_data = _json.loads(elo_raw)
+                        current_elo = elo_data.get("elo", BASELINE_ELO)
+                        wins = elo_data.get("wins", 0)
+                        losses = elo_data.get("losses", 0)
+                    except Exception:
+                        pass
+
+                # Update ELO: win = 1.0, loss = 0.0
+                score = 1.0 if pnl_pct > 0 else 0.0
+                new_elo = current_elo + K_FACTOR * (score - 0.5)
+                if pnl_pct > 0:
+                    wins += 1
+                else:
+                    losses += 1
+
+                await redis_client.set(f"karsa:elo:{strategy_key}", _json.dumps({
+                    "elo": round(new_elo, 2),
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": round(wins / max(1, wins + losses), 4),
+                    "last_trade_time": trade_time,
+                }))
+
+                if abs(new_elo - current_elo) > 5:
+                    logger.info(
+                        "elo_refresh: %s %.0f → %.0f (trade=%s, pnl=%.2f%%)",
+                        strategy_key, current_elo, new_elo, trade_time, pnl_pct,
                     )
-                except Exception as e:
-                    logger.debug("elo_refresh: failed for %s: %s", strategy_key, e)
 
+                last_time = trade_time
+
+            # Persist last processed time
+            if last_time:
+                await redis_client.set(processed_key, last_time)
+
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
             logger.error("elo_refresh_loop failed: %s", e)
 

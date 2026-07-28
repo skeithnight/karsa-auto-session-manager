@@ -22,6 +22,8 @@ from typing import Any
 from app.alpha.regime_classifier import RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
+from app.consumer.decision_engine_v2 import DecisionEngineV2
+from app.consumer.v2_rollout import V2Rollout
 from app.consumer.market_consumer import MarketConsumer
 from app.core.config import get_settings
 from app.core.dependencies import get_pool, get_redis, shutdown, startup
@@ -428,14 +430,30 @@ async def main() -> None:
     ohlcv_fetcher = OHLCVFetcher(exchange)
     multi_tf = MultiTFFilter(ohlcv_fetcher)
 
-    engine = DecisionEngine(
-        analyzer,
-        router,
-        risk_gate,
-        trade_memory=trade_memory,
-        redis_client=redis,
-        multi_tf=multi_tf,
-    )
+    # V2 Rollout: Check if V2 engine should be used
+    v2_rollout = V2Rollout(redis)
+    use_v2 = await v2_rollout.should_use_v2("shadow")
+    
+    if use_v2:
+        engine = DecisionEngineV2(
+            analyzer,
+            router,
+            risk_gate,
+            trade_memory=trade_memory,
+            redis_client=redis,
+            multi_tf=multi_tf,
+        )
+        logger.info("shadow: Using DecisionEngineV2 (quant persona refactor)")
+    else:
+        engine = DecisionEngine(
+            analyzer,
+            router,
+            risk_gate,
+            trade_memory=trade_memory,
+            redis_client=redis,
+            multi_tf=multi_tf,
+        )
+        logger.info("shadow: Using legacy DecisionEngine")
 
     # Set wallet balance for shadow mode — use config-based balance
     # so position sizing uses proper risk calculations instead of fallback

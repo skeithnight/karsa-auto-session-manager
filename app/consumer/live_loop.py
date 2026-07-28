@@ -22,6 +22,8 @@ from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
 from app.bot.alert_service import AlertService
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
+from app.consumer.decision_engine_v2 import DecisionEngineV2
+from app.consumer.v2_rollout import V2Rollout
 from app.consumer.market_consumer import MarketConsumer
 from app.core.config import get_settings
 from app.core.dependencies import get_pool, get_redis, shutdown, startup
@@ -1374,15 +1376,32 @@ async def main() -> None:  # noqa: PLR0915
         logger.warning(f"AI Client init failed: {e}")
         crypto_analyst = None
 
-    engine = DecisionEngine(
-        analyzer,
-        router,
-        risk_gate,
-        trade_memory=trade_memory,
-        redis_client=redis,
-        multi_tf=multi_tf,
-        crypto_analyst=crypto_analyst,
-    )
+    # V2 Rollout: Check if V2 engine should be used
+    v2_rollout = V2Rollout(redis)
+    use_v2 = await v2_rollout.should_use_v2("live")
+    
+    if use_v2:
+        engine = DecisionEngineV2(
+            analyzer,
+            router,
+            risk_gate,
+            trade_memory=trade_memory,
+            redis_client=redis,
+            multi_tf=multi_tf,
+            crypto_analyst=crypto_analyst,
+        )
+        logger.info("live: Using DecisionEngineV2 (quant persona refactor)")
+    else:
+        engine = DecisionEngine(
+            analyzer,
+            router,
+            risk_gate,
+            trade_memory=trade_memory,
+            redis_client=redis,
+            multi_tf=multi_tf,
+            crypto_analyst=crypto_analyst,
+        )
+        logger.info("live: Using legacy DecisionEngine")
 
     position_store = PositionStore(redis)
 

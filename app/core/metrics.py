@@ -101,6 +101,37 @@ signals_killed_total = Counter(
     ["stage", "reason"],
 )
 
+# ── Infrastructure Health (Watchdog) ─────────────────────
+infra_redis_healthy = Gauge(
+    "karsa_infra_redis_healthy",
+    "Redis connectivity status (1=healthy, 0=down)",
+)
+
+infra_redis_latency = Gauge(
+    "karsa_infra_redis_latency_ms",
+    "Redis ping latency in milliseconds",
+)
+
+infra_redis_failures = Counter(
+    "karsa_infra_redis_failures_total",
+    "Redis connectivity failures",
+)
+
+infra_postgres_healthy = Gauge(
+    "karsa_infra_postgres_healthy",
+    "PostgreSQL connectivity status (1=healthy, 0=down)",
+)
+
+infra_postgres_latency = Gauge(
+    "karsa_infra_postgres_latency_ms",
+    "PostgreSQL query latency in milliseconds",
+)
+
+infra_postgres_failures = Counter(
+    "karsa_infra_postgres_failures_total",
+    "PostgreSQL connectivity failures",
+)
+
 # ── Alpha Bridge ─────────────────────────────────────────────
 signals_generated = Counter(
     "karsa_signals_generated_total",

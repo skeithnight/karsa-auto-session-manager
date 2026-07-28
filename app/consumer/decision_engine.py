@@ -143,6 +143,12 @@ class DecisionEngine:
         self._sector_filter = SectorRotationFilter()
         self._background_tasks = set()
 
+        # v3.5 evaluator bridge (reads EVALUATOR_V35_ENABLED from .env)
+        from app.alpha.evaluators.scoring_bridge import ScoringBridge
+        from app.core.config import get_settings
+        _settings = get_settings()
+        self._scoring_bridge = ScoringBridge(enabled=_settings.evaluator_v35_enabled)
+
         self._router = StrategyRouter(
             volatility_scaling=True,
             collector=self._evidence_collector,
@@ -537,7 +543,40 @@ class DecisionEngine:
             stage_timings["statistical_learning"] = time.perf_counter() - t_stat
             metrics.pipeline_stage_latency_seconds.labels(stage="statistical_learning").observe(stage_timings["statistical_learning"])
 
-            score = context.total_confidence * vol_floor_penalty
+            existing_score = context.total_confidence * vol_floor_penalty
+
+            # v3.5 evaluator scoring (if enabled, falls back to existing_score)
+            v35_score, fusion_result = await self._scoring_bridge.score(
+                features, snapshot, regime, fallback_score=existing_score
+            )
+
+            # ── v3.5 as Confidence Filter ──────────────────────────────────
+            # When v3.5 is enabled, use it as a filter rather than replacement.
+            # If v3.5 confidence is too low, reject the trade entirely.
+            # StrategyRouter score is still used for gate comparison.
+            v35_confidence_threshold = 0.6
+            if fusion_result and fusion_result.confidence < v35_confidence_threshold:
+                logger.info(
+                    "evaluate: %s %s REJECTED by v3.5 confidence filter (%.2f < %.2f)",
+                    symbol, direction, fusion_result.confidence, v35_confidence_threshold,
+                )
+                ObservabilityLogger.log_reject_reason(
+                    symbol, "v3.5 Confidence Filter",
+                    {"confidence": fusion_result.confidence, "threshold": v35_confidence_threshold}
+                )
+                continue
+
+            # Use StrategyRouter score (not v3.5 score) for gate comparison
+            score = existing_score
+
+            # Log v3.5 evaluation for monitoring (always, even if filtered)
+            if fusion_result:
+                logger.info(
+                    "evaluate: %s %s v3.5 score=%.1f confidence=%.2f recommendation=%s (using StrategyRouter score=%.1f)",
+                    symbol, direction, v35_score, fusion_result.confidence,
+                    fusion_result.recommendation, score,
+                )
+            # ────────────────────────────────────────────────────────────────
 
             # P24: Adaptive Symbol Performance Multiplier from TradeMemory.
             # Penalizes toxic symbols (<30% win rate → 0.7x) and boosts golden symbols (>60% → 1.2x).

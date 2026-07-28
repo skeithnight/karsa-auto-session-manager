@@ -4,11 +4,13 @@ Responsibilities (per ARCHITECTURE.md §5):
 1. WebSocket Heartbeat Monitor — pause Alpha Bridge on stale data
 2. Execution Latency Tracker — switch SOR to market-only if >1500ms avg
 3. Event Loop Lag Monitor — flatten positions on sustained lag
+4. Infrastructure Health Monitor — check Redis/PostgreSQL connectivity
 """
 
 from __future__ import annotations
 
 import asyncio
+import time
 from collections import deque
 from datetime import UTC, datetime
 from typing import Any
@@ -51,6 +53,14 @@ class Watchdog:
         # Critical task liveness registry
         self._critical_tasks: dict[str, asyncio.Task] = {}
 
+        # Infrastructure health tracking
+        self._redis_healthy: bool = True
+        self._postgres_healthy: bool = True
+        self._redis_consecutive_failures: int = 0
+        self._postgres_consecutive_failures: int = 0
+        self._max_infra_failures: int = 3  # 3 consecutive failures = critical
+        self._alert_service: Any = None
+
         logger.debug("Watchdog.__init__: returning")
 
     async def start(self) -> None:
@@ -74,7 +84,9 @@ class Watchdog:
                         f"alpha_paused={status['alpha_paused']} "
                         f"lag_streak={status['high_lag_streak']} "
                         f"latency_samples={status['latency_samples']} "
-                        f"skip_to_market={status['skip_to_market']}"
+                        f"skip_to_market={status['skip_to_market']} "
+                        f"redis={'✓' if status['redis_healthy'] else '✗'} "
+                        f"postgres={'✓' if status['postgres_healthy'] else '✗'}"
                     )
                 await asyncio.sleep(self.check_interval)
                 restart_count = 0  # Reset on successful cycle
@@ -223,6 +235,115 @@ class Watchdog:
             else:
                 metrics.critical_task_dead.labels(task=name).set(0)
 
+    def set_alert_service(self, alert_service: Any) -> None:
+        """Set alert service for infrastructure failure notifications."""
+        self._alert_service = alert_service
+
+    async def _check_infrastructure(self) -> None:
+        """Check infrastructure health (Redis, PostgreSQL)."""
+        await self._check_redis_health()
+        await self._check_postgres_health()
+
+    async def _check_redis_health(self) -> None:
+        """Check Redis connectivity. Alert on consecutive failures."""
+        try:
+            start = time.perf_counter()
+            await self.redis.ping()
+            latency_ms = (time.perf_counter() - start) * 1000
+
+            metrics.infra_redis_latency.set(latency_ms)
+            metrics.infra_redis_healthy.set(1)
+
+            if not self._redis_healthy:
+                logger.info(f"Redis RECOVERED (latency={latency_ms:.1f}ms)")
+                if self._alert_service:
+                    await self._alert_service.send_message(
+                        f"✅ *Redis Recovered*\nLatency: {latency_ms:.1f}ms"
+                    )
+
+            self._redis_healthy = True
+            self._redis_consecutive_failures = 0
+
+        except Exception as e:
+            self._redis_consecutive_failures += 1
+            metrics.infra_redis_healthy.set(0)
+            metrics.infra_redis_failures.inc()
+
+            if self._redis_consecutive_failures >= self._max_infra_failures:
+                if self._redis_healthy:
+                    logger.critical(
+                        f"Redis UNREACHABLE ({self._redis_consecutive_failures} consecutive failures): {e}"
+                    )
+                    if self._alert_service:
+                        await self._alert_service.send_message(
+                            f"🚨 *Redis CRITICAL*\n"
+                            f"Consecutive failures: {self._redis_consecutive_failures}\n"
+                            f"Error: {e}"
+                        )
+                    self._redis_healthy = False
+                else:
+                    logger.warning(
+                        f"Redis still down (failure #{self._redis_consecutive_failures}): {e}"
+                    )
+            else:
+                logger.warning(
+                    f"Redis ping failed ({self._redis_consecutive_failures}/{self._max_infra_failures}): {e}"
+                )
+
+    async def _check_postgres_health(self) -> None:
+        """Check PostgreSQL connectivity. Alert on consecutive failures."""
+        try:
+            # Import here to avoid circular imports
+            from app.core.dependencies import get_pool
+
+            pool = get_pool()
+            if pool is None:
+                raise RuntimeError("PostgreSQL pool not initialized")
+
+            start = time.perf_counter()
+            async with pool.acquire() as conn:
+                await conn.execute("SELECT 1")
+            latency_ms = (time.perf_counter() - start) * 1000
+
+            metrics.infra_postgres_latency.set(latency_ms)
+            metrics.infra_postgres_healthy.set(1)
+
+            if not self._postgres_healthy:
+                logger.info(f"PostgreSQL RECOVERED (latency={latency_ms:.1f}ms)")
+                if self._alert_service:
+                    await self._alert_service.send_message(
+                        f"✅ *PostgreSQL Recovered*\nLatency: {latency_ms:.1f}ms"
+                    )
+
+            self._postgres_healthy = True
+            self._postgres_consecutive_failures = 0
+
+        except Exception as e:
+            self._postgres_consecutive_failures += 1
+            metrics.infra_postgres_healthy.set(0)
+            metrics.infra_postgres_failures.inc()
+
+            if self._postgres_consecutive_failures >= self._max_infra_failures:
+                if self._postgres_healthy:
+                    logger.critical(
+                        f"PostgreSQL UNREACHABLE ({self._postgres_consecutive_failures} consecutive failures): {e}"
+                    )
+                    if self._alert_service:
+                        await self._alert_service.send_message(
+                            f"🚨 *PostgreSQL CRITICAL*\n"
+                            f"Consecutive failures: {self._postgres_consecutive_failures}\n"
+                            f"Error: {e}"
+                        )
+                    self._postgres_healthy = False
+                else:
+                    logger.warning(
+                        f"PostgreSQL still down (failure #{self._postgres_consecutive_failures}): {e}"
+                    )
+            else:
+                logger.warning(
+                    f"PostgreSQL check failed ({self._postgres_consecutive_failures}/{self._max_infra_failures}): {e}"
+                )
+
     def get_status(self) -> dict[str, Any]:
         """Get watchdog status."""
         logger.debug("get_status: entering")
@@ -236,6 +357,8 @@ class Watchdog:
             "high_lag_streak": self._high_lag_streak,
             "latency_samples": len(self._latency_samples),
             "skip_to_market": self.sor.skip_to_market if self.sor else False,
+            "redis_healthy": self._redis_healthy,
+            "postgres_healthy": self._postgres_healthy,
         }
         logger.debug("get_status: returning dict")
         return result

@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     shadow_taker_fee_pct: str = "0.00055"
     shadow_maker_fee_pct: str = "0.0002"
 
+    # ── v3.5 Decision Evaluation Graph ────────────────────────
+    evaluator_v35_enabled: bool = False  # Enable v3.5 evaluator scoring
+
     # ── Portfolio Risk Limits ──────────────────────────────────
     max_gross_exposure_pct: str = "0.50"
     max_net_exposure_pct: str = "0.30"

@@ -19,6 +19,7 @@ except ImportError:
 from app.alpha.regime_classifier import MarketRegime
 from app.core.decision_lifecycle import DecisionLifecycle
 from app.core.decision_trace import DecisionTrace
+from app.core.evidence_ttl import EvidenceTTL, EvidenceTTLRegistry, Freshness
 from app.core.feature_extractor import FeatureVector
 
 
@@ -57,18 +58,106 @@ class DecisionContext:
     total_confidence: float = 0.0
     evidence: list[Evidence] = field(default_factory=list)
 
+    # v3.5: Evidence TTL Registry for freshness tracking
+    _evidence_ttl_registry: EvidenceTTLRegistry = field(
+        default_factory=EvidenceTTLRegistry,
+        repr=False,
+    )
+
     def add_evidence(self, name: str, value: float, weight: float, description: str) -> None:
+        """Add evidence with optional TTL tracking.
+
+        Args:
+            name: Evidence source name
+            value: Evidence value (direction, typically 1.0/-1.0)
+            weight: Importance weight
+            description: Human-readable reason
+        """
         self.evidence.append(Evidence(name, value, weight, description))
         self.total_confidence += (value * weight)
 
+        # Also add to TTL registry
+        self._evidence_ttl_registry.collect(
+            source=name,
+            value=value,
+            weight=weight,
+            description=description,
+        )
+
+    def add_evidence_with_ttl(
+        self,
+        name: str,
+        value: float,
+        weight: float,
+        description: str,
+        ttl_seconds: float | None = None,
+    ) -> None:
+        """Add evidence with explicit TTL.
+
+        Args:
+            name: Evidence source name
+            value: Evidence value (direction, typically 1.0/-1.0)
+            weight: Importance weight
+            description: Human-readable reason
+            ttl_seconds: Time-to-live in seconds (None = use default for source)
+        """
+        self.evidence.append(Evidence(name, value, weight, description))
+        self.total_confidence += (value * weight)
+
+        # Add to TTL registry with explicit TTL
+        self._evidence_ttl_registry.collect(
+            source=name,
+            value=value,
+            weight=weight,
+            description=description,
+            ttl_seconds=ttl_seconds,
+        )
+
+    @property
+    def evidence_registry(self) -> EvidenceTTLRegistry:
+        """Access the TTL-aware evidence registry."""
+        return self._evidence_ttl_registry
+
+    def get_fresh_evidence(self) -> list[EvidenceTTL]:
+        """Get only fresh evidence (>50% TTL remaining)."""
+        return self._evidence_ttl_registry.get_fresh()
+
+    def get_usable_evidence(self) -> list[EvidenceTTL]:
+        """Get evidence that is still usable (not fully expired)."""
+        return self._evidence_ttl_registry.get_usable()
+
+    def get_expired_evidence(self) -> list[EvidenceTTL]:
+        """Get expired evidence."""
+        return self._evidence_ttl_registry.get_expired()
+
+    def compute_ttl_weighted_score(self) -> float:
+        """Compute weighted score with freshness adjustment.
+
+        Returns:
+            Sum of (value * discounted_weight) for all usable evidence.
+        """
+        return self._evidence_ttl_registry.compute_weighted_score()
+
+    def get_evidence_freshness_summary(self) -> dict[str, dict[str, Any]]:
+        """Get a summary of freshness by source.
+
+        Returns:
+            Dict mapping source to {count, avg_penalty, fresh_count, expired_count}
+        """
+        return self._evidence_ttl_registry.get_freshness_summary()
+
     def to_dict(self) -> dict[str, Any]:
         """Convert context to dictionary for persistence/registry."""
+        # Get freshness summary for TTL-aware evidence
+        freshness_summary = self.get_evidence_freshness_summary()
+
         return {
             "symbol": self.symbol,
             "regime": self.regime.value,
             "direction": self.direction,
             "features": self.features.__dict__,
             "total_confidence": self.total_confidence,
+            "ttl_weighted_score": self.compute_ttl_weighted_score(),
             "evidence": [
                 {
                     "name": e.name,
@@ -78,6 +167,7 @@ class DecisionContext:
                 }
                 for e in self.evidence
             ],
+            "evidence_freshness": freshness_summary,
             "governance": {
                 "feature_schema_version": self.feature_schema_version,
                 "confidence_model_version": self.confidence_model_version,

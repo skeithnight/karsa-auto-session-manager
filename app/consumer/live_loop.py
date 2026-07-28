@@ -1154,7 +1154,7 @@ async def _elo_refresh_loop(
     """
     K_FACTOR = 32.0
     BASELINE_ELO = 1500.0
-    processed_key = "karsa:elo:last_processed_id"
+    processed_key = "karsa:elo:last_processed_time"
 
     while True:
         await asyncio.sleep(interval_s)
@@ -1162,12 +1162,12 @@ async def _elo_refresh_loop(
             if trade_store is None:
                 continue
 
-            # Get last processed trade ID to avoid reprocessing
-            last_id = None
+            # Get last processed trade time to avoid reprocessing
+            last_time = None
             try:
                 raw = await redis.get(processed_key)
                 if raw:
-                    last_id = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    last_time = raw.decode() if isinstance(raw, bytes) else str(raw)
             except Exception:
                 pass
 
@@ -1178,8 +1178,11 @@ async def _elo_refresh_loop(
             import json as _json
 
             for trade in trades:
-                trade_id = trade.get("id", "")
-                if last_id and trade_id <= last_id:
+                # Use exit_time as unique key (get_recent_trades doesn't return id)
+                trade_time = trade.get("exit_time", "")
+                if not trade_time:
+                    continue
+                if last_time and trade_time <= last_time:
                     continue
 
                 regime = trade.get("regime", "UNKNOWN")
@@ -1214,20 +1217,20 @@ async def _elo_refresh_loop(
                     "wins": wins,
                     "losses": losses,
                     "win_rate": round(wins / max(1, wins + losses), 4),
-                    "last_trade_id": trade_id,
+                    "last_trade_time": trade_time,
                 }))
 
                 if abs(new_elo - current_elo) > 5:
                     logger.info(
                         "ELO update: %s %.0f → %.0f (trade=%s, pnl=%.2f%%)",
-                        strategy_key, current_elo, new_elo, trade_id, pnl_pct,
+                        strategy_key, current_elo, new_elo, trade_time, pnl_pct,
                     )
 
-                last_id = trade_id
+                last_time = trade_time
 
-            # Persist last processed ID
-            if last_id:
-                await redis.set(processed_key, last_id)
+            # Persist last processed time
+            if last_time:
+                await redis.set(processed_key, last_time)
 
         except asyncio.CancelledError:
             raise

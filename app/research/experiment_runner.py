@@ -1,3 +1,9 @@
+"""⚠️  SCAFFOLD MODULE — Uses mock trades, not production-grade.
+
+See app/research/SCAFFOLD_DISCLAIMER.md for status and promotion criteria.
+Per quant trader persona review recommendation #9: Remove research theater.
+"""
+
 """Experiment Runner — Orchestrates research experiments.
 
 Runs the Control and Variant backtests as defined in the Manifest,

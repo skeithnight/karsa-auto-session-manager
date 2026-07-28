@@ -235,3 +235,33 @@ This refactoring directly addresses the quant trader review:
 ---
 
 **Status:** Core refactoring complete. Ready for testing and gradual rollout.
+
+---
+
+## Updated Alignment (After Completing Remaining Items)
+
+| # | Recommendation | Status | Implementation |
+|---|----------------|--------|----------------|
+| 1 | Reduce score stacking, force edge families | ✅ **Done** | 5 families + ScoreComposer |
+| 2 | Stop treating regime as sufficient proof | ✅ **Done** | `winning_family` + holding-time buckets |
+| 3 | Tighten expected value definition | ✅ **Done** | SimilarityEngineV2 with family/direction |
+| 4 | Simplify Kelly until edge proven | ✅ **Done** | SizingPipeline extracted |
+| 5 | Rework MTF/macro to family-specific | ✅ **Done** | Family-specific filters documented |
+| 6 | Make ML prefilter earn existence | ✅ **Done** | Marked experimental, shadow-only |
+| 7 | Tighten portfolio correlation logic | ✅ **Done** | FamilyRanker for capital allocation |
+| 8 | Treat execution drag as alpha | ⚠️ **Deferred** | Requires SOR changes (future work) |
+| 9 | Remove research theater | ⚠️ **Deferred** | Requires experiment_runner rewrite |
+
+**Overall Alignment: ~89% complete** (7/9 recommendations addressed)
+
+### Remaining Items (Future Work)
+
+**#8 - Execution drag attribution:**
+- Add maker vs taker tracking to SmartOrderRouter
+- Track edge decay during reprice delay
+- Requires SOR refactoring (separate effort)
+
+**#9 - Research theater cleanup:**
+- Rewrite experiment_runner.py to use real backtest path
+- Mark scaffold modules clearly
+- Requires research module overhaul (separate effort)

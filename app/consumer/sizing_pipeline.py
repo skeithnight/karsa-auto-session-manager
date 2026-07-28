@@ -118,7 +118,7 @@ class SizingPipeline:
 
         # Compose final risk_pct
         base_risk = Decimal("0.10") * Decimal(str(kelly_fraction))
-        scaled = base_risk * drawdown_mult * conviction_mult * macro_mult
+        scaled = base_risk * Decimal(str(drawdown_mult)) * conviction_mult * Decimal(str(macro_mult))
         scaled *= uncertainty_factor * garch_factor
         scaled *= profile.size_multiplier * Decimal(str(session_mult))
 

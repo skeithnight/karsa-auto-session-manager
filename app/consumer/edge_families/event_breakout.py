@@ -181,3 +181,8 @@ class EventBreakout(EdgeFamily):
             filters_passed=filters_passed,
             metadata=metadata,
         )
+
+    # Note: EventBreakout intentionally does NOT have macro filters
+    # because events (token unlocks, HMM signals) can override macro context.
+    # This aligns with the quant trader review:
+    # "Event breakout should allow explicit exemption path"

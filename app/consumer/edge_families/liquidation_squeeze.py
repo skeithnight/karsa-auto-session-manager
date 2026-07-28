@@ -141,3 +141,8 @@ class LiquidationSqueeze(EdgeFamily):
             filters_passed=filters_passed,
             metadata=metadata,
         )
+
+    # Note: LiquidationSqueeze intentionally does NOT have macro filters
+    # because squeezes often begin while macro anchors still disagree.
+    # This is a key insight from the quant trader review:
+    # "event-driven squeezes often begin while anchors still disagree"

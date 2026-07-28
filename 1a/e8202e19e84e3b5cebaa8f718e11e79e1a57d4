@@ -1,0 +1,23 @@
+docs/validation/quant_persona_audit_20260728.md
+  f41b6c8ebb14f1aa 1-643
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.1.23",
+  "base_commit_sha": "1ae8202e19e84e3b5cebaa8f718e11e79e1a57d4",
+  "prompts": {
+    "f41b6c8ebb14f1aa": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "019fa8f6-c92c-7c10-96d2-3fa61addca1e",
+        "model": "gpt-5.4"
+      },
+      "human_author": "skeithnight <skeithnight@gmail.com>",
+      "messages": [],
+      "total_additions": 643,
+      "total_deletions": 0,
+      "accepted_lines": 643,
+      "overriden_lines": 0
+    }
+  }
+}

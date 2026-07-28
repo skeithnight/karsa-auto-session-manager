@@ -248,6 +248,22 @@ class Settings(BaseSettings):
     garch_high_vol_multiplier: str = "0.5"  # multiplier when high vol forecasted
     garch_low_vol_multiplier: str = "1.2"  # multiplier when low vol forecasted
 
+    # ── Profitability Triage: Session Hard-Block ───────────────
+    session_block_enabled: bool = True  # enable Asian dead zone block
+    session_block_start_hour: int = 4   # UTC hour to start blocking (04:00 UTC)
+    session_block_end_hour: int = 12    # UTC hour to stop blocking (12:00 UTC)
+    session_block_allow_btc_eth: bool = True  # allow BTC/ETH entries during block
+
+    # ── Profitability Triage: Volatility Floor ─────────────────
+    vol_floor_percentile: int = 25     # 25th percentile of 90-day BTC 1H ATR
+    vol_floor_lookback_days: int = 90  # rolling window for ATR calculation
+    vol_floor_update_interval_s: int = 900  # recalculate every 15 minutes
+
+    # ── Profitability Triage: AI Macro Narrator ────────────────
+    macro_narrator_interval_s: int = 14400  # 4 hours between macro assessments
+    macro_narrator_redis_key: str = "system:macro:narrator"
+    macro_narrator_ttl_s: int = 18000  # 5 hour TTL (slightly > interval)
+
     # ── Watchdog ───────────────────────────────────────────────
     dead_mans_switch_url: str = ""
     dead_mans_switch_interval: int = 60  # seconds

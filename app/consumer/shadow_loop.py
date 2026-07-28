@@ -654,6 +654,13 @@ async def main() -> None:
         _orphan_cleanup_loop(shadow_pos_store, shadow_trade_store), name="shadow-orphan"
     )
 
+    # ── Ranking Engine: Strategy Promotion Gate ─────────────────────────
+    from app.consumer.live_loop import _ranking_refresh_loop
+    ranking_task = asyncio.create_task(
+        _ranking_refresh_loop(redis, shadow_trade_store),
+        name="shadow-ranking",
+    )
+
     # ── Sprint 3: HMM Regime Classification Loop ─────────────────────
     from app.alpha.hmm_regime_classifier import HMMRegimeClassifier
     hmm_classifier = HMMRegimeClassifier(redis_client=redis)
@@ -691,6 +698,7 @@ async def main() -> None:
         orphan_task.cancel()
         hmm_task.cancel()
         garch_task.cancel()
+        ranking_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):

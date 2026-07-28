@@ -88,6 +88,7 @@ app/
 │   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
 │   ├── regime.py             # Hurst + ADX regime classifier (existing)
 │   ├── regime_classifier.py  # [BUILT] RegimeClassifier — The Hub (ADX+Hurst+ATR, Phase 6)
+│   ├── hmm_regime_classifier.py # [ENHANCED] HMM with predict_proba for regime confidence
 │   ├── strategy_router.py    # [BUILT] StrategyRouter — The Spokes (per-regime scoring, Phase 6)
 │   ├── lead_lag_buffer.py    # 15-min rolling price buffer
 │   ├── entry_filter.py       # Pre-entry structural checklist (5 checks)
@@ -98,41 +99,60 @@ app/
 │   ├── trade_memory.py       # Trade history injection for AI context
 │   ├── market_analyzer.py    # Market structure analysis (regime, Hurst, ADX)
 │   ├── market_state.py       # Market state dataclass
-│   └── ml_prefilter.py       # ML-based signal pre-filter
+│   ├── ml_prefilter.py       # ML-based signal pre-filter
+│   ├── sector_filter.py      # [ENHANCED] Sector rotation with scoring multiplier
+│   ├── macro_narrator.py     # [FIXED] Async macro multiplier (was sync, returned coroutine)
+│   └── evidence_collector.py # Evidence collection for confidence scoring
 ├── execution/               # Key 4 — Bybit Executor + APM (Phase 6)
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
-│   ├── sor.py                # Post-Only -> Reprice -> Market
+│   ├── sor.py                # Post-Only -> Reprice -> Market (slippage guard, adaptive reprice)
 │   ├── position_lifecycle.py # Trailing stop + performance checkpoints (existing)
-│   ├── position_manager.py   # [BUILT] ActivePositionManager — 2s async loop (Phase 6)
+│   ├── position_manager.py   # [FIXED] APM — SL 5% cap, orphan 5 USDT min, breakeven lock
 │   └── shadow.py             # [BUILT] ShadowExecutor + ShadowAPM + ShadowExchangeClient (Phase 3.1)
 ├── risk/                     # Key 3 — Risk Gate (expanded, Phase 6)
 │   ├── gates.py              # 3-Layer: liquidity, spread, circuit breaker
 │   ├── circuit_breaker.py    # Per-session hard stop at -2% drawdown
 │   ├── sector_cap.py         # Sector diversity cap (max 2 per sector)
 │   ├── dynamic_risk_gate.py  # [BUILT] Regime-specific RiskProfile (Phase 6)
-│   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade: correlation, exposure, CB (Phase 6)
+│   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade: correlation, exposure, CB, spread detection (Phase 6)
 │   ├── garch_volatility_forecaster.py  # GARCH volatility targeting for Kelly sizing
 │   ├── kelly_sizer.py        # Kelly criterion position sizing with GARCH adjustment
+│   ├── volatility_surface.py # [NEW] Cross-asset vol surface (BTC/ETH term structure)
 │   └── portfolio_hedge.py    # [PLANNED] Cross-portfolio delta hedge (post-MVP)
 ├── consumer/                 # Market data consumer (live + shadow loops)
 │   ├── market_consumer.py    # CCXT WS consumer, normalizes feeds into GlobalState
 │   ├── candle_buffer.py      # Aggregates ticks into OHLCV candles per timeframe
-│   ├── decision_engine.py    # Orchestrates alpha→risk→execution pipeline per candle
-│   ├── live_loop.py          # Main live trading async loop
+│   ├── decision_engine.py    # [ENHANCED] Pipeline with ELO, sector, correlation, HMM scoring
+│   ├── live_loop.py          # [ENHANCED] Live loop with ranking, gate, ELO, vol surface loops
 │   └── shadow_loop.py        # Shadow mode async loop (same pipeline, no real orders)
 ├── commander/                # CLI command interface
 │   └── main.py               # Typer CLI for bot management (start, status, backtest)
 ├── backtest/                 # Backtesting engine
-│   ├── engine.py             # Core backtest runner: replays candles through pipeline
+│   ├── engine.py             # Core backtest runner: replays candles through pipeline (supports live gates)
 │   ├── orchestrator.py       # Multi-symbol/strategy backtest coordinator
 │   ├── worker.py             # Worker process for parallel backtest execution
 │   ├── formatter.py          # Results formatting (tables, equity curves)
-│   └── optimizer.py          # Walk-forward optimizer for parameter tuning
+│   ├── optimizer.py          # Walk-forward optimizer for parameter tuning
+│   ├── walk_forward.py       # [ENHANCED] Walk-forward with robustness scoring
+│   ├── monte_carlo.py        # Monte Carlo simulation for strategy validation
+│   └── data_loader.py        # Historical data loading for backtests
+├── research/                 # Quant Research OS (CI/CD Pipeline)
+│   ├── cli.py                # [ENHANCED] CLI with ranking, elo, gate, vol, trades, metrics commands
+│   ├── experiment_runner.py  # Orchestrates backtests based on YAML manifests
+│   ├── experiment_registry.py # Lineage-aware tracking & artifact storage
+│   ├── metrics_engine.py     # Advanced quant metrics (Sharpe, Max DD, etc)
+│   ├── statistical_validator.py # Statistical tests (Mann-Whitney, Bootstrap p-values)
+│   ├── ranking_engine.py     # [FIXED] Promotion Gate — stats validation now optional
+│   ├── ablation.py           # Strategy ablation testing
+│   ├── feature_analytics.py  # Feature importance analytics
+│   └── correlation_analyzer.py # Cross-asset correlation analysis
 ├── learning/                 # Statistical learning modules
 │   ├── expected_edge.py      # Expected edge calculation
 │   ├── similarity_engine.py  # Trade similarity matching
 │   ├── statistical_learning.py # Statistical learning algorithms
 │   └── decision_registry.py  # Decision registry for learning
+├── ai/                       # AI/ML modules
+│   └── (placeholder for future ML models)
 ├── analytics/                # Performance analytics
 │   ├── performance.py        # Sharpe, Sortino, max drawdown, win rate calculations
 │   └── reconciliation.py     # Trade reconciliation (expected vs actual fills)
@@ -361,20 +381,23 @@ BybitExecutor.execute()          ← never call without passing all above
 - Commander must not bypass any safety gate (risk check, reconciliation) when starting the bot.
 - All CLI commands must validate environment/config before executing.
 
-### 🔬 Backtest Agent (`app/backtest/`)
+### 🔬 Research Agent (`app/research/` & `app/backtest/`)
 
-**Mission:** Replay historical candles through the full pipeline to validate strategies before live deployment.
+**Mission:** Operate the Quantitative Research OS to discover, validate, rank, and promote trading strategies through a strict CI/CD pipeline before live deployment.
 
 **Owns:**
-- `engine.py`: Core backtest runner. Replays candles through alpha→risk→execution pipeline.
-- `orchestrator.py`: Multi-symbol/strategy coordinator for batch backtesting.
-- `worker.py`: Worker process for parallel backtest execution.
-- `formatter.py`: Results formatting — tables, equity curves, trade summaries.
+- `cli.py`: Typer CLI entrypoint for orchestrating experiments and datasets.
+- `experiment_registry.py`: Lineage-aware tracking. Saves full artifact suites (`metrics.json`, `trades.parquet`, `validation.json`, `equity.csv`) to structured directories.
+- `metrics_engine.py`: Computes institutional-grade quant metrics (Sharpe, Sortino, Calmar, Max DD, VaR).
+- `statistical_validator.py`: Computes $p$-values via Mann-Whitney U tests and Bootstrapping to prove if alpha is real.
+- `ranking_engine.py`: The Promotion Gate. Enforces strict `PromotionPolicy` thresholds and outputs structured JSON decisions (`✅ PROMOTE`, `❌ REJECT`).
+- `experiment_runner.py`: Orchestrates A/B experiments via the `BacktestEngine`.
+- `engine.py` (legacy): Core backtest runner replaying candles through the pipeline.
 
 **Invariants:**
-- Backtest engine must use identical pipeline code as live — no simplified "backtest-only" shortcuts.
-- Results must be stored in Postgres (`backtest_results` table) per `docs/DATA_MODEL.md`.
-- Fee/slippage model must match ShadowExecutor's fee asymmetry (maker vs taker).
+- Every experiment MUST be reproducible. Manifests must include a `parent_experiment_id`, and runs must be tagged with Git Commit Hash and Random Seed.
+- Statistical validation MUST always output the `Probability Variant beats Control` to prevent p-hacking.
+- The Promotion Gate MUST be strictly policy-driven, not score-driven. No strategy can bypass the Ranking Engine.
 
 ### 📊 Analytics Agent (`app/analytics/`)
 

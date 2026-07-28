@@ -35,6 +35,9 @@ class BacktestSummary:
     regime_counts: dict[str, int] = field(default_factory=dict)
     direction_counts: dict[str, int] = field(default_factory=dict)
     exit_reason_counts: dict[str, int] = field(default_factory=dict)
+    sharpe_ratio: float = 0.0
+    sortino_ratio: float = 0.0
+    regime_expectancy: dict[str, dict[str, float]] = field(default_factory=dict)
 
 
 def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSummary:
@@ -72,6 +75,36 @@ def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSumm
     s.regime_counts = dict(Counter(r.regime for r in taken if r.regime))
     s.direction_counts = dict(Counter(r.direction for r in taken))
     s.exit_reason_counts = dict(Counter(r.exit_reason for r in taken if r.exit_reason))
+
+    # Sharpe & Sortino ratios (annualized, assuming ~1 trade/day)
+    import math
+    pnls = [float(r.pnl_net) for r in taken]
+    if len(pnls) >= 2:
+        mean_r = sum(pnls) / len(pnls)
+        std_r = math.sqrt(sum((r - mean_r) ** 2 for r in pnls) / (len(pnls) - 1))
+        s.sharpe_ratio = round(mean_r / std_r * math.sqrt(365), 3) if std_r > 0 else 0.0
+
+        # Sortino: only downside deviation
+        downside = [r for r in pnls if r < 0]
+        if downside:
+            down_var = sum(r ** 2 for r in downside) / len(pnls)  # use full N for denominator
+            down_std = math.sqrt(down_var)
+            s.sortino_ratio = round(mean_r / down_std * math.sqrt(365), 3) if down_std > 0 else 0.0
+
+    # Per-regime expectancy (Phase 3: Measure Edge)
+    from collections import defaultdict
+    regime_trades: dict[str, list[float]] = defaultdict(list)
+    for r in taken:
+        if r.regime:
+            regime_trades[r.regime].append(float(r.pnl_net))
+    for regime, pnls in regime_trades.items():
+        wins = sum(1 for p in pnls if p > 0)
+        s.regime_expectancy[regime] = {
+            "trades": len(pnls),
+            "win_rate": round(wins / len(pnls) * 100, 2) if pnls else 0.0,
+            "avg_pnl": round(sum(pnls) / len(pnls), 6) if pnls else 0.0,
+            "total_pnl": round(sum(pnls), 4),
+        }
 
     return s
 

@@ -95,3 +95,53 @@ class SectorRotationFilter:
             }
 
         return {"approved": True, "sector": sector, "percentile": percentile, "reason": "ok"}
+
+    def get_sector_score(self, symbol: str, direction: str) -> float:
+        """Get a score multiplier based on sector momentum ranking.
+
+        Returns:
+            Float multiplier: 1.0 = neutral, >1.0 = hot sector bonus, <1.0 = cold sector penalty.
+            LONGs in top sectors get bonus, SHORTs in bottom sectors get bonus.
+        """
+        sector = get_sector(symbol)
+        if sector in ("MAJORS", "UNKNOWN") or not self._sector_returns:
+            return 1.0
+
+        sorted_sectors = sorted(
+            self._sector_returns.items(), key=lambda x: x[1], reverse=True
+        )
+        total_sectors = len(sorted_sectors)
+        if total_sectors < 3:
+            return 1.0
+
+        rank = next(
+            (i for i, (s, _) in enumerate(sorted_sectors) if s == sector), None
+        )
+        if rank is None:
+            return 1.0
+
+        percentile = 1.0 - (rank / (total_sectors - 1)) if total_sectors > 1 else 0.5
+
+        # Hot sector bonus for LONGs: top 20% → +10%, top 40% → +5%
+        # Cold sector penalty for LONGs: bottom 20% → -10%, bottom 40% → -5%
+        # Mirror for SHORTs
+        if direction == "LONG":
+            if percentile >= 0.8:
+                return 1.10
+            elif percentile >= 0.6:
+                return 1.05
+            elif percentile <= 0.2:
+                return 0.90
+            elif percentile <= 0.4:
+                return 0.95
+        else:  # SHORT
+            if percentile <= 0.2:
+                return 1.10
+            elif percentile <= 0.4:
+                return 1.05
+            elif percentile >= 0.8:
+                return 0.90
+            elif percentile >= 0.6:
+                return 0.95
+
+        return 1.0

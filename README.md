@@ -25,16 +25,18 @@ Our architecture is split into critical paths ensuring robustness and modularity
 |---|---|---|---|
 | 1 | **Global Data Engine** | CCXT Pro WS ingestion, normalization, bad-tick filtering | `app/data/` |
 | 2 | **Alpha Bridge** | Multi-signal composite, regime classification, strategy routing, AI analysis | `app/alpha/` |
-| 3 | **3-Layer Risk Gate** | Liquidity, spread health, circuit breaker, portfolio risk, sector cap | `app/risk/` |
-| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), APM, shadow execution | `app/execution/` |
+| 3 | **3-Layer Risk Gate** | Liquidity, spread health, circuit breaker, portfolio risk, sector cap, correlation, spread detection | `app/risk/` |
+| 4 | **Bybit Executor** | SOR (Post-Only → Reprice → Market), APM (SL 5% cap, breakeven lock), shadow execution | `app/execution/` |
 | 5 | **State Manager** | Postgres sync, startup reconciliation, trade store | `app/core/state.py` |
 | 6 | **Watchdog & Telemetry** | Heartbeats, latency tracking, dead man's switch, system health | `app/watchdog/` |
 | 7 | **Session Orchestrator** | UTC time-block regime logic | `app/core/session.py` |
-| 8 | **Market Consumer** | Live/shadow loops, candle buffering, decision engine | `app/consumer/` |
-| 9 | **Backtest Engine** | Historical candle replay, multi-symbol orchestration, results formatting | `app/backtest/` |
+| 8 | **Market Consumer** | Live/shadow loops, candle buffering, decision engine (ELO, sector, correlation scoring) | `app/consumer/` |
+| 9 | **Backtest Engine** | Historical candle replay, multi-symbol orchestration, live gates, walk-forward optimization | `app/backtest/` |
 | 10 | **Commander** | CLI interface for bot management | `app/commander/` |
 | 11 | **Analytics** | Performance metrics (Sharpe, Sortino, drawdown), trade reconciliation | `app/analytics/` |
 | 12 | **Data Engine Service** | Standalone data ingestion container (gluetun VPN) | `app/data_engine/` |
+| 13 | **Research Platform** | Ranking engine, ELO ratings, metrics engine, CLI with autocomplete | `app/research/` |
+| 14 | **Volatility Surface** | Cross-asset BTC/ETH term structure, vol regime detection | `app/risk/volatility_surface.py` |
 
 ## 🛡 Key Architectural Decisions
 
@@ -77,3 +79,18 @@ make up
 ## ⚠️ Safety Warning
 
 This bot operates with real capital in live environments. Any changes to the **Risk Gate**, **Bybit Executor**, or **Watchdog** must undergo rigorous review and pass the `TESTING_STRATEGY.md` requirements. Never weaken the kill switch or circuit breakers for development convenience.
+
+## 🧠 Adaptive Strategy Features (Phase 1-3)
+
+| Feature | Description | Redis Key |
+|---------|-------------|-----------|
+| **Regime Confidence** | HMM probabilities blended into scoring | `system:hmm:regime` |
+| **Dynamic Threshold** | Gate calibrated from historical EV | `karsa:gate:dynamic_threshold` |
+| **ELO Rating** | Per-strategy win/loss tracking | `karsa:elo:{strategy}` |
+| **Correlation Sizing** | Score penalty for correlated positions | `karsa:correlation:{symbol}` |
+| **Sector Scoring** | Bonus/penalty based on sector momentum | (computed in-memory) |
+| **Rebalance Trigger** | Alert when pending signal beats open position | `karsa:alert:rebalance` |
+| **Spread Detection** | Multi-leg spread risk evaluation | (computed in PRM) |
+| **Volatility Surface** | BTC/ETH term structure and vol regime | `karsa:vol_surface:*` |
+| **Walk-Forward Optimization** | Robustness scoring for strategy validation | (CLI output) |
+| **Research CLI** | `python -m app.research.cli {ranking,elo,gate,vol,trades,metrics}` | (various) |

@@ -6,9 +6,9 @@
 ---
 
 ## 1. Architectural Philosophy
-The system is built on a strict **"Read Global, Execute Local"** paradigm. It ingests aggregated market data from the broader crypto universe to establish the "true" market state, and executes directional trades exclusively on Bybit. 
+The system has evolved from a "crypto trading bot" into a **Quantitative Research Operating System**. It is built around a strict CI/CD promotion pipeline where trading strategies must be mathematically proven, statistically validated, and explicitly promoted before they ever touch live capital. Live trading is merely the final deployment stage for alpha discovered in the Research Engine.
 
-Because Bybit execution must be routed through a WireGuard VPN tunnel (gluetun sidecar) due to geo-restrictions, the system introduces unavoidable network latency. To mitigate this, the architecture deliberately abandons microservices in favor of a **Single-Process Monolith** and shifts the trading timeframe to Intraday/Swing (15m - 4h), where proxy latency is mathematically irrelevant to the alpha.
+Because Bybit execution must be routed through a WireGuard VPN tunnel (gluetun sidecar) due to geo-restrictions, the system deliberately abandons microservices in favor of a **Single-Process Monolith** for execution, while keeping the Research Operating System offline and highly decoupled.
 
 ---
 
@@ -531,3 +531,17 @@ karsa-auto-session-manager/
         'options': {'defaultType': 'swap'},
     })
     ```
+    
+---
+
+## 11. Quantitative Research Operating System (The CI/CD Pipeline)
+
+Karsa's core identity is a Decision Intelligence platform, heavily relying on `app/research/`. Every component is built to answer: "Is this alpha real, or just luck?"
+
+### The Promotion Pipeline
+1. **Experiment Manifests (`.yaml`)**: Researchers define control/variant setups and parent lineage.
+2. **Reproducible Backtest**: The `ExperimentRunner` executes identical datasets.
+3. **Metrics Engine**: Computes institutional-grade metrics (Sharpe, Sortino, Calmar, Max DD, VaR).
+4. **Statistical Validator**: Uses Bootstrapping and Mann-Whitney U to generate formal $p$-values, explicitly calculating the "Probability Variant beats Control".
+5. **Ranking Engine (Promotion Gate)**: A strict, policy-driven gate. Returns a JSON decision (`✅ PROMOTE`, `⚠ NEEDS_MORE_EVIDENCE`, `❌ REJECT`) based on hard thresholds (Max DD < 15%, p-value < 0.05) with explicit reasons.
+6. **Experiment Registry**: Dumps a complete, lineage-aware artifact suite (`validation.json`, `equity.csv`, `trades.parquet`) tagged with the Git Commit Hash for permanent reproducibility.

@@ -64,8 +64,8 @@ class MarketAnalyzer:
 
     async def update_on_candle_close(self, symbol: str, candles: list[list[Any]]) -> MarketState:
         """Triggered on 15m candle close. Runs calculations in a thread executor."""
-        if not candles or len(candles) < 50:
-            logger.warning("MarketAnalyzer: insufficient candles (<50), skipping update")
+        if not candles or len(candles) < 30:
+            logger.warning("MarketAnalyzer: insufficient candles (<30), skipping update")
             return self._current_state
 
         ts = int(candles[-1][0])

@@ -74,10 +74,12 @@ class UniverseScorer:
         settings = get_settings()
         if symbol in settings.stablecoins:
             return None
-        
+
         # Leveraged token pattern rejection
         if symbol.endswith(("UP/USDT", "DOWN/USDT", "BULL/USDT", "BEAR/USDT")):
             return None
+
+        # Validate symbol has global state (means data engine is tracking it)
         state = await self.redis.get_global_state(symbol)
         if not state:
             return None
@@ -89,10 +91,11 @@ class UniverseScorer:
             total_volume / Decimal("1000000000") * VOLUME_MAX, VOLUME_MAX
         )
 
+        # Fetch OHLCV — also validates symbol exists on exchange
         try:
             candles = await self.fetcher.fetch(symbol, timeframe="1h", limit=168)
         except Exception as e:
-            logger.debug(f"Universe scorer OHLCV failed for {symbol}: {e}")
+            logger.debug(f"Universe scorer: {symbol} rejected — OHLCV fetch failed: {e}")
             return None
 
         if not candles or len(candles) < 168:  # 7 days of 1h candles
@@ -260,7 +263,7 @@ class UniverseScorer:
         }
         try:
             await self.redis.set(
-                "system:universe:symbols", json.dumps(payload, default=str)
+                "system:universe:scorer:symbols", json.dumps(payload, default=str)
             )
             logger.info(f"Universe refreshed: {len(symbols)} symbols active")
         except Exception as e:

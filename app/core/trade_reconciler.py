@@ -190,6 +190,78 @@ class TradeReconciler:
         )
         return inserted
 
+    async def close_stale_open_trades(self) -> int:
+        """One-time cleanup: close any Postgres open trade with no Bybit position.
+
+        Fetches all Bybit positions, then closes any Postgres record where
+        exit_time IS NULL and the symbol+side doesn't exist on Bybit.
+        Returns count of trades closed.
+        """
+        try:
+            # Get all Bybit positions
+            bybit_positions = await self.client.fetch_positions()
+            bybit_keys: set[str] = set()
+            for pos in bybit_positions:
+                sym = pos.get("symbol", "")
+                side = pos.get("side", "").upper()
+                bybit_keys.add(f"{sym}:{side}")
+
+            # Get all open Postgres trades
+            open_trades = await self.store.get_all_open_trades()
+            if not open_trades:
+                logger.info("Stale cleanup: no open trades in Postgres")
+                return 0
+
+            closed = 0
+            for t in open_trades:
+                symbol = t.get("symbol", "")
+                side = t.get("side", "").upper()
+                trade_id = t.get("id")
+
+                # Normalize side for comparison
+                if side in ("BUY", "LONG"):
+                    check_side = "LONG"
+                elif side in ("SELL", "SHORT"):
+                    check_side = "SHORT"
+                else:
+                    check_side = side
+
+                bybit_key = f"{symbol}:{check_side}"
+                if bybit_key not in bybit_keys:
+                    # Position doesn't exist on Bybit — close it
+                    try:
+                        entry_price = _safe_decimal(t.get("entry_price", "0"))
+                        await self.store.close_trade(
+                            symbol=symbol,
+                            exit_price=entry_price,  # Assume breakeven
+                            pnl=Decimal("0"),
+                            exit_reason="stale_cleanup",
+                            trade_id=trade_id,
+                            regime="RECONCILED",
+                        )
+                        closed += 1
+                        logger.warning(
+                            f"Stale cleanup: closed orphaned trade {symbol} {side} "
+                            f"id={trade_id} (not on Bybit)"
+                        )
+                    except Exception as e:
+                        logger.error(
+                            f"Stale cleanup: failed to close {symbol} {side} "
+                            f"id={trade_id}: {e}"
+                        )
+
+            if closed > 0:
+                logger.info(f"Stale cleanup: closed {closed} orphaned trades")
+            else:
+                logger.info(
+                    f"Stale cleanup: all {len(open_trades)} open trades match Bybit positions"
+                )
+            return closed
+
+        except Exception as e:
+            logger.error(f"Stale cleanup failed: {e}")
+            return 0
+
     async def reconcile(self) -> ReconcileReport:
         """Main entry. Fetch-compare-repair cycle."""
         now = datetime.now(UTC)

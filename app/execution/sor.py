@@ -201,19 +201,26 @@ class SmartOrderRouter:
         max_reprices = self.max_reprice_attempts
         try:
             tickers = await self.client.fetch_tickers()
-            if isinstance(tickers, dict):
+            # fetch_tickers returns a list; find our symbol's ticker
+            ticker = None
+            if isinstance(tickers, list):
+                for t in tickers:
+                    if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
+                        ticker = t
+                        break
+            elif isinstance(tickers, dict):
                 ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
-                if ticker:
-                    bid_vol = Decimal(str(ticker.get("bidVolume", "0") or "0"))
-                    ask_vol = Decimal(str(ticker.get("askVolume", "0") or "0"))
-                    # If orderbook imbalance heavily favors our side (strong support),
-                    # we have time to wait for a maker fill rather than crossing the spread immediately.
-                    if side == "buy" and bid_vol > 0 and ask_vol > 0 and bid_vol >= ask_vol * Decimal("2.0"):
-                        max_reprices = max(max_reprices, 4)
-                        logger.info(f"SOR: Strong bid support detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
-                    elif side == "sell" and ask_vol > 0 and bid_vol > 0 and ask_vol >= bid_vol * Decimal("2.0"):
-                        max_reprices = max(max_reprices, 4)
-                        logger.info(f"SOR: Strong ask resistance detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
+            if ticker:
+                bid_vol = Decimal(str(ticker.get("bidVolume", "0") or "0"))
+                ask_vol = Decimal(str(ticker.get("askVolume", "0") or "0"))
+                # If orderbook imbalance heavily favors our side (strong support),
+                # we have time to wait for a maker fill rather than crossing the spread immediately.
+                if side == "buy" and bid_vol > 0 and ask_vol > 0 and bid_vol >= ask_vol * Decimal("2.0"):
+                    max_reprices = max(max_reprices, 4)
+                    logger.info(f"SOR: Strong bid support detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
+                elif side == "sell" and ask_vol > 0 and bid_vol > 0 and ask_vol >= bid_vol * Decimal("2.0"):
+                    max_reprices = max(max_reprices, 4)
+                    logger.info(f"SOR: Strong ask resistance detected for {symbol}, extending reprice attempts to {max_reprices} to secure maker fee.")
         except Exception as e:
             logger.debug(f"SOR adaptive routing check failed: {e}")
 
@@ -307,9 +314,16 @@ class SmartOrderRouter:
             # Hard Slippage Limit Check
             try:
                 tickers = await self.client.fetch_tickers()
-                if isinstance(tickers, dict):
+                # fetch_tickers returns a list; find our symbol's ticker
+                ticker = None
+                if isinstance(tickers, list):
+                    for t in tickers:
+                        if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
+                            ticker = t
+                            break
+                elif isinstance(tickers, dict):
                     ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
-                    if ticker:
+                if ticker:
                         bid = Decimal(str(ticker.get("bid", "0") or "0"))
                         ask = Decimal(str(ticker.get("ask", "0") or "0"))
                         market_price = ask if side == "buy" else bid
@@ -321,7 +335,10 @@ class SmartOrderRouter:
                                     await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
                                 return None
             except Exception as e:
-                logger.debug(f"SOR slippage check failed, proceeding to market: {e}")
+                logger.warning(f"SOR slippage check failed, aborting market fallback: {e}")
+                if self.alert_service:
+                    await self.alert_service.send(f"⚠️ SOR slippage check failed for {symbol}, aborting to prevent excess slippage")
+                return None
 
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
@@ -494,7 +511,7 @@ class SmartOrderRouter:
                                if o.get("type") in ("stop", "StopOrder", "Stop")
                                or o.get("stopOrderType")]
                 if len(stop_orders) >= 8:  # Pre-emptive cleanup at 8 (before hitting 10 limit)
-                    self._log.warning(f"SL cleanup: cancelling {len(stop_orders)} stale stop orders for {symbol}")
+                    logger.warning(f"SL cleanup: cancelling {len(stop_orders)} stale stop orders for {symbol}")
                     for so in stop_orders:
                         try:
                             await self.client.cancel_order(so["id"], symbol)
@@ -502,7 +519,7 @@ class SmartOrderRouter:
                             pass
                     await asyncio.sleep(0.3)  # Let Bybit process cancellations
             except Exception as e:
-                self._log.warning(f"SL cleanup failed for {symbol}: {e}")
+                logger.warning(f"SL cleanup failed for {symbol}: {e}")
 
             # Primary: atomic SL via set_trading_stop (exchange attaches to position)
             try:
@@ -615,7 +632,7 @@ class SmartOrderRouter:
             qty = Decimal(str(pos.get("amount", "0")))
             if qty <= 0 or not symbol:
                 continue
-            api_side = "sell" if side == "LONG" else "buy"
+            api_side = "sell" if side == "buy" else "buy"  # side is already normalized to buy/sell by BybitClient
             try:
                 await self.client.create_market_order(
                     symbol, api_side, qty, {"reduceOnly": True}

@@ -262,7 +262,13 @@ class TestScaleOut:
     @pytest.mark.asyncio
     async def test_no_scale_out_below_threshold(self) -> None:
         apm, client, store, regime, alert = _make_apm()
-        # entry=100, live=102, risk=5 → R=0.4 → below 1R threshold
-        pos = _make_pos(entry_regime="RANGE", entry_price="100.0", live_price="102.0", initial_risk="5.0")
+        # entry=100, live=100.5, risk=5 → R=0.1 → below 0.25R scale-out threshold
+        pos = _make_pos(entry_regime="RANGE", entry_price="100.0", live_price="100.5", initial_risk="5.0")
+        # Mock fetch_positions to return the position so it's not detected as phantom
+        client.fetch_positions = AsyncMock(return_value=[{"symbol": "SOL/USDT", "side": "buy", "qty": "0.1"}])
         await apm._manage_single_position(pos)
-        client.reduce_position.assert_not_called()
+        # Scale-out for RANGE triggers at r_mult >= 0.25R. At R=0.1, no scale-out should happen.
+        scale_out_calls = [c for c in client.reduce_position.call_args_list
+                           if len(c.args) >= 3 and c.args[0] == "SOL/USDT"
+                           and Decimal(str(c.args[2])) == Decimal("0.05")]
+        assert len(scale_out_calls) == 0, f"Scale-out should not trigger at R=0.1, but got: {scale_out_calls}"

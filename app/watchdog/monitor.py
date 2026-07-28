@@ -59,11 +59,23 @@ class Watchdog:
         self.running = True
         max_restarts = 3
         restart_count = 0
+        cycle_count = 0
 
         logger.info("Watchdog started")
         while self.running:
             try:
                 await self._check_health()
+                cycle_count += 1
+                # Log status every 60 cycles (10 minutes at 10s interval)
+                if cycle_count % 60 == 0:
+                    status = self.get_status()
+                    logger.info(
+                        f"Watchdog status: running={status['running']} "
+                        f"alpha_paused={status['alpha_paused']} "
+                        f"lag_streak={status['high_lag_streak']} "
+                        f"latency_samples={status['latency_samples']} "
+                        f"skip_to_market={status['skip_to_market']}"
+                    )
                 await asyncio.sleep(self.check_interval)
                 restart_count = 0  # Reset on successful cycle
             except asyncio.CancelledError:

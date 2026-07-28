@@ -104,6 +104,7 @@ from typing import Any
 from loguru import logger
 
 from app.alpha.analyst import CryptoAnalyst
+from app.alpha.macro_narrator import MacroNarrator
 from app.alpha.entry_filter import EntryFilter
 from app.alpha.lead_lag_buffer import LeadLagBuffer
 from app.alpha.metrics import AlphaMetrics
@@ -808,8 +809,13 @@ async def regime_engine_task(
     regime_classifier: RegimeClassifier,
     ohlcv_fetcher: OHLCVFetcher,
     redis_client: RedisClient,
+    macro_narrator: MacroNarrator | None = None,
 ) -> None:
-    """Regime Engine: classify per-symbol regime + BTC global fallback every 15 min."""
+    """Regime Engine: classify per-symbol regime + BTC global fallback every 15 min.
+
+    Also runs the Macro Narrator assessment on the first cycle (piggybacks on
+    the same 15-min loop instead of a separate task that may not start).
+    """
     logger.debug("regime_engine_task: entering")
     logger.info("Regime Engine starting (per-symbol mode)...")
 
@@ -895,6 +901,13 @@ async def regime_engine_task(
                         *[_classify_one(s) for s in symbols],
                         return_exceptions=True,
                     )
+
+            # Macro Narrator: assess macro state on first cycle, then every 4 hours
+            if macro_narrator is not None:
+                try:
+                    await macro_narrator._assess_macro_state()
+                except Exception as e:
+                    logger.warning(f"MacroNarrator assessment failed: {e}")
 
         except Exception as e:
             logger.error(f"Regime Engine error: {e}")
@@ -1482,6 +1495,13 @@ async def main() -> None:
             logger.info(f"Backfilled {backfilled} trades from Bybit closed PnL")
     except Exception as e:
         logger.warning(f"Trade backfill failed (non-fatal): {e}")
+    # Close orphaned Postgres records (positions closed on exchange but not in DB)
+    try:
+        stale_closed = await trade_reconciler.close_stale_open_trades()
+        if stale_closed:
+            logger.warning(f"Stale cleanup: closed {stale_closed} orphaned trades on startup")
+    except Exception as e:
+        logger.warning(f"Stale cleanup failed (non-fatal): {e}")
     trailing_stop = TrailingStopManager(
         position_store, bybit_client, max_loss_usd=Decimal("1.00")
     )
@@ -1500,6 +1520,16 @@ async def main() -> None:
     # Phase 4.5 modules
     multi_tf = MultiTFFilter(ohlcv_fetcher)
     universe_scorer = UniverseScorer(redis_client, ohlcv_fetcher, settings.symbols)
+
+    # Profitability Triage: AI Macro Narrator (4-hour strategic advisor)
+    macro_narrator = MacroNarrator(
+        ai_client=ai_client,
+        redis_client=redis_client.redis,
+        ohlcv_fetcher=ohlcv_fetcher,
+        interval_s=settings.macro_narrator_interval_s,
+        redis_key=settings.macro_narrator_redis_key,
+        ttl_s=settings.macro_narrator_ttl_s,
+    )
 
     # Startup reconciliation — trust nothing (skip in shadow mode)
     if not settings.shadow_mode_enabled:
@@ -1692,7 +1722,8 @@ async def main() -> None:
 
         asyncio.create_task(
             regime_engine_task(
-                regime_engine, regime_classifier, ohlcv_fetcher, redis_client
+                regime_engine, regime_classifier, ohlcv_fetcher, redis_client,
+                macro_narrator=macro_narrator,
             )
         ),
         # Phase 6.5: APM_ENABLED=True disables legacy lifecycle managers

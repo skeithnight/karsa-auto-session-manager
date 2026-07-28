@@ -17,7 +17,43 @@ Different duration, different win-rate bar, and different risk-adjusted-return m
 
 ---
 
-## Phase Map
+## Quantitative Research OS Roadmap (New Paradigm)
+
+Karsa is officially transitioning into a **Quantitative Research Operating System**. Live trading is now the final deployment stage of a strict CI/CD promotion pipeline.
+
+### Epic 1 — Quantitative Research Infrastructure
+*Status: ✅ COMPLETE*
+*   Research CLI (`app/research/cli.py`)
+*   Experiment Registry (Lineage-aware artifact dumping)
+*   Metrics Engine (CAGR, Sharpe, Max DD, VaR)
+*   Statistical Validation (Mann-Whitney, Bootstrapped p-values)
+*   Policy-Driven Promotion Gate (`PromotionPolicy`)
+*   Experiment Runner
+
+### Epic 2 — Alpha Discovery Engine
+*Status: ⏳ NEXT*
+*   **Experiment Matrix**: Run combinatorial parameter sweeps (`AI x Funding x OI`).
+*   **Feature Attribution**: SHAP values and permutation importance for predictors.
+*   **Parameter Sweep**: Heatmaps for Kelly sizing and risk bounds.
+*   **Sensitivity Analysis** & **Leaderboard**.
+
+### Epic 3 — Robustness & Calibration
+*Status: 📅 PLANNED*
+*   **Walk Forward Validation**: Automatic train/validate/forward-test cycles.
+*   **Monte Carlo Simulation**: Randomize trade order, slippage, and spread.
+*   **Calibration Engine**: Brier Score and Expected Calibration Error (ECE) for AI models.
+*   **Strategy Lineage**: Experiment graph visualization.
+
+### Epic 4 — Automated Deployment
+*Status: 📅 PLANNED*
+*   **Automatic Promotion**: Scripts to move `✅ PROMOTE` strategies directly to Shadow.
+*   **Shadow Integration**: Simulated execution on live feeds.
+*   **Paper Trading** & **Live Rollout**.
+*   **Rollback Engine**: Auto-demote strategies that fail live performance checks.
+
+---
+
+## Legacy Phase Map (Execution Pipeline)
 
 | Phase | Name | Source | Gate to Advance |
 | :-- | :--- | :--- | :--- |

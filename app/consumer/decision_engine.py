@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import numpy as np
@@ -27,6 +28,7 @@ from app.learning.statistical_learning import StatisticalLearning
 from app.alpha.sector_filter import SectorRotationFilter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 from app.risk.kelly_sizer import KellySizer
+from app.research.ranking_engine import RankingEngine, PromotionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +82,7 @@ class TradeSignal:
     atr_pct: float = 0.0
     regime_encoded: int = 0
     context: DecisionContext | None = None
+    expected_value: float = 0.0  # EV = P(win) * avg_win - P(loss) * avg_loss
 
     @property
     def confidence(self) -> float:
@@ -150,6 +153,80 @@ class DecisionEngine:
         """Update wallet balance for position sizing."""
         self._wallet_balance = balance
 
+    async def _check_ranking_gate(self) -> str:
+        """Read cached ranking decision from Redis.
+
+        Returns 'PROMOTE', 'NEEDS_MORE_EVIDENCE', or 'REJECT'.
+        Fail-open: returns 'PROMOTE' if Redis is down or no ranking exists.
+        """
+        if self._redis is None:
+            return "PROMOTE"
+        try:
+            raw = await self._redis.get("karsa:ranking:decision")
+            if raw is None:
+                return "PROMOTE"
+            return raw.decode() if isinstance(raw, bytes) else str(raw)
+        except Exception:
+            return "PROMOTE"
+
+    async def _get_dynamic_gate_threshold(self) -> float:
+        """Read dynamic gate threshold calibrated from historical EV.
+
+        Uses rolling average of winning trade EVs to set threshold.
+        Falls back to static _GATE_THRESHOLD if no historical data.
+        Formula: threshold = median(EV of winning trades) * 0.8
+        Ensures threshold stays within [50.0, 90.0] bounds.
+        """
+        if self._redis is None:
+            return float(self._gate)
+        try:
+            import json as _json
+            raw = await self._redis.get("karsa:gate:dynamic_threshold")
+            if raw:
+                data = _json.loads(raw)
+                dynamic = data.get("threshold", float(self._gate))
+                return max(50.0, min(90.0, dynamic))
+        except Exception:
+            pass
+        return float(self._gate)
+
+    async def _get_strategy_elo(self, strategy: str) -> float:
+        """Read ELO rating for a strategy from Redis.
+
+        Returns ELO rating (default 1500.0 for new strategies).
+        """
+        if self._redis is None:
+            return 1500.0
+        try:
+            import json as _json
+            raw = await self._redis.get(f"karsa:elo:{strategy}")
+            if raw:
+                data = _json.loads(raw)
+                return data.get("elo", 1500.0)
+        except Exception:
+            pass
+        return 1500.0
+
+    @staticmethod
+    def compute_elo(rating_a: float, rating_b: float, score_a: float, k_factor: float = 32.0) -> tuple[float, float]:
+        """Compute ELO rating update.
+
+        Args:
+            rating_a: Current ELO of strategy A.
+            rating_b: Current ELO of strategy B (or baseline 1500).
+            score_a: Score for A (1.0 = win, 0.5 = draw, 0.0 = loss).
+            k_factor: K-factor for update speed.
+
+        Returns:
+            Tuple of (new_rating_a, new_rating_b).
+        """
+        import math
+        expected_a = 1.0 / (1.0 + math.pow(10, (rating_b - rating_a) / 400.0))
+        expected_b = 1.0 - expected_a
+        new_a = rating_a + k_factor * (score_a - expected_a)
+        new_b = rating_b + k_factor * ((1.0 - score_a) - expected_b)
+        return new_a, new_b
+
     async def _get_risk_pct(self) -> Decimal:
         """Read risk_pct from Redis karsa:auto:config. Default10%."""
         if self._redis is None:
@@ -211,6 +288,66 @@ class DecisionEngine:
             return None
 
         metrics.signals_entered_pipeline.labels(symbol=symbol).inc()
+
+        # ─── RANKING GATE (Strategy Promotion) ──────────────────────────
+        # If RankingEngine has rejected this strategy, skip evaluation entirely.
+        # Fail-open: PROMOTE if Redis is down or no ranking computed yet.
+        ranking_decision = await self._check_ranking_gate()
+        if ranking_decision == "REJECT":
+            logger.debug("skip %s — RankingEngine REJECT", symbol)
+            return None
+        # ─────────────────────────────────────────────────────────────────
+
+        # ─── VOLATILITY FLOOR (Dead Market Kill Switch) ──────────────────
+        # Apply 0.5x penalty to EV/confidence when BTC 1H ATR is below the 10th percentile
+        # of its 90-day rolling distribution.
+        vol_floor_penalty = 1.0
+        if self._redis is not None:
+            try:
+                import json as _json
+                vol_floor_raw = await self._redis.get("system:vol:floor:threshold")
+                if vol_floor_raw:
+                    vol_floor = _json.loads(vol_floor_raw)
+                    threshold = vol_floor.get("threshold", 0)
+                    current_btc_atr = vol_floor.get("current_atr", 0)
+                    if threshold > 0 and current_btc_atr > 0 and current_btc_atr < threshold:
+                        logger.warning(
+                            "ENVIRONMENTAL PENALTY: %s BTC volatility below 10th percentile "
+                            "(current=%.4f < threshold=%.4f). Applying 0.5x EV penalty.",
+                            symbol, current_btc_atr, threshold,
+                        )
+                        ObservabilityLogger.log_reject_reason(
+                            symbol, "Volatility Floor Penalty (0.5x)",
+                            {"current_btc_atr": current_btc_atr, "threshold": threshold}
+                        )
+                        vol_floor_penalty = 0.5
+            except Exception as e:
+                logger.debug("Volatility floor check failed for %s: %s", symbol, e)
+        # ─────────────────────────────────────────────────────────────────
+
+        # ─── SESSION HARD-BLOCK (Asian Dead Zone) ────────────────────────
+        # Block altcoin entries during low-liquidity Asian session.
+        # Cash is a position — the system should sleep during dead zones.
+        now_utc = datetime.now(UTC)
+        current_hour = now_utc.hour
+        try:
+            from app.core.config import get_settings
+            _s = get_settings()
+            if _s.session_block_enabled and _s.session_block_start_hour <= current_hour < _s.session_block_end_hour:
+                # Allow BTC/ETH if configured
+                if not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT"):
+                    logger.warning(
+                        "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d UTC). Altcoin entries blocked.",
+                        symbol, current_hour, _s.session_block_start_hour, _s.session_block_end_hour,
+                    )
+                    ObservabilityLogger.log_reject_reason(
+                        symbol, "Session Block",
+                        {"hour": current_hour, "block_start": _s.session_block_start_hour, "block_end": _s.session_block_end_hour}
+                    )
+                    return None
+        except Exception as e:
+            logger.debug("Session block check failed for %s: %s", symbol, e)
+        # ─────────────────────────────────────────────────────────────────
 
         # Convert to numpy if needed
         if isinstance(candles, list):
@@ -304,7 +441,8 @@ class DecisionEngine:
         # Step 2: Determine directions (regime-dependent)
         directions = self._determine_directions(regime)
 
-        # Step 3: Score each direction, take first pass
+        # Step 3: Score each direction, rank by EV (Phase 2: Find Edge)
+        best_signal: TradeSignal | None = None
         for direction in directions:
             # Sector & Narrative Rotation Filter
             sec_res = self._sector_filter.check_sector_alignment(symbol, direction)
@@ -315,6 +453,14 @@ class DecisionEngine:
                 )
                 ObservabilityLogger.log_reject_reason(symbol, "Sector Rotation Filter", {"direction": direction, "reason": sec_res.get("reason")})
                 continue
+
+            # Sector Rotation Scoring: bonus/penalty based on sector momentum
+            sector_score = self._sector_filter.get_sector_score(symbol, direction)
+            if sector_score != 1.0:
+                logger.info(
+                    "evaluate: %s %s SECTOR_SCORE %.2fx (sector=%s) → score %.1f",
+                    symbol, direction, sector_score, sec_res.get("sector"), score * sector_score,
+                )
 
             # Extreme Funding Rate Block
             if funding_rate is not None:
@@ -391,7 +537,7 @@ class DecisionEngine:
             stage_timings["statistical_learning"] = time.perf_counter() - t_stat
             metrics.pipeline_stage_latency_seconds.labels(stage="statistical_learning").observe(stage_timings["statistical_learning"])
 
-            score = context.total_confidence
+            score = context.total_confidence * vol_floor_penalty
 
             # P24: Adaptive Symbol Performance Multiplier from TradeMemory.
             # Penalizes toxic symbols (<30% win rate → 0.7x) and boosts golden symbols (>60% → 1.2x).
@@ -407,6 +553,44 @@ class DecisionEngine:
                         score *= symbol_mult
                 except Exception:
                     logger.debug("evaluate: symbol performance multiplier failed for %s", symbol)
+
+            # ELO-based strategy confidence: boost/penalize based on strategy's historical ELO
+            # ELO > 1550 = winning strategy (+5% boost), ELO < 1450 = losing strategy (-5% penalty)
+            strategy_key = f"{regime.value}:{direction}"
+            elo = await self._get_strategy_elo(strategy_key)
+            if elo != 1500.0:
+                elo_factor = 1.0 + (elo - 1500.0) / 2000.0  # ±5% at ±100 ELO
+                elo_factor = max(0.85, min(1.15, elo_factor))  # Clamp to ±15%
+                if elo_factor != 1.0:
+                    logger.info(
+                        "evaluate: %s %s ELO %.0f → factor %.3fx (score %.1f -> %.1f)",
+                        symbol, direction, elo, elo_factor, score, score * elo_factor,
+                    )
+                    score *= elo_factor
+
+            # Correlation-Based Sizing: read correlation data from PRM's rolling correlation check
+            # and adjust score based on how many open positions are correlated
+            corr_penalty = 1.0
+            if self._redis is not None:
+                try:
+                    import json as _json
+                    corr_raw = await self._redis.get(f"karsa:correlation:{symbol}")
+                    if corr_raw:
+                        corr_data = _json.loads(corr_raw)
+                        max_corr = corr_data.get("max_correlation", 0.0)
+                        corr_count = corr_data.get("correlated_count", 0)
+                        if corr_count >= 2 and max_corr > 0.80:
+                            corr_penalty = 0.5  # Hard penalty for 2+ correlated
+                        elif corr_count == 1 and max_corr > 0.80:
+                            corr_penalty = 0.75  # Mild penalty for 1 correlated
+                        if corr_penalty < 1.0:
+                            logger.info(
+                                "evaluate: %s %s CORR_SIZING penalty %.2fx (corr=%.2f, count=%d) → score %.1f",
+                                symbol, direction, corr_penalty, max_corr, corr_count, score * corr_penalty,
+                            )
+                            score *= corr_penalty
+                except Exception:
+                    pass
 
             # Momentum Exemption: Do not penalize explosive gainers for their volatility
             if momentum_exemption:
@@ -532,7 +716,7 @@ class DecisionEngine:
                     logger.debug(f"evaluate: token unlock check failed for {symbol}: {e}")
 
             # --- Sprint 3: HMM Regime Prediction Signal ---
-            # Read HMM state from Redis (published by HMMRegimeClassifier loop)
+            # Read HMM state + probabilities from Redis (published by HMMRegimeClassifier loop)
             if self._redis is not None:
                 try:
                     from app.core.config import get_settings
@@ -542,23 +726,53 @@ class DecisionEngine:
                         import json as _json
                         hmm_data = _json.loads(hmm_raw)
                         hmm_signal = hmm_data.get("signal")
+                        hmm_confidence = hmm_data.get("confidence", 0.0)
+                        hmm_probs = hmm_data.get("probabilities", {})
+
                         if hmm_signal == "HMM_BREAKOUT_IMMINENT" and direction == "LONG":
-                            score += _s3.hmm_score_breakout_bonus
+                            # Scale bonus by confidence: 100% conf = full bonus, 50% = half
+                            scaled_bonus = _s3.hmm_score_breakout_bonus * hmm_confidence
+                            score += scaled_bonus
                             logger.info(
-                                "evaluate: %s %s HMM_BREAKOUT_IMMINENT +%d → score=%.1f",
-                                symbol, direction, _s3.hmm_score_breakout_bonus, score,
+                                "evaluate: %s %s HMM_BREAKOUT_IMMINENT +%d (conf=%.2f, scaled=%.1f) → score=%.1f",
+                                symbol, direction, _s3.hmm_score_breakout_bonus,
+                                hmm_confidence, scaled_bonus, score,
                             )
                         elif hmm_signal == "HMM_CHOP_IMMINENT":
-                            score -= _s3.hmm_score_chop_penalty
+                            scaled_penalty = _s3.hmm_score_chop_penalty * hmm_confidence
+                            score -= scaled_penalty
                             logger.info(
-                                "evaluate: %s %s HMM_CHOP_IMMINENT -%d → score=%.1f",
-                                symbol, direction, _s3.hmm_score_chop_penalty, score,
+                                "evaluate: %s %s HMM_CHOP_IMMINENT -%d (conf=%.2f, scaled=%.1f) → score=%.1f",
+                                symbol, direction, _s3.hmm_score_chop_penalty,
+                                hmm_confidence, scaled_penalty, score,
                             )
+
+                        # Regime confidence bonus/penalty: HIGH_VOL with high confidence
+                        # boosts volatile regime strategies, LOW_VOL with high confidence
+                        # penalizes trend strategies
+                        if hmm_probs and hmm_confidence > 0.6:
+                            high_vol_prob = hmm_probs.get("HIGH_VOL", 0.0)
+                            low_vol_prob = hmm_probs.get("LOW_VOL", 0.0)
+                            if high_vol_prob > 0.7 and direction == "SHORT":
+                                # High-confidence volatile regime = good for shorts
+                                conf_bonus = 10.0 * high_vol_prob
+                                score += conf_bonus
+                                logger.info(
+                                    "evaluate: %s %s HMM_CONF_BONUS (HIGH_VOL=%.2f) +%.1f → score=%.1f",
+                                    symbol, direction, high_vol_prob, conf_bonus, score,
+                                )
+                            elif low_vol_prob > 0.7 and direction == "LONG":
+                                # High-confidence low vol = accumulation, bullish
+                                conf_bonus = 8.0 * low_vol_prob
+                                score += conf_bonus
+                                logger.info(
+                                    "evaluate: %s %s HMM_CONF_BONUS (LOW_VOL=%.2f) +%.1f → score=%.1f",
+                                    symbol, direction, low_vol_prob, conf_bonus, score,
+                                )
                 except Exception as e:
                     logger.debug(f"evaluate: HMM signal check failed for {symbol}: {e}")
 
             # Session / Time-of-Day Volatility Filtering
-            from datetime import UTC, datetime
             now_utc = datetime.now(UTC)
             hour = now_utc.hour
             if 0 <= hour < 7:
@@ -577,7 +791,12 @@ class DecisionEngine:
                 f"sizing_multiplier={session_mult}x (score={score:.1f} unpenalized)"
             )
 
-            effective_gate = float(self._gate) * vol_factor
+            # Use dynamic threshold calibrated from historical EV
+            base_gate = await self._get_dynamic_gate_threshold()
+            effective_gate = base_gate * vol_factor
+
+            # Apply sector rotation score
+            score *= sector_score
 
             # --- Dip Buyer Boost (Phase 3) ---
             # Strong performers (+15% in 48h) in dip zone (-5% to -10% from high)
@@ -663,6 +882,20 @@ class DecisionEngine:
 
                 metrics.decision_latency_seconds.labels(symbol=symbol, regime=regime.value).observe(time.perf_counter() - t_start)
 
+                # Track best EV signal instead of returning first pass
+                if best_signal is None or signal.expected_value > best_signal.expected_value:
+                    logger.info(
+                        "evaluate: %s %s NEW BEST EV=%.4f (score=%.1f) — was %.4f",
+                        symbol, direction, signal.expected_value, score,
+                        best_signal.expected_value if best_signal else 0.0,
+                    )
+                    best_signal = signal
+                else:
+                    logger.info(
+                        "evaluate: %s %s EV=%.4f < best=%.4f — skipped",
+                        symbol, direction, signal.expected_value, best_signal.expected_value,
+                    )
+
                 import time
                 ObservabilityLogger.log_decision_trace(
                     strategy=regime.value,
@@ -680,7 +913,7 @@ class DecisionEngine:
                     market_snapshot={"close": float(arr[-1][4])}
                 )
 
-                return signal
+                # Don't return yet — continue to check other direction for higher EV
             else:
                 ObservabilityLogger.log_reject_reason(
                     symbol,
@@ -688,7 +921,13 @@ class DecisionEngine:
                     {"score": score, "gate": effective_gate, "direction": direction}
                 )
 
-        return None
+        # Return highest-EV signal across all directions (Phase 2: Find Edge)
+        if best_signal is not None:
+            logger.info(
+                "evaluate: %s BEST SIGNAL %s EV=%.4f score=%.1f",
+                symbol, best_signal.direction, best_signal.expected_value, best_signal.score,
+            )
+        return best_signal
 
     async def check_consecutive_losses(self, symbol: str, regime: MarketRegime) -> bool:
         """Check if symbol has 3+ consecutive losses or 4+ breakevens in the same regime.
@@ -1038,6 +1277,22 @@ class DecisionEngine:
                 symbol, conviction, float(scaled_risk_pct),
             )
 
+            # ─── MACRO NARRATOR SIZING ─────────────────────────────────────
+            # Apply global macro multiplier from AI Macro Narrator (4-hour cycle).
+            # CHOP=0.5x, RISK_OFF=0.25x, RISK_ON=1.0x.
+            try:
+                from app.alpha.macro_narrator import get_macro_multiplier
+                macro_mult = await get_macro_multiplier(self._redis)
+                if macro_mult != 1.0:
+                    scaled_risk_pct *= Decimal(str(macro_mult))
+                    logger.info(
+                        "evaluate: %s MACRO NARRATOR %.2fx → scaled_risk_pct=%.6f",
+                        symbol, macro_mult, float(scaled_risk_pct),
+                    )
+            except Exception as e:
+                logger.debug("Macro narrator multiplier failed for %s: %s", symbol, e)
+            # ───────────────────────────────────────────────────────────────
+
             amount = (
                 self._wallet_balance
                 * scaled_risk_pct
@@ -1070,6 +1325,24 @@ class DecisionEngine:
         atr_pct = float(context.features.atr_pct) if context and context.features and context.features.atr_pct is not None else 0.0
         vol_factor = float(context.evidence[-1].value) if context and context.evidence else 1.0 # Volatility factor is not strictly required but handled if present
 
+        # --- EV Computation (Phase 2: Find Edge) ---
+        # EV = P(win) * avg_win - P(loss) * avg_loss
+        # P(win) proxy: score / 100 (confidence as probability)
+        # Reward/Risk: use SL/TP distances from ATR-based levels
+        try:
+            p_win = min(score / 100.0, 0.95)  # cap at 95%
+            p_loss = 1.0 - p_win
+            risk_dist = abs(float(entry_price - sl_price)) if sl_price else float(atr)
+            if tp_price is not None:
+                reward_dist = abs(float(tp_price - entry_price))
+            else:
+                reward_dist = float(atr) * 2.0  # TRAILING: assume 2x ATR target
+            avg_win = reward_dist / entry_price if entry_price > 0 else 0.0
+            avg_loss = risk_dist / entry_price if entry_price > 0 else 0.0
+            ev = (p_win * avg_win) - (p_loss * avg_loss)
+        except Exception:
+            ev = 0.0
+
         return TradeSignal(
             symbol=symbol,
             direction=direction,
@@ -1092,6 +1365,7 @@ class DecisionEngine:
             atr_pct=atr_pct,
             regime_encoded=regime.encode(),
             context=context,
+            expected_value=ev,
         )
 
     @staticmethod

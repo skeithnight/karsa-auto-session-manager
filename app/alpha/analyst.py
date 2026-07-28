@@ -28,6 +28,7 @@ from app.alpha.ta_tools import (
 )
 from app.core import metrics
 from app.core.ai_client import AIClient
+from app.alpha.ai_outcome_logger import AIOoutcomeLogger
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
 
@@ -116,6 +117,7 @@ class CryptoAnalyst:
         redis_client: Any = None,
         cache_ttl: int = 300,
         is_shadow: bool = False,
+        outcome_logger: AIOoutcomeLogger | None = None,
     ) -> None:
         self.ai_client = ai_client
         self.fetcher = ohlcv_fetcher
@@ -123,6 +125,7 @@ class CryptoAnalyst:
         self.cache_ttl = cache_ttl
         self.is_shadow = is_shadow
         self.circuit_breaker = AICircuitBreaker(failure_threshold=3, reset_timeout_seconds=300)
+        self.outcome_logger = outcome_logger
 
     async def analyze(
         self,
@@ -323,6 +326,28 @@ class CryptoAnalyst:
         logger.info(
             f"Analyst: {symbol} {direction} -> {result.direction} conf={result.ai_confidence} | {reasoning_preview}"
         )
+
+        # Log AI decision for outcome tracking (Phase 1: Find Edge)
+        if self.outcome_logger:
+            try:
+                features = {
+                    "rsi": rsi, "atr": atr, "ema": ema,
+                    "funding_rate": funding_rate, "oi_change": oi_change,
+                    "spread_pct": spread_pct, "regime": regime,
+                }
+                await self.outcome_logger.log_decision(
+                    symbol=symbol,
+                    direction=result.direction,
+                    ai_confidence=result.ai_confidence,
+                    reasoning=result.reasoning,
+                    decision_recommendation=result.decision_recommendation,
+                    model_used=result.model_used,
+                    features=features,
+                    trade_taken=False,  # updated later if trade executes
+                )
+            except Exception as e:
+                logger.debug(f"AI outcome log failed: {e}")
+
         return result
 
     def _parse_response(self, response: str) -> AnalystResult | None:

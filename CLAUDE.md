@@ -27,6 +27,8 @@ Safety-critical numeric conflict → **stop and ask**, never pick silently. Know
 - Regime Shift Kill Switch is not a config toggle.
 - Every `ActivePositionManager` async loop: `try/except` + `await asyncio.sleep()` on the error path. No bare infinite loops.
 - Shadow mode (`SHADOW_MODE_ENABLED=true`) skips startup reconciliation and position_reconciler. Never run shadow against live Bybit positions without understanding this state.
+- SL capped at 5% of entry price (APM `_reconcile_position` enforces `MAX_RISK_PCT = 0.05`).
+- Orphan sync skips positions with notional < 5 USDT (below Bybit minimum order).
 
 Rationale + full detail: `AGENTS.md` §2 and §8.
 
@@ -41,6 +43,8 @@ Rationale + full detail: `AGENTS.md` §2 and §8.
 5. Touching `RegimeClassifier` / `StrategyRouter` / `ActivePositionManager` / `PortfolioRiskManager` → also read the matching Phase 6 spec doc (§1 above).
 6. Touching shadow system (`ShadowExecutor`, `ShadowAPM`, shadow stores) → read `docs/review/refinement_shadom_plan.md` for the 4 critical refinements (fee asymmetry, wick miss, funding drag, pending limits).
 7. Touching `app/consumer/`, `app/commander/`, `app/backtest/`, `app/analytics/`, `app/data_engine/` → read the relevant section in `AGENTS.md` §3 directory map + agent section before writing.
+8. Touching `app/research/` → read `app/research/ranking_engine.py` and `app/research/metrics_engine.py` first.
+9. Touching `app/risk/volatility_surface.py` → understand it publishes to `karsa:vol_surface:*` Redis keys.
 
 ---
 
@@ -77,6 +81,41 @@ Apps = `docker-compose.apps.yml` (data-engine, live, shadow, backtest, commander
 
 No LLM in the hot path. No weakening kill switch / circuit breakers / reconciliation. No inventing a metric, column, or field not in `docs/DATA_MODEL.md` or `docs/METRICS_DICTIONARY.md`. No bypassing `PortfolioRiskManager`. No soft-coding the Regime Shift Kill Switch. No marking "done" without walking `docs/DEFINITION_OF_DONE.md`.
 No mixing shadow and live Redis keys. Shadow positions use `shadow:position:*` namespace exclusively.
+
+---
+
+## 6. Live Background Loops (live_loop.py)
+
+| Loop | Interval | Redis Key | Purpose |
+|------|----------|-----------|---------|
+| `_ranking_refresh_loop` | 1h | `karsa:ranking:decision` | Strategy promotion gate |
+| `_gate_calibration_loop` | 1h | `karsa:gate:dynamic_threshold` | Adaptive gate threshold from historical EV |
+| `_elo_refresh_loop` | 5min | `karsa:elo:{strategy}` | Per-strategy ELO ratings |
+| `_vol_surface_loop` | 30min | `karsa:vol_surface:*` | BTC/ETH volatility term structure |
+| HMM classification | 1h | `system:hmm:regime` | Regime prediction with probabilities |
+| GARCH forecast | 1h | `system:garch:volatility` | Volatility forecasting |
+
+**Important**: `_ranking_refresh_loop` and `_elo_refresh_loop` use `trade_store.get_recent_trades()` (not `get_closed_trades()`). Column is `realized_pnl` (not `pnl_pct`), direction field is `side` (not `direction`).
+
+---
+
+## 7. Redis Key Schema
+
+```
+karsa:ranking:decision          — PROMOTE / NEEDS_MORE_EVIDENCE / REJECT
+karsa:ranking:details           — JSON with metrics and reasons
+karsa:gate:dynamic_threshold    — JSON: {threshold, median_ev, winning_trades, total_trades}
+karsa:elo:{regime}:{direction}  — JSON: {elo, wins, losses, win_rate}
+karsa:correlation:{symbol}      — JSON: {max_correlation, correlated_count} (5min TTL)
+karsa:vol_surface:composite     — JSON: {surface: {btc, eth, spread}, timestamp}
+karsa:vol_surface:btc           — JSON: {1h, 4h, 1d, composite}
+karsa:vol_surface:eth           — JSON: {1h, 4h, 1d, composite}
+karsa:vol_surface:spread        — JSON: {1h, 4h, 1d}
+karsa:alert:rebalance           — JSON: rebalance opportunity alert (5min TTL)
+system:hmm:regime               — JSON: {state, state_name, signal, probabilities, confidence}
+system:regime:{symbol}          — Regime string (RANGE, TREND_BULL, etc.)
+karsa:position:{symbol}:{side}  — Position state dict
+```
 
 ---
 

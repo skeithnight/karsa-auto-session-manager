@@ -42,54 +42,52 @@ class MicroPositionManager:
     async def _manage_positions(self) -> None:
         positions = await self.position_store.list_all()
         now = time.time()
-        
+
         for pos in positions:
             # Only manage micro scalps
             if not pos.get("is_micro_scalper", False):
                 continue
-                
+
             symbol = pos.get("symbol")
             entry_time = float(pos.get("entry_time", 0))
-            
+
             # Time-Stop Logic
             # If PnL <= 0 after 45 seconds, execute immediate market close.
             hold_time = now - entry_time
             if hold_time >= 45.0:
-                pnl = float(pos.get("pnl", 0))
-                if pnl <= 0:
+                pnl = Decimal(str(pos.get("pnl", "0")))
+                if pnl <= Decimal("0"):
                     logger.warning(f"MicroPositionManager: 45s time-stop triggered for {symbol}. PnL={pnl}. Closing at market.")
                     await self._close_position(pos, "TIME_STOP_45S")
 
     async def _close_position(self, position: dict[str, Any], reason: str) -> None:
         symbol = position.get("symbol")
         side = position.get("side", "buy")
-        amount = position.get("amount", 0)
-        
+        amount = Decimal(str(position.get("amount", "0")))
+
         close_side = "sell" if side.lower() == "buy" else "buy"
-        
+
         try:
-            # 1. Cancel resting SL/TP (usually Bybit One-Way Mode does this via reduce_only)
-            # 2. Market close
-            order = await self.bybit.place_order(
+            # Market close via BybitClient.create_market_order (reduceOnly)
+            order = await self.bybit.create_market_order(
                 symbol=symbol,
                 side=close_side,
-                order_type="market",
-                qty=Decimal(str(amount)),
-                reduce_only=True
+                amount=amount,
+                params={"reduceOnly": True},
             )
-            
+
             if order:
                 logger.info(f"Micro-Scalp {symbol} closed. Reason: {reason}")
                 await self.position_store.remove(symbol, side)
-                
+
                 # Update TradeStore
                 await self.trade_store.update_exit(
                     symbol=symbol,
-                    exit_price=Decimal("0"), # Needs PnL reconciliation later
+                    exit_price=Decimal("0"),  # Needs PnL reconciliation later
                     exit_time=time.time(),
                     pnl_usdt=Decimal("0"),
                     pnl_pct=Decimal("0"),
-                    exit_reason=reason
+                    exit_reason=reason,
                 )
         except Exception as e:
             logger.error(f"Failed to close micro-scalp {symbol}: {e}")

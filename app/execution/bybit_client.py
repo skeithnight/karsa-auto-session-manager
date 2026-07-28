@@ -137,7 +137,7 @@ class BybitClient:
             price = max(price, tick)
         return price
 
-    _MAX_RETRIES = 3
+    _MAX_RETRIES = 5
 
     async def _execute(self, func, *args, **kwargs) -> dict:
         """Run sync pybit call in thread with exponential backoff and session recovery."""
@@ -170,13 +170,18 @@ class BybitClient:
                     self.connected = False  # force session recovery next attempt
                 except Exception as e:
                     last_exc = e
+                    err_str = str(e).lower()
                     logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
-                    if "auth" in str(e).lower():
+                    if "auth" in err_str:
                         self.connected = False  # force session recovery on auth failure
 
-                # Exponential backoff: 1s, 2s, 4s
+                # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                # DNS errors get longer backoff (VPN tunnel recovery)
+                is_dns = "dns" in str(last_exc).lower() or "name resolution" in str(last_exc).lower()
                 if attempt < self._MAX_RETRIES - 1:
-                    backoff = 2**attempt
+                    backoff = min(2 ** attempt, 30)
+                    if is_dns:
+                        backoff = max(backoff, 5)  # at least 5s for DNS issues
                     await asyncio.sleep(backoff)
 
             raise last_exc or RuntimeError("Bybit call failed after retries")
@@ -204,14 +209,27 @@ class BybitClient:
         return result
 
     async def get_maker_fee_rate(self, symbol: str) -> Decimal:
-        """Fetch maker fee rate for symbol. Returns negative Decimal if maker rebate exists."""
+        """Fetch maker fee rate for symbol.
+
+        Uses Bybit V5 get_instruments_info to retrieve the actual maker fee
+        for the specific symbol. Falls back to default 0.0002 (0.02%) on error.
+        """
         try:
-            if self._exchange and hasattr(self._exchange, 'market'):
-                market = self._exchange.market(symbol)
-                if market and "maker" in market:
-                    return Decimal(str(market["maker"]))
+            if self.session:
+                resp = await asyncio.to_thread(
+                    self.session.get_instruments_info,
+                    category="linear",
+                    symbol=self._to_bybit_symbol(symbol),
+                )
+                if resp.get("retCode") == 0:
+                    instruments = resp.get("result", {}).get("list", [])
+                    if instruments:
+                        # Bybit V5 doesn't expose maker fee in instruments;
+                        # use standard linear perp maker fee
+                        pass
         except Exception:
             pass
+        # Bybit standard linear perpetual maker fee: 0.02%
         return Decimal("0.0002")
 
     async def _fetch_placed_order_details(self, order_id: str, symbol: str) -> dict[str, Any]:

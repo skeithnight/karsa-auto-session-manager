@@ -60,6 +60,7 @@ class TestSmartOrderRouter:
         mock_bybit.create_limit_order = AsyncMock(side_effect=Exception("rejected"))
         mock_bybit.create_market_order = AsyncMock(return_value={"id": "ord3", "orderId": "ord3", "status": "filled"})
         mock_bybit.cancel_order = AsyncMock(return_value={})
+        mock_bybit.fetch_tickers = AsyncMock(return_value=[{"symbol": "BTC/USDT:USDT", "bid": 63999, "ask": 64001}])
 
         result = await sor.execute("BTC/USDT:USDT", "buy", Decimal("0.001"), Decimal("64000"))
 

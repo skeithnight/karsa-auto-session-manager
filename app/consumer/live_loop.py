@@ -1048,6 +1048,247 @@ async def _redis_health_check_loop(
             logger.exception("redis_health: unexpected error in health check loop")
 
 
+async def _ranking_refresh_loop(
+    redis: Any,
+    trade_store: Any,
+    interval_s: int = 3600,
+) -> None:
+    """Periodically recompute strategy ranking from trade history.
+
+    Reads closed trades from TradeStore, computes metrics via MetricsEngine,
+    evaluates via RankingEngine, and caches the decision in Redis at
+    ``karsa:ranking:decision`` and ``karsa:ranking:details``.
+    """
+    from app.research.metrics_engine import MetricsEngine
+    from app.research.ranking_engine import RankingEngine, PromotionPolicy
+
+    policy = PromotionPolicy()
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            if trade_store is None:
+                continue
+            trades = await trade_store.get_recent_trades(limit=200)  # type: ignore[attr-defined]
+            if not trades or len(trades) < 10:
+                logger.debug("Ranking refresh: insufficient trades (%d)", len(trades) if trades else 0)
+                continue
+
+            trade_dicts = [
+                {"pnl_pct": float(t.get("realized_pnl", 0)), "entry_time": t.get("entry_time", "")}
+                for t in trades
+            ]
+            metrics_result = MetricsEngine.compute(trade_dicts)
+            ranking = RankingEngine.evaluate(metrics_result, stats=None, policy=policy)
+
+            await redis.set("karsa:ranking:decision", ranking["decision"])
+            import json as _json
+            await redis.set("karsa:ranking:details", _json.dumps(ranking))
+            logger.info("Ranking refresh: %s (trades=%d)", ranking["decision"], len(trades))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Ranking refresh error: %s", e)
+
+
+async def _gate_calibration_loop(
+    redis: Any,
+    trade_store: Any,
+    interval_s: int = 3600,
+) -> None:
+    """Background loop: calibrate gate threshold from historical EV.
+
+    Reads winning trades, computes median EV, sets threshold = median_EV * 0.8.
+    Writes to Redis key ``karsa:gate:dynamic_threshold``.
+    """
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            if trade_store is None:
+                continue
+            trades = await trade_store.get_recent_trades(limit=200)
+            if not trades or len(trades) < 20:
+                continue
+
+            # Extract EVs from winning trades
+            winning_evs = []
+            for t in trades:
+                pnl = float(t.get("realized_pnl", 0))
+                if pnl > 0:
+                    winning_evs.append(pnl)
+
+            if len(winning_evs) < 5:
+                logger.debug("Gate calibration: too few winning trades (%d)", len(winning_evs))
+                continue
+
+            import statistics
+            median_ev = statistics.median(winning_evs)
+            # Threshold = median EV * 0.8 (ensure we only take high-EV signals)
+            dynamic_threshold = max(50.0, min(90.0, median_ev * 0.8))
+
+            import json as _json
+            await redis.set("karsa:gate:dynamic_threshold", _json.dumps({
+                "threshold": round(dynamic_threshold, 2),
+                "median_ev": round(median_ev, 4),
+                "winning_trades": len(winning_evs),
+                "total_trades": len(trades),
+            }))
+            logger.info(
+                "Gate calibration: threshold=%.1f (median_ev=%.4f, wins=%d/%d)",
+                dynamic_threshold, median_ev, len(winning_evs), len(trades),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("Gate calibration error: %s", e)
+
+
+async def _elo_refresh_loop(
+    redis: Any,
+    trade_store: Any,
+    interval_s: int = 300,
+) -> None:
+    """Background loop: update strategy ELO ratings from closed trades.
+
+    Reads recent closed trades, updates ELO for each strategy (regime:direction).
+    Writes per-strategy ELO to Redis key ``karsa:elo:{strategy}``.
+    """
+    K_FACTOR = 32.0
+    BASELINE_ELO = 1500.0
+    processed_key = "karsa:elo:last_processed_id"
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            if trade_store is None:
+                continue
+
+            # Get last processed trade ID to avoid reprocessing
+            last_id = None
+            try:
+                raw = await redis.get(processed_key)
+                if raw:
+                    last_id = raw.decode() if isinstance(raw, bytes) else str(raw)
+            except Exception:
+                pass
+
+            trades = await trade_store.get_recent_trades(limit=50)
+            if not trades:
+                continue
+
+            import json as _json
+
+            for trade in trades:
+                trade_id = trade.get("id", "")
+                if last_id and trade_id <= last_id:
+                    continue
+
+                regime = trade.get("regime", "UNKNOWN")
+                direction = trade.get("side", "LONG")
+                pnl_pct = float(trade.get("realized_pnl", 0))
+                strategy_key = f"{regime}:{direction}"
+
+                # Read current ELO
+                elo_raw = await redis.get(f"karsa:elo:{strategy_key}")
+                current_elo = BASELINE_ELO
+                wins = 0
+                losses = 0
+                if elo_raw:
+                    try:
+                        elo_data = _json.loads(elo_raw)
+                        current_elo = elo_data.get("elo", BASELINE_ELO)
+                        wins = elo_data.get("wins", 0)
+                        losses = elo_data.get("losses", 0)
+                    except Exception:
+                        pass
+
+                # Update ELO: win = 1.0, loss = 0.0
+                score = 1.0 if pnl_pct > 0 else 0.0
+                new_elo = current_elo + K_FACTOR * (score - 0.5)  # Simple ELO update
+                if pnl_pct > 0:
+                    wins += 1
+                else:
+                    losses += 1
+
+                await redis.set(f"karsa:elo:{strategy_key}", _json.dumps({
+                    "elo": round(new_elo, 2),
+                    "wins": wins,
+                    "losses": losses,
+                    "win_rate": round(wins / max(1, wins + losses), 4),
+                    "last_trade_id": trade_id,
+                }))
+
+                if abs(new_elo - current_elo) > 5:
+                    logger.info(
+                        "ELO update: %s %.0f → %.0f (trade=%s, pnl=%.2f%%)",
+                        strategy_key, current_elo, new_elo, trade_id, pnl_pct,
+                    )
+
+                last_id = trade_id
+
+            # Persist last processed ID
+            if last_id:
+                await redis.set(processed_key, last_id)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("ELO refresh error: %s", e)
+
+
+async def _vol_surface_loop(
+    redis: Any,
+    ohlcv_fetcher: Any,
+    interval_s: int = 1800,
+) -> None:
+    """Background loop: build and publish volatility surface every 30 minutes.
+
+    Fetches BTC/ETH 1H candles, computes realized vol at multiple timeframes,
+    and writes to Redis keys ``karsa:vol_surface:*``.
+    """
+    import numpy as np
+    from app.risk.volatility_surface import VolatilitySurface
+
+    surface = VolatilitySurface(redis_client=redis)
+
+    while True:
+        await asyncio.sleep(interval_s)
+        try:
+            btc_closes: dict[str, np.ndarray] = {}
+            eth_closes: dict[str, np.ndarray] = {}
+
+            # Fetch candles for each timeframe
+            for tf, limit in [("1h", 25), ("4h", 50), ("1d", 35)]:
+                try:
+                    btc_raw = await ohlcv_fetcher.fetch("BTC/USDT", tf, limit=limit)
+                    if btc_raw and len(btc_raw) > 5:
+                        btc_closes[tf] = np.array([c[4] for c in btc_raw], dtype=float)
+                except Exception:
+                    pass
+
+                try:
+                    eth_raw = await ohlcv_fetcher.fetch("ETH/USDT", tf, limit=limit)
+                    if eth_raw and len(eth_raw) > 5:
+                        eth_closes[tf] = np.array([c[4] for c in eth_raw], dtype=float)
+                except Exception:
+                    pass
+
+            if btc_closes or eth_closes:
+                surface.build_surface(btc_closes, eth_closes)
+                await surface.publish_to_redis()
+                logger.info(
+                    "VolSurface: published (btc_vol=%.1f%%, eth_vol=%.1f%%)",
+                    surface._surface.get("btc", {}).get("composite", 0) * 100,
+                    surface._surface.get("eth", {}).get("composite", 0) * 100,
+                )
+            else:
+                logger.debug("VolSurface: insufficient candle data, skipping")
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("VolSurface error: %s", e)
+
+
 async def _balance_refresh_loop(
     bybit: Any,
     engine: DecisionEngine,
@@ -1546,6 +1787,24 @@ async def main() -> None:  # noqa: PLR0915
         name="live-wallet-metrics",
     )
 
+    # ── Ranking Engine: Strategy Promotion Gate ─────────────────────────
+    ranking_task = asyncio.create_task(
+        _ranking_refresh_loop(redis, trade_store),
+        name="live-ranking",
+    )
+
+    # ── Gate Calibration: Adaptive Threshold from Historical EV ────────
+    gate_calibration_task = asyncio.create_task(
+        _gate_calibration_loop(redis, trade_store),
+        name="live-gate-calibration",
+    )
+
+    # ── ELO Rating: Per-Strategy Win/Loss Tracking ─────────────────────
+    elo_task = asyncio.create_task(
+        _elo_refresh_loop(redis, trade_store),
+        name="live-elo",
+    )
+
     # ── Sprint 3: HMM Regime Classification Loop ─────────────────────
     from app.alpha.hmm_regime_classifier import HMMRegimeClassifier
     hmm_classifier = HMMRegimeClassifier(redis_client=redis)
@@ -1564,6 +1823,12 @@ async def main() -> None:  # noqa: PLR0915
             ohlcv_fetcher=ohlcv_fetcher, symbol="BTC/USDT", interval_seconds=3600,
         ),
         name="live-garch",
+    )
+
+    # ── Vol Surface: Cross-Asset Volatility Term Structure ────────────
+    vol_surface_task = asyncio.create_task(
+        _vol_surface_loop(redis, ohlcv_fetcher),
+        name="live-vol-surface",
     )
 
     try:
@@ -1589,6 +1854,10 @@ async def main() -> None:  # noqa: PLR0915
         wallet_metrics_task.cancel()
         hmm_task.cancel()
         garch_task.cancel()
+        ranking_task.cancel()
+        gate_calibration_task.cancel()
+        elo_task.cancel()
+        vol_surface_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):

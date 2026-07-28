@@ -23,6 +23,7 @@ from app.alpha.ta_tools import (
 )
 from app.core import metrics
 from app.core.ai_client import AIClient
+from app.alpha.ai_outcome_logger import AIOoutcomeLogger
 from app.data.ohlcv_fetcher import OHLCVFetcher
 
 
@@ -99,6 +100,7 @@ class PositionJudge:
         redis_client: Any = None,
         cheap_timeout: float = 5.0,
         escalated_timeout: float = 15.0,
+        outcome_logger: AIOoutcomeLogger | None = None,
     ) -> None:
         self.ai_client = ai_client
         self.fetcher = ohlcv_fetcher
@@ -106,6 +108,7 @@ class PositionJudge:
         self.cheap_timeout = cheap_timeout
         self.escalated_timeout = escalated_timeout
         self._hold_counters: dict[str, int] = {}
+        self.outcome_logger = outcome_logger
 
     async def judge(
         self,
@@ -141,12 +144,25 @@ class PositionJudge:
                 f"PositionJudge: forced EXIT {symbol} {side} after {hold_count} HOLDs, pnl={pnl_pct:.2f}%"
             )
             self._hold_counters[hold_key] = 0
-            return JudgeVerdict(
+            forced_verdict = JudgeVerdict(
                 action="EXIT",
                 confidence=90,
                 reasoning=f"Forced exit after {hold_count} consecutive HOLDs on losing position",
                 tier_used="forced",
             )
+            if self.outcome_logger:
+                try:
+                    await self.outcome_logger.log_decision(
+                        symbol=symbol, direction=side,
+                        ai_confidence=forced_verdict.confidence,
+                        reasoning=forced_verdict.reasoning,
+                        decision_recommendation="EXIT",
+                        model_used="forced",
+                        features={"pnl_pct": pnl_pct, "hold_count": hold_count, "regime": regime},
+                    )
+                except Exception:
+                    pass
+            return forced_verdict
 
         # Cheap pass
         verdict = await self._cheap_pass(
@@ -203,12 +219,27 @@ class PositionJudge:
         ).inc()
         if pnl_pct < 0:
             self._hold_counters[hold_key] = hold_count + 1
-        return JudgeVerdict(
+        fallback_verdict = JudgeVerdict(
             action="HOLD",
             confidence=30,
             reasoning="AI unavailable, conservative hold",
             tier_used="fallback",
         )
+        # Log AI judgment for outcome tracking (Phase 1: Find Edge)
+        if self.outcome_logger:
+            try:
+                await self.outcome_logger.log_decision(
+                    symbol=symbol,
+                    direction=side,
+                    ai_confidence=fallback_verdict.confidence,
+                    reasoning=fallback_verdict.reasoning,
+                    decision_recommendation=fallback_verdict.action,
+                    model_used="fallback",
+                    features={"pnl_pct": pnl_pct, "hold_count": hold_count, "regime": regime},
+                )
+            except Exception:
+                pass
+        return fallback_verdict
 
     async def _cheap_pass(
         self,

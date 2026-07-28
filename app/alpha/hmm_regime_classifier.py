@@ -151,6 +151,59 @@ class HMMRegimeClassifier:
             logger.exception("HMM: classify failed")
             return None
 
+    async def classify_with_confidence(self, returns: np.ndarray) -> dict[str, Any] | None:
+        """Classify regime with probability distribution.
+
+        Returns:
+            Dict with 'state', 'state_name', 'probabilities' (per-state probs),
+            'confidence' (max probability), or None if no model.
+        """
+        if self._model is None:
+            return None
+
+        try:
+            if len(returns) < 10:
+                return None
+
+            X = returns[-10:].reshape(-1, 1)
+            mask = np.isfinite(X.ravel())
+            if mask.sum() < 5:
+                return None
+
+            # Use predict_proba for probability distribution
+            probs = self._model.predict_proba(X)
+            # Take the last timestep's probabilities
+            last_probs = probs[-1]
+
+            # Map raw states to canonical order
+            state_names = {0: "LOW_VOL", 1: "TRANSITION", 2: "HIGH_VOL"}
+            canonical_probs = [0.0, 0.0, 0.0]
+            if self._state_order:
+                for i, raw_idx in enumerate(self._state_order):
+                    if raw_idx < len(last_probs):
+                        canonical_probs[i] = float(last_probs[raw_idx])
+            else:
+                canonical_probs = [float(p) for p in last_probs]
+
+            # Most likely canonical state
+            best_state = int(np.argmax(canonical_probs))
+            confidence = max(canonical_probs)
+
+            return {
+                "state": best_state,
+                "state_name": state_names.get(best_state, "UNKNOWN"),
+                "probabilities": {
+                    "LOW_VOL": round(canonical_probs[0], 4),
+                    "TRANSITION": round(canonical_probs[1], 4),
+                    "HIGH_VOL": round(canonical_probs[2], 4),
+                },
+                "confidence": round(confidence, 4),
+            }
+
+        except Exception:
+            logger.exception("HMM: classify_with_confidence failed")
+            return None
+
     async def detect_transition(
         self, returns: np.ndarray, symbol: str = "BTC/USDT"
     ) -> str | None:
@@ -191,16 +244,26 @@ class HMMRegimeClassifier:
 
         self._last_state = current_state
 
-        # Publish current state to Redis
+        # Publish current state + probabilities to Redis
         if self._redis is not None:
             try:
                 from app.core.config import get_settings
                 settings = get_settings()
                 state_names = {0: "LOW_VOL", 1: "TRANSITION", 2: "HIGH_VOL"}
+
+                # Get probability distribution for richer downstream use
+                confidence_data = await self.classify_with_confidence(returns)
+                probabilities = confidence_data["probabilities"] if confidence_data else {
+                    "LOW_VOL": 0.0, "TRANSITION": 0.0, "HIGH_VOL": 0.0,
+                }
+                regime_confidence = confidence_data["confidence"] if confidence_data else 0.0
+
                 payload = json.dumps({
                     "state": current_state,
                     "state_name": state_names.get(current_state, "UNKNOWN"),
                     "signal": signal,
+                    "probabilities": probabilities,
+                    "confidence": regime_confidence,
                     "timestamp": time.time(),
                 })
                 await self._redis.set(settings.hmm_redis_key, payload, ex=3600)

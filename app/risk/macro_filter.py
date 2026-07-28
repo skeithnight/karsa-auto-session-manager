@@ -5,6 +5,9 @@ import pandas as pd
 import yfinance as yf
 from loguru import logger
 
+MACRO_FETCH_TIMEOUT = 30  # seconds — yfinance can hang on network issues
+
+
 class MacroFilter:
     """Monitors macroeconomic indicators to trigger risk-off mode."""
 
@@ -21,8 +24,11 @@ class MacroFilter:
             return
 
         try:
-            # Run yfinance in a thread to avoid blocking asyncio
-            data = await asyncio.to_thread(self._fetch_macro)
+            # Run yfinance in a thread with timeout to avoid hanging asyncio
+            data = await asyncio.wait_for(
+                asyncio.to_thread(self._fetch_macro),
+                timeout=MACRO_FETCH_TIMEOUT,
+            )
 
             btc_drop = data.get("BTC_DROP_PCT", 0.0)
             dxy_pump = data.get("DXY_PUMP_PCT", 0.0)
@@ -41,25 +47,25 @@ class MacroFilter:
                 self.reason = ""
 
             self.last_check = now
+        except asyncio.TimeoutError:
+            logger.warning("MacroFilter: yfinance fetch timed out after %ds", MACRO_FETCH_TIMEOUT)
         except Exception as e:
             logger.error(f"MacroFilter failed to update: {e}")
 
     def _fetch_macro(self) -> dict[str, float]:
-        """Fetch data from yfinance synchronously."""
+        """Fetch data from yfinance synchronously (runs in thread)."""
         result = {}
-        
+
         try:
             btc = yf.download(tickers="BTC-USD", period="2d", interval="1h", progress=False)
             if not btc.empty and len(btc) >= 2:
-                # pandas 2.0+ handles this gracefully. 
-                # yfinance returns MultiIndex columns if multiple tickers, but we request one at a time here.
                 close_col = btc['Close']
-                if isinstance(close_col, pd.DataFrame): # MultiIndex workaround
+                if isinstance(close_col, pd.DataFrame):
                     close_col = close_col.iloc[:, 0]
-                    
+
                 last_close = float(close_col.iloc[-1])
                 prev_close = float(close_col.iloc[-2])
-                
+
                 drop_pct = ((prev_close - last_close) / prev_close) * 100
                 result["BTC_DROP_PCT"] = drop_pct
         except Exception as e:
@@ -71,10 +77,10 @@ class MacroFilter:
                 close_col = dxy['Close']
                 if isinstance(close_col, pd.DataFrame):
                     close_col = close_col.iloc[:, 0]
-                    
+
                 last_close = float(close_col.iloc[-1])
                 prev_close = float(close_col.iloc[-2])
-                
+
                 pump_pct = ((last_close - prev_close) / prev_close) * 100
                 result["DXY_PUMP_PCT"] = pump_pct
         except Exception as e:

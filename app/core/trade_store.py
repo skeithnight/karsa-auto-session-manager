@@ -344,6 +344,27 @@ class TradeStore:
             logger.debug(f"get_recent_trades failed: {e}")
             return []
 
+    async def get_all_open_trades(self) -> list[dict[str, Any]]:
+        """Get ALL open trades (exit_time IS NULL) across all symbols."""
+        async with self.db.engine.connect() as conn:
+            rows = await conn.execute(
+                text("""SELECT id, symbol, side, amount, entry_price, regime, entry_time
+                    FROM trades WHERE exit_time IS NULL
+                    ORDER BY entry_time ASC"""),
+            )
+            return [
+                {
+                    "id": r[0],
+                    "symbol": r[1],
+                    "side": r[2],
+                    "amount": r[3],
+                    "entry_price": r[4],
+                    "regime": r[5],
+                    "entry_time": r[6],
+                }
+                for r in rows.fetchall()
+            ]
+
     async def get_open_trade_by_symbol(self, symbol: str) -> dict[str, Any] | None:
         """Get the most recent open trade for a symbol (exit_time IS NULL)."""
         async with self.db.engine.connect() as conn:

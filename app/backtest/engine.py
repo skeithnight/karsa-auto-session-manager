@@ -53,6 +53,10 @@ class BacktestEngine:
     Candle-by-candle replay with APM simulation (worst_price_seen,
     funding drag, time exits). Reuses StrategyRouter, RegimeClassifier,
     DynamicRiskGate directly.
+
+    When enable_live_gates=True, applies the same filtering gates as the live
+    DecisionEngine: session block, MTF trend alignment, sector rotation,
+    and correlation-based sizing penalties.
     """
 
     def __init__(
@@ -67,6 +71,8 @@ class BacktestEngine:
         funding_rate: Decimal = Decimal("0"),
         funding_interval_bars: int = FUNDING_INTERVAL_BARS,
         strategy_gate_threshold: float = 65.0,
+        enable_live_gates: bool = False,
+        sector_filter: object | None = None,
     ) -> None:
         self._classifier = regime_classifier
         self._router = strategy_router
@@ -78,6 +84,8 @@ class BacktestEngine:
         self._funding_rate = funding_rate
         self._funding_interval = funding_interval_bars
         self._gate = strategy_gate_threshold
+        self._enable_live_gates = enable_live_gates
+        self._sector_filter = sector_filter
 
     async def run(
         self,
@@ -88,6 +96,9 @@ class BacktestEngine:
         orderbook_delta: float | None = None,
         funding_rate: float | None = None,
         oi_change: float | None = None,
+        micro_candles: list[list] | None = None,
+        historical_funding: list | None = None,
+        historical_oi: list | None = None,
     ) -> list[BacktestReport]:
         """Run backtest for a single symbol over historical candles.
 
@@ -137,6 +148,19 @@ class BacktestEngine:
             directions = self._determine_directions(regime)
 
             for direction in directions:
+                # Live gate: Session block (Asian dead zone)
+                if self._enable_live_gates:
+                    candle_ts = datetime.fromtimestamp(context_candles[-1][0] / 1000, tz=UTC)
+                    hour = candle_ts.hour
+                    if 0 <= hour < 7 and symbol not in ("BTC/USDT", "ETH/USDT"):
+                        continue  # Skip altcoin entries during Asian session
+
+                    # Live gate: Sector rotation filter
+                    if self._sector_filter is not None:
+                        sec_res = self._sector_filter.check_sector_alignment(symbol, direction)
+                        if not sec_res.get("approved"):
+                            continue
+
                 decision_ctx, vol_factor = await self._router.evaluate_signal(
                     features=features,
                     regime=regime,

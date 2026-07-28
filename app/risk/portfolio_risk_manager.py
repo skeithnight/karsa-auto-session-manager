@@ -106,6 +106,12 @@ class PortfolioRiskManager:
             if not c.passed:
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
 
+            # 1.2 Multi-Leg Spread Detection
+            c = await self._check_spread_legs(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
             # 2. Exposure limits
             c = await self._check_exposure_limits(signal)
             checks.append(c)
@@ -357,6 +363,16 @@ class PortfolioRiskManager:
                     )
 
             if high_corr_count >= 2:
+                # Publish correlation data for downstream scoring
+                if self._redis:
+                    try:
+                        import json as _json
+                        await self._redis.set(f"karsa:correlation:{symbol}", _json.dumps({
+                            "max_correlation": round(max_corr, 4),
+                            "correlated_count": high_corr_count,
+                        }), ex=300)
+                    except Exception:
+                        pass
                 return CheckResult(
                     passed=False,
                     reason=f"Rolling correlation > 0.80 with {high_corr_count} open positions (max_corr={max_corr:.2f})",
@@ -368,10 +384,81 @@ class PortfolioRiskManager:
                     logger.info(
                         f"PRM Correlation Sizing: reduced {symbol} size 50% ({current_amount} -> {signal.amount}) due to {max_corr:.2f} correlation"
                     )
+                # Publish correlation data for downstream scoring
+                if self._redis:
+                    try:
+                        import json as _json
+                        await self._redis.set(f"karsa:correlation:{symbol}", _json.dumps({
+                            "max_correlation": round(max_corr, 4),
+                            "correlated_count": high_corr_count,
+                        }), ex=300)
+                    except Exception:
+                        pass
 
             return CheckResult(passed=True)
         except Exception:
             logger.debug(f"PRM rolling correlation check fallback for {symbol}")
+            return CheckResult(passed=True)
+
+    # ------------------------------------------------------------------
+    # Check 1.2: Multi-Leg Spread Detection
+    # ------------------------------------------------------------------
+
+    async def _check_spread_legs(self, signal: object) -> CheckResult:
+        """Detect multi-leg spread trades (e.g. LONG ETH + SHORT SOL).
+
+        If the incoming signal would create a spread pair with an existing position,
+        evaluate the combined risk as a single unit rather than two independent positions.
+        Spread pairs with correlated assets (>0.7 correlation) share directional risk.
+        """
+        symbol = getattr(signal, "symbol", None)
+        direction = getattr(signal, "direction", "LONG")
+        if not symbol:
+            return CheckResult(passed=True)
+
+        try:
+            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            if not positions:
+                return CheckResult(passed=True)
+
+            # Find potential spread legs: same sector, opposite direction
+            spread_legs = []
+            for pos in positions:
+                p_sym = pos.get("symbol", "")
+                p_side = pos.get("side", "LONG")
+                if p_sym == symbol or p_sym in ANCHOR_SYMBOLS:
+                    continue
+
+                # Opposite direction in same sector = potential spread
+                if p_side != direction:
+                    p_sector = await self._sector_mapping.get_sector(p_sym)  # type: ignore[attr-defined]
+                    sig_sector = await self._sector_mapping.get_sector(symbol)  # type: ignore[attr-defined]
+                    if p_sector == sig_sector and p_sector != "UNKNOWN":
+                        spread_legs.append(pos)
+
+            if not spread_legs:
+                return CheckResult(passed=True)
+
+            # Check if this creates a concentrated spread (3+ legs in same sector)
+            total_sector_exposure = len(spread_legs) + 1  # +1 for incoming signal
+            if total_sector_exposure >= 3:
+                return CheckResult(
+                    passed=False,
+                    reason=f"Multi-leg spread: {total_sector_exposure} positions in sector {sig_sector} (max 2)",
+                )
+
+            # Spread with 1 existing position: log warning but allow
+            if spread_legs:
+                leg_sym = spread_legs[0].get("symbol", "?")
+                logger.warning(
+                    f"PRM Spread Detection: {symbol} {direction} forms spread with {leg_sym} "
+                    f"{spread_legs[0].get('side', '?')} in sector {sig_sector}. "
+                    f"Combined exposure monitored as single risk unit."
+                )
+
+            return CheckResult(passed=True)
+        except Exception:
+            logger.debug(f"PRM spread leg check fallback for {symbol}")
             return CheckResult(passed=True)
 
     # ------------------------------------------------------------------

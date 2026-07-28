@@ -78,6 +78,12 @@ class MarketDataIngestor:
         self._failure_counts: dict[str, int] = {}
         self._escalation_threshold = 3
 
+        # Volatility Floor (Profitability Triage Sprint)
+        # Tracks 10th percentile of BTC 1H ATR over 90 days.
+        # Updated every 15 minutes, not every poll cycle.
+        self._vol_floor_last_calc: float = 0.0
+        self._vol_floor_interval_s: float = 900.0  # 15 minutes
+
         # Freshness tracking: timestamp of last successful fetch per symbol
         self._last_fetch_ts: dict[str, float] = {}
         self.max_staleness_s: float = 2.0
@@ -114,6 +120,13 @@ class MarketDataIngestor:
                     *[self._fetch_symbol(s) for s in self._symbols],
                     return_exceptions=True,
                 )
+
+                # Volatility Floor: recalculate every 15 minutes
+                now_ts = time.time()
+                if now_ts - self._vol_floor_last_calc >= self._vol_floor_interval_s:
+                    await self._update_volatility_floor()
+                    self._vol_floor_last_calc = now_ts
+
             except asyncio.CancelledError:
                 raise
             except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as e:
@@ -454,6 +467,78 @@ class MarketDataIngestor:
             await self._redis.set(history_key, _json.dumps(oi_history), ex=3600)
         except Exception:
             logger.debug("MarketDataIngestor: OI history store failed for %s", symbol)
+
+    async def _update_volatility_floor(self) -> None:
+        """Calculate rolling percentile of BTC 1H ATR (configurable via settings).
+
+        Stores the threshold in Redis as `system:vol:floor:threshold`.
+        Called every 15 minutes from the main poll loop.
+        Fail-closed: if calculation fails, existing threshold is preserved (defaults to blocking).
+        """
+        if not self._session:
+            return
+        try:
+            from app.core.config import get_settings
+            _s = get_settings()
+            percentile = _s.vol_floor_percentile
+            lookback_days = _s.vol_floor_lookback_days
+
+            # Fetch 1H candles for BTC/USDT (2000 candles ≈ 83 days)
+            ccxt_sym = "BTC/USDT:USDT"
+            candles = await self._session.fetch_ohlcv(  # type: ignore[union-attr]
+                ccxt_sym, timeframe="1h", limit=2000
+            )
+            if not candles or len(candles) < 100:
+                logger.warning("VolatilityFloor: insufficient BTC candles (%d)", len(candles) if candles else 0)
+                return
+
+            import numpy as np
+            arr = np.array(candles, dtype=np.float64)
+            highs = arr[:, 2]
+            lows = arr[:, 3]
+            closes = arr[:, 4]
+
+            # True Range
+            prev_closes = np.roll(closes, 1)
+            prev_closes[0] = closes[0]
+            tr = np.maximum(
+                highs - lows,
+                np.maximum(np.abs(highs - prev_closes), np.abs(lows - prev_closes)),
+            )
+            tr = tr[1:]  # drop first NaN row
+
+            # Rolling 14-period ATR via Wilder smoothing
+            period = 14
+            atrs = []
+            atr = np.mean(tr[:period])
+            for i in range(period, len(tr)):
+                atr = (atr * (period - 1) + tr[i]) / period
+                atrs.append(atr)
+
+            if len(atrs) < 50:
+                logger.warning("VolatilityFloor: insufficient ATR data points (%d)", len(atrs))
+                return
+
+            # Configurable percentile (default: 25th)
+            atr_arr = np.array(atrs)
+            floor_threshold = float(np.percentile(atr_arr, percentile))
+
+            # Store in Redis with 1-hour TTL (recalculated every 15 min)
+            import json as _json
+            floor_data = _json.dumps({
+                "threshold": floor_threshold,
+                "current_atr": float(atrs[-1]) if atrs else 0,
+                "percentile": percentile,
+                "lookback_days": lookback_days,
+                "updated_at": time.time(),
+            })
+            await self._redis.set("system:vol:floor:threshold", floor_data, ex=3600)
+            logger.info(
+                "VolatilityFloor: BTC {}-th percentile ATR = {:.4f} (current={:.4f})",
+                percentile, floor_threshold, float(atrs[-1]) if atrs else 0,
+            )
+        except Exception as e:
+            logger.warning("VolatilityFloor: calculation failed (fail-closed — keeping existing threshold): %s", e)
 
     async def _publish(self, symbol: str, field: str, value: str) -> None:
         """Publish a single value to Redis key."""

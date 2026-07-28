@@ -28,7 +28,7 @@ APM_RECONCILE_INTERVAL_S: int = 300
 APM_BREAKEVEN_FEE_PCT = Decimal("0.0025")  # 0.25% — covers 0.12% round-trip fees + locks ~0.13% profit
 APM_TREND_TRAIL_ATR_MULT = Decimal("2.5")
 APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")  # Trailing activates at +1.5R (after breakeven at +0.75R)
-APM_BREAKEVEN_LOCK_R = Decimal("0.75")  # Breakeven at +0.75R (was 1.0R) — lock profit earlier
+APM_BREAKEVEN_LOCK_R = Decimal("0.25")  # Free Roll: breakeven at +0.25R — winning trade must NEVER become a loser
 APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
 
 # Sprint 1: Trailing Limit Exit (Maker-Only)
@@ -131,6 +131,14 @@ class ActivePositionManager:
                             continue
                         entry = Decimal(str(ep.get("entry_price", 0)))
                         amount = Decimal(str(ep.get("contracts", 0)))
+                        # Skip tiny positions (< 5 USDT notional) — below Bybit minimum order
+                        notional = entry * amount
+                        if notional < Decimal("5"):
+                            self._log.debug(
+                                f"APM: skipping tiny orphan {ccxt_sym} {ep_side} "
+                                f"(notional={notional:.2f} < 5 USDT minimum)"
+                            )
+                            continue
                         if entry > 0 and amount > 0:
                             await self._store.save(
                                 symbol=ccxt_sym,
@@ -205,6 +213,9 @@ class ActivePositionManager:
                     await self._reconcile_positions()
                     last_reconcile = now
 
+                    # Adaptive Rebalance: check if any position should be closed to fund stronger signal
+                    await self._check_rebalance_opportunities(positions)
+
                 await asyncio.sleep(APM_MONITOR_INTERVAL_S)
 
             except asyncio.CancelledError:
@@ -212,6 +223,72 @@ class ActivePositionManager:
             except Exception:
                 self._log.exception("APM: error in monitoring loop")
                 await asyncio.sleep(APM_ERROR_BACKOFF_S)
+
+    async def _check_rebalance_opportunities(self, positions: list[dict[str, Any]]) -> None:
+        """Adaptive Rebalance: evaluate if any open position should be closed
+        to fund a stronger incoming signal.
+
+        Reads pending signals from Redis and compares EV with open positions.
+        If a pending signal has >1.5x EV of the weakest position, logs a rebalance alert.
+        """
+        if not self.redis_client or not positions:
+            return
+
+        try:
+            # Find weakest open position by unrealized PnL
+            weakest = None
+            lowest_pnl = Decimal("0")
+            for pos in positions:
+                entry = _safe_dec(pos.get("entry_price", "0"))
+                live = _safe_dec(pos.get("live_price", "0"))
+                side = pos.get("side", "LONG")
+                if entry <= 0 or live <= 0:
+                    continue
+                pnl_pct = (live - entry) / entry if side == "LONG" else (entry - live) / entry
+                if pnl_pct < lowest_pnl:
+                    lowest_pnl = pnl_pct
+                    weakest = pos
+
+            if weakest is None or lowest_pnl >= Decimal("-0.02"):
+                return  # No position losing >2%, no rebalance needed
+
+            # Read pending signals from Redis
+            raw = await self.redis_client.get("karsa:pending_signals")
+            if not raw:
+                return
+
+            import json
+            pending = json.loads(raw)
+            if not pending:
+                return
+
+            # Find best pending signal
+            best_signal = max(pending, key=lambda s: s.get("score", 0))
+            signal_score = best_signal.get("score", 0)
+
+            # Rebalance if signal score > 80 and weakest position losing >2%
+            if signal_score > 80 and lowest_pnl < Decimal("-0.02"):
+                sym = weakest.get("symbol", "?")
+                self._log.warning(
+                    f"APM REBALANCE OPPORTUNITY: {sym} losing {float(lowest_pnl)*100:.1f}% "
+                    f"vs pending signal {best_signal.get('symbol', '?')} score={signal_score:.0f}. "
+                    f"Consider closing loser to fund winner."
+                )
+                # Write rebalance alert to Redis for bot notification
+                try:
+                    alert_data = json.dumps({
+                        "type": "rebalance_opportunity",
+                        "losing_symbol": sym,
+                        "losing_pnl_pct": float(lowest_pnl),
+                        "pending_symbol": best_signal.get("symbol", "?"),
+                        "pending_score": signal_score,
+                    })
+                    await self.redis_client.set("karsa:alert:rebalance", alert_data, ex=300)
+                except Exception:
+                    pass
+
+        except Exception as e:
+            self._log.debug(f"APM rebalance check failed: {e}")
 
     async def start_health_check_loop(self, interval_s: int = 60) -> None:
         """Scheduled position health check — runs every `interval_s` seconds.
@@ -451,6 +528,8 @@ class ActivePositionManager:
                 self._log.debug(f"APM reconcile: regime classification failed for {symbol}")
 
         # 4. initial_risk_per_unit from ATR or Entry Price Fallback
+        # CAP: maximum 5% of entry price — prevents catastrophic losses
+        MAX_RISK_PCT = Decimal("0.05")
         initial_risk = Decimal(str(pos.get("initial_risk_per_unit", "0") or "0"))
         if initial_risk <= 0:
             if atr > 0:
@@ -462,6 +541,16 @@ class ActivePositionManager:
                 entry_price_dec = Decimal(str(pos.get("entry_price", "0") or "0"))
                 if entry_price_dec > 0:
                     initial_risk = entry_price_dec * Decimal("0.01")
+
+            # Enforce 5% cap on initial risk
+            entry_price_dec = Decimal(str(pos.get("entry_price", "0") or "0"))
+            if entry_price_dec > 0:
+                max_risk = entry_price_dec * MAX_RISK_PCT
+                if initial_risk > max_risk:
+                    self._log.warning(
+                        f"APM: {symbol} initial_risk {initial_risk} exceeds 5% cap ({max_risk}) — clamping"
+                    )
+                    initial_risk = max_risk
 
             if initial_risk > 0:
                 pos["initial_risk_per_unit"] = str(initial_risk)
@@ -708,6 +797,11 @@ class ActivePositionManager:
             if scale_tier < 1 and r_mult >= be_lock_r:
                 await self._scale_out_position(pos, Decimal("0.50"), entry_price, side)
                 pos["scale_tier"] = 1
+                # CRITICAL FIX: Move SL to breakeven after scale-out
+                # Previously missing — caused -4.4% avg loss on breakeven exits
+                if not moved_to_be:
+                    await self._move_stop_to_breakeven(pos, entry_price, side)
+                    moved_to_be = True
 
         # Microstructure-Aware CVD Trailing Stop (Exit Alpha)
         if r_mult >= Decimal("0.8") and not moved_to_be:
@@ -741,10 +835,10 @@ class ActivePositionManager:
             pos["scale_tier"] = 2
 
         # ─── MOON BAG TIERED EXIT (Phase 4) ─────────────────────────────────
-        # 80% closed at +1.5R, 20% rides with breakeven SL and ultra-wide trailing
+        # 80% closed at +2.0R (after TREND scale-out at 1.5R), 20% rides with breakeven SL
+        amount = Decimal(str(pos.get("amount", "0")))  # CRITICAL-2 fix: define amount at top level
         tranche_state = pos.get("tranche_state", "INITIAL")
-        if tranche_state == "INITIAL" and r_mult >= Decimal("1.5"):
-            amount = Decimal(str(pos.get("amount", "0")))
+        if tranche_state == "INITIAL" and r_mult >= Decimal("2.0"):
             if amount > 0:
                 # Calculate close amount (80% of position)
                 close_amount = (amount * Decimal("0.8")).quantize(Decimal("0.001"))
@@ -1064,8 +1158,8 @@ class ActivePositionManager:
             side_key = _normalize_side(side)
             redis_key = f"karsa:position:{symbol}:{side_key}"
             await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-        except Exception:
-            pass
+        except Exception as persist_err:
+            self._log.warning("APM: failed to persist state for %s: %s", symbol, persist_err)
 
     # ------------------------------------------------------------------
     # SNIPER Helpers
@@ -1408,60 +1502,71 @@ class ActivePositionManager:
         now = datetime.now(UTC)
         held_mins = (now - entry_time).total_seconds() / 60.0
 
-        # Volatility-Adjusted Time Stop (Dynamic Theta Decay)
-        atr = float(pos.get("atr", 0))
-        entry_price_f = float(entry_price)
-        if atr > 0 and entry_price_f > 0:
-            current_atr_pct = (atr / entry_price_f) * 100.0
-            baseline_atr_pct = 2.0  # 2.0% baseline ATR reference
-            vol_ratio = baseline_atr_pct / current_atr_pct
-            vol_ratio = max(0.5, min(2.0, vol_ratio))
-            max_minutes = int(max_minutes * vol_ratio)
+        is_hyper = str(entry_regime).startswith("HYPER")
 
+        # ─── ASYMMETRIC TIME EXITS (Profitability Triage Sprint) ──────────
+        # State-dependent time limits based on unrealized PnL.
+        # Philosophy: If the thesis was right, it would be green by now.
+        # Losers get cut fast. Winners are allowed to run.
+        symbol = pos.get("symbol", "")
+
+        if r_mult < Decimal("0"):
+            # ── LOSING: Kill in 3 minutes (fail-closed) ──
+            losing_max_mins = 3
+            if held_mins >= losing_max_mins:
+                self._log.warning(
+                    f"APM: ASYMMETRIC LOSING EXIT {symbol} {side} — "
+                    f"held {held_mins:.0f}min (>{losing_max_mins}min), R={r_mult:.2f}"
+                )
+                await self._force_close_position(pos, f"asymmetric_losing_exit_{held_mins:.0f}min")
+                return True
+
+        elif r_mult == Decimal("0"):
+            # ── BREAKEVEN: Kill in 15 minutes ──
+            be_max_mins = 15
+            if held_mins >= be_max_mins:
+                self._log.warning(
+                    f"APM: ASYMMETRIC BREAKEVEN EXIT {symbol} {side} — "
+                    f"held {held_mins:.0f}min (>{be_max_mins}min), R={r_mult:.2f}"
+                )
+                await self._force_close_position(pos, f"asymmetric_be_exit_{held_mins:.0f}min")
+                return True
+
+        else:
+            # ── WINNING: No time limit — let trailing stop / regime shift handle it ──
+            # Quick profit exit for extreme spikes (safety net)
+            quick_profit_mins = 3 if is_hyper else 5
+            quick_profit_r = Decimal("1.0") if is_hyper else Decimal("3.0")
+            if held_mins <= quick_profit_mins and r_mult >= quick_profit_r:
+                self._log.warning(
+                    f"APM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})"
+                )
+                await self._force_close_position(pos, f"quick_profit_exit_R{r_mult:.1f}")
+                return True
+
+            # Momentum decay exit: if winning but R hasn't moved in 10 min, exit
+            peak_r = Decimal(str(pos.get("peak_r_multiple", str(r_mult))))
+            if r_mult > peak_r:
+                pos["peak_r_multiple"] = str(r_mult)
+                pos["peak_r_ts"] = str(datetime.now(UTC).timestamp())
+                peak_r = r_mult
+            elif r_mult > Decimal("0"):
+                peak_r_ts = float(pos.get("peak_r_ts", "0") or "0")
+                stale_mins = (datetime.now(UTC).timestamp() - peak_r_ts) / 60.0
+                if stale_mins >= 10 and r_mult < peak_r * Decimal("0.8"):
+                    self._log.warning(
+                        f"APM: MOMENTUM DECAY EXIT {symbol} — R stalled at {r_mult:.2f} "
+                        f"(peak {peak_r:.2f}) for {stale_mins:.0f}min"
+                    )
+                    await self._force_close_position(pos, f"momentum_decay_exit_R{r_mult:.1f}")
+                    return True
+        # ────────────────────────────────────────────────────────────────────
+
+        # Fallback: hard max hold (fail-safe — should never hit with asymmetric exits)
         if held_mins > max_minutes:
-            symbol = pos.get("symbol", "")
-            self._log.warning(f"APM: volatility-adjusted time exit {symbol} after {held_mins:.0f}min (adj_max {max_minutes}m)")
+            self._log.warning(f"APM: hard max hold exit {symbol} after {held_mins:.0f}min (max {max_minutes}m)")
             await self._force_close_position(pos, f"time_exit_{held_mins:.0f}min")
             return True
-
-        is_hyper = str(entry_regime).startswith("HYPER")
-        quick_profit_mins = 3 if is_hyper else 5
-        quick_profit_r = Decimal("1.0") if is_hyper else Decimal("3.0")
-
-        # Quick Profit Exit
-        if held_mins <= quick_profit_mins and r_mult >= quick_profit_r:
-            symbol = pos.get("symbol", "")
-            self._log.warning(f"APM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
-            await self._force_close_position(pos, f"quick_profit_exit_R{r_mult:.1f}")
-            return True
-
-        # Stagnation Exit (Smart quick-win / cut loss)
-        if is_hyper:
-            stagnation_mins = 10     # Give HYPER more room (was 5)
-            stagnation_r = Decimal("0.15")  # Only exit if barely moved (was 0.5)
-        elif "TREND" in entry_regime:
-            stagnation_mins = 60
-            stagnation_r = Decimal("0.3")   # Trend needs time
-        else:
-            stagnation_mins = 30 if entry_regime == "RANGE" else 10
-            stagnation_r = Decimal("0.5")   # RANGE/default: keep original
-
-        # If held for a long time and R is still less than stagnation_r, take the quick win (if positive) or cut the small loss
-        if held_mins >= stagnation_mins and r_mult < stagnation_r:
-            symbol = pos.get("symbol", "")
-            self._log.warning(f"APM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
-            await self._force_close_position(pos, f"stagnation_exit_{held_mins:.0f}min")
-            return True
-
-        # Underwater Stale Exit
-        underwater_mins = 15 if is_hyper else (120 if "TREND" in entry_regime else 60 if entry_regime == "RANGE" else 15)
-        if held_mins >= underwater_mins:
-            is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
-            if is_underwater:
-                symbol = pos.get("symbol", "")
-                self._log.warning(f"APM: stale underwater exit {symbol} after {held_mins:.0f}min")
-                await self._force_close_position(pos, f"stale_exit_{held_mins:.0f}min")
-                return True
         return False
 
     # ------------------------------------------------------------------

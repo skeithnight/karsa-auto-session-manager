@@ -1839,6 +1839,20 @@ async def main() -> None:  # noqa: PLR0915
         name="live-hmm",
     )
 
+    # ── Per-Symbol Regime Classification Loop ────────────────────────
+    # Classifies each symbol's own candles (not just BTC) and writes
+    # system:regime:{symbol} for DecisionEngineV2 to read.
+    from app.alpha.regime_classifier import RegimeClassifier
+    regime_classifier = RegimeClassifier(redis_client=redis)
+    per_symbol_regime_task = asyncio.create_task(
+        regime_classifier.run_per_symbol_classification_loop(
+            ohlcv_fetcher=ohlcv_fetcher,
+            universe_getter=lambda: _read_universe(redis),
+            interval_seconds=900,  # 15 minutes
+        ),
+        name="live-per-symbol-regime",
+    )
+
     # ── Sprint 3: GARCH Volatility Forecast Loop ─────────────────────
     from app.risk.garch_volatility_forecaster import GARCHVolatilityForecaster
     garch_forecaster = GARCHVolatilityForecaster(redis_client=redis)
@@ -1877,6 +1891,7 @@ async def main() -> None:  # noqa: PLR0915
             balance_task.cancel()
         wallet_metrics_task.cancel()
         hmm_task.cancel()
+        per_symbol_regime_task.cancel()
         garch_task.cancel()
         ranking_task.cancel()
         gate_calibration_task.cancel()

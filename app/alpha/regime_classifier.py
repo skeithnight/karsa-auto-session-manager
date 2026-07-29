@@ -265,6 +265,75 @@ class RegimeClassifier:
                 logger.exception("RegimeClassifier: classification loop error")
                 await asyncio.sleep(5)
 
+    async def run_per_symbol_classification_loop(
+        self,
+        ohlcv_fetcher: object | None = None,
+        universe_getter: object | None = None,
+        interval_seconds: int = 900,
+    ) -> None:
+        """Background task: classify regime per symbol, write to system:regime:{symbol}.
+
+        Args:
+            ohlcv_fetcher: OHLCVFetcher instance for candle data
+            universe_getter: callable returning list[str] of active symbols
+            interval_seconds: classification interval (default 15min)
+        """
+        import asyncio
+
+        while True:
+            try:
+                if ohlcv_fetcher is None or universe_getter is None:
+                    await asyncio.sleep(interval_seconds)
+                    continue
+
+                symbols = await universe_getter()  # type: ignore[misc]
+                if not symbols:
+                    await asyncio.sleep(interval_seconds)
+                    continue
+
+                import numpy as _np
+                from app.core.feature_extractor import FeatureExtractor
+                from app.core.feature_store import FeatureStore
+                from app.core.market_snapshot import MarketSnapshot
+
+                for symbol in symbols:
+                    try:
+                        candles_raw = await ohlcv_fetcher.fetch(symbol, "1h", limit=200)  # type: ignore[attr-defined]
+                        if not candles_raw or len(candles_raw) < MIN_CANDLES_FOR_CLASSIFICATION:
+                            continue
+
+                        candles = _np.array(candles_raw, dtype=float)
+                        snapshot = MarketSnapshot(
+                            symbol=symbol,
+                            timestamp_ms=int(candles[-1][0]),
+                            candles=candles,
+                        )
+                        store = FeatureStore(snapshot)
+                        features = FeatureExtractor.extract(store)
+                        regime, conviction = self.classify_with_conviction(features, snapshot)
+
+                        if self._redis is not None:
+                            regime_str = regime.value
+                            await self._redis.set(  # type: ignore[attr-defined]
+                                f"system:regime:{symbol.replace('/', ':')}",
+                                regime_str,
+                            )
+                            logger.debug(
+                                "RegimeClassifier: %s → %s (adx=%.1f, hurst=%.3f)",
+                                symbol, regime_str,
+                                features.adx_14 or 0.0,
+                                features.hurst or 0.5,
+                            )
+                    except Exception:
+                        logger.debug("RegimeClassifier: per-symbol classify failed for %s", symbol)
+
+                await asyncio.sleep(interval_seconds)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("RegimeClassifier: per-symbol classification loop error")
+                await asyncio.sleep(5)
+
     # ------------------------------------------------------------------
     # Decision tree
     # ------------------------------------------------------------------

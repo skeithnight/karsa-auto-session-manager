@@ -227,8 +227,8 @@ class BybitClient:
                         # Bybit V5 doesn't expose maker fee in instruments;
                         # use standard linear perp maker fee
                         pass
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"Failed to fetch instrument info: {type(e).__name__}: {e}")
         # Bybit standard linear perpetual maker fee: 0.02%
         return Decimal("0.0002")
 

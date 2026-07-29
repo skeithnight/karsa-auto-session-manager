@@ -76,7 +76,7 @@ class PositionStore:
             "amount": str(amount),
             "peak_price": str(entry_price),
             "sl_order_id": sl_order_id or "",
-            # BUG-2 fix: guard must not erase Decimal("0") as falsy
+            # Guard: Decimal("0") is falsy but valid — only skip None
             "atr": str(atr) if (atr is not None and atr > Decimal("0")) else "",
             "entry_confidence": str(entry_confidence)
             if entry_confidence is not None
@@ -114,7 +114,8 @@ class PositionStore:
             return None
         try:
             return json.loads(raw)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Failed to decode position state from Redis: {type(e).__name__}: {e}")
             return None
 
     async def update_peak(self, symbol: str, side: str, price: Decimal) -> None:
@@ -149,7 +150,7 @@ class PositionStore:
     ) -> None:
         """Update SL order ID and optionally persist the new SL price.
 
-        BUG-7 fix: callers that amend the SL price must also persist it here so
+        Callers that amend the SL price must also persist it here so
         the $1 cap check and reconcile loop read the correct current_sl value.
         """
         pos = await self.get(symbol, side)
@@ -180,7 +181,7 @@ class PositionStore:
     async def has_position(self, symbol: str, side: str | None = None) -> bool:
         """Check if position exists.
 
-        BUG-9 fix: normalise side so 'buy'/'sell' from Bybit and 'LONG'/'SHORT'
+        Normalise side so 'buy'/'sell' from Bybit and 'LONG'/'SHORT'
         from signals both resolve to the correct Redis key.
         """
         if side:
@@ -201,8 +202,8 @@ class PositionStore:
             if raw:
                 try:
                     positions.append(json.loads(raw))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning(f"Failed to decode position in list_all: {type(e).__name__}: {e}")
         return positions
 
     async def cleanup_stale(self, exchange_symbols: set[str]) -> int:
@@ -236,7 +237,8 @@ class PositionStore:
                         f"Cleaned orphaned position: {sym} {pos.get('side', '')}"
                     )
                     removed += 1
-            except Exception:
+            except Exception as e:
+                logger.error(f"Failed to parse orphan position, removing: {key_str} — {type(e).__name__}: {e}")
                 await self.redis.delete(key_str)
                 removed += 1
         return removed

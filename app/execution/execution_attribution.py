@@ -271,8 +271,8 @@ class ExecutionAttribution:
                 raw = self._redis.get("karsa:execution:attribution")
                 if raw:
                     report_data = _json.loads(raw)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"Failed to read execution attribution from Redis: {type(e).__name__}: {e}")
 
         slippage_by_regime = report_data.get("slippage_by_regime", {})
         regime_slippage = slippage_by_regime.get(regime, 0.0)

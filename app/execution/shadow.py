@@ -94,8 +94,8 @@ class ShadowExecutor:
                 price = Decimal(cached)
                 if price > 0:
                     return price
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowExecutor: failed to parse shadow price for {symbol}: {type(e).__name__}: {e}")
         # Check global:state keys (written by RedisClient.set_global_state)
         raw = await self._redis.get(f"global:state:{symbol}")
         if raw:
@@ -108,8 +108,8 @@ class ShadowExecutor:
                 last = Decimal(str(data.get("last", "0")))
                 if last > 0:
                     return last
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowExecutor: failed to parse global:state for {symbol}: {type(e).__name__}: {e}")
         raw2 = await self._redis.get(f"ticker:{symbol}")
         if raw2:
             try:
@@ -117,8 +117,8 @@ class ShadowExecutor:
                 last = Decimal(str(data.get("last", "0")))
                 if last > 0:
                     return last
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowExecutor: failed to parse ticker for {symbol}: {type(e).__name__}: {e}")
         if fallback_price is not None and fallback_price > 0:
             return fallback_price
         raise ValueError(f"ShadowExecutor: no price for {symbol}")
@@ -153,8 +153,8 @@ class ShadowExecutor:
                         return (price * (Decimal("1") + slip_mult)).quantize(Decimal("0.00000001"))
                     else:
                         return (price * (Decimal("1") - slip_mult)).quantize(Decimal("0.00000001"))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"ShadowExecutor: dynamic slippage fallback for {symbol}: {type(e).__name__}: {e}")
         return self._apply_slippage(price, side)
 
     async def execute(
@@ -379,8 +379,8 @@ class ShadowAPM:
             except (redis.exceptions.TimeoutError, redis.exceptions.ConnectionError) as e:
                 logger.warning(f"ShadowAPM: Redis transient error: {e}. Backing off 3s...")
                 await asyncio.sleep(3)
-            except Exception:
-                logger.exception("ShadowAPM: error in monitoring loop")
+            except Exception as e:
+                logger.exception(f"ShadowAPM: error in monitoring loop: {type(e).__name__}: {e}")
                 await asyncio.sleep(5)
 
     async def _manage_time_exit(
@@ -452,7 +452,8 @@ class ShadowAPM:
                 return (live_price - entry_price) / initial_risk
             else:
                 return (entry_price - live_price) / initial_risk
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ShadowAPM: R-multiple calculation failed: {type(e).__name__}: {e}")
             return Decimal("0")
 
     # --- Refinement 4: Pending limit fill detection ---
@@ -481,8 +482,8 @@ class ShadowAPM:
                     ).inc()
                     await self._pos_store.remove(symbol, side)
                     return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowAPM: failed to parse pending_since for {symbol}: {type(e).__name__}: {e}")
 
         try:
             mid = await self._executor._get_mid_price(symbol)
@@ -518,8 +519,8 @@ class ShadowAPM:
             try:
                 data = _json.loads(raw)
                 return data.get("regime", "")
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowAPM: failed to parse regime for {symbol}: {type(e).__name__}: {e}")
         return ""
 
     async def _manage_open_position(self, pos: dict) -> None:
@@ -574,7 +575,8 @@ class ShadowAPM:
             risk_profile = _json.loads(pos.get("risk_profile_json", "{}"))
             initial_risk_pct = Decimal(str(risk_profile.get("sl_pct", "0")))
             initial_risk = entry_price * initial_risk_pct
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ShadowAPM: failed to parse risk_profile for {symbol}: {type(e).__name__}: {e}")
             initial_risk = Decimal("0")
 
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
@@ -603,8 +605,8 @@ class ShadowAPM:
                 )
                 if is_closed:
                     return
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"ShadowAPM: time management failed for {symbol}: {type(e).__name__}: {e}")
 
         # Flash-Crash Micro-Circuit Breaker (Wick Guard)
         _raw_last_tick = pos.get("last_tick_price", pos.get("worst_price_seen", "0")) or "0"
@@ -722,8 +724,8 @@ class ShadowAPM:
                         ).inc()
                         await self._close_shadow_position(pos, mid, "stale_cleanup")
                         return
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowAPM: stale cleanup check failed for {symbol}: {type(e).__name__}: {e}")
 
         # Refinement 3: funding rate drag
         await self._apply_funding_if_due(pos, symbol, side)
@@ -780,7 +782,8 @@ class ShadowAPM:
 
         try:
             last_funding = datetime.fromisoformat(last_funding_ts_str)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"ShadowAPM: failed to parse funding timestamp for {symbol}: {type(e).__name__}: {e}")
             return
 
         now = datetime.now(UTC)
@@ -826,8 +829,8 @@ class ShadowAPM:
             try:
                 data = _json.loads(raw)
                 return Decimal(str(data.get("funding_rate", "0")))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"ShadowAPM: failed to parse funding rate for {symbol}: {type(e).__name__}: {e}")
         return Decimal("0")
 
     # --- Close shadow position ---

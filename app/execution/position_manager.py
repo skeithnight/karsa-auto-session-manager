@@ -64,7 +64,8 @@ def _safe_dec(value: object, default: str = "0") -> Decimal:
     """Convert any value safely to Decimal without raising."""
     try:
         return Decimal(str(value)) if value is not None else Decimal(default)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Operation failed: {type(e).__name__}: {e}")
         return Decimal(default)
 
 
@@ -157,8 +158,8 @@ class ActivePositionManager:
                                     side_key = _normalize_side(ep_side)
                                     redis_key = f"karsa:position:{ccxt_sym}:{side_key}"
                                     await self._store.redis.set(redis_key, _json.dumps(saved_pos))  # type: ignore[attr-defined]
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                self._log.warning(f"Operation failed: {type(e).__name__}: {e}")
                             # Re-read the saved pos to get full dict for reconciliation
                             saved = await self._store.get(ccxt_sym, ep_side)
                             if saved:
@@ -220,8 +221,8 @@ class ActivePositionManager:
 
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._log.exception("APM: error in monitoring loop")
+            except Exception as e:
+                self._log.exception(f"APM: error in monitoring loop: {type(e).__name__}: {e}")
                 await asyncio.sleep(APM_ERROR_BACKOFF_S)
 
     async def _check_rebalance_opportunities(self, positions: list[dict[str, Any]]) -> None:
@@ -284,8 +285,8 @@ class ActivePositionManager:
                         "pending_score": signal_score,
                     })
                     await self.redis_client.set("karsa:alert:rebalance", alert_data, ex=300)
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log.warning(f"Operation failed: {type(e).__name__}: {e}")
 
         except Exception as e:
             self._log.debug(f"APM rebalance check failed: {e}")
@@ -390,8 +391,8 @@ class ActivePositionManager:
 
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                self._log.exception("APM: health check loop error")
+            except Exception as e:
+                self._log.exception(f"APM: health check loop error: {type(e).__name__}: {e}")
                 await asyncio.sleep(APM_ERROR_BACKOFF_S)
 
     # ------------------------------------------------------------------
@@ -484,8 +485,8 @@ class ActivePositionManager:
                 exch_tp = exchange_pos.get("takeProfit")
                 if exch_tp and str(exch_tp) not in ("0", "None", ""):
                     pos["take_profit"] = str(exch_tp)
-        except Exception:
-            self._log.debug(f"APM reconcile: failed to fetch Bybit data for {symbol}")
+        except Exception as e:
+            self._log.debug(f"APM reconcile: failed to fetch Bybit data for {symbol}: {type(e).__name__}: {e}")
 
         # 2. ATR from candles
         atr = Decimal(str(pos.get("atr", "0") or "0"))
@@ -524,8 +525,8 @@ class ActivePositionManager:
                     pos["regime"] = entry_regime
                     changed = True
                     self._log.info(f"APM reconcile: {symbol} regime={entry_regime}")
-            except Exception:
-                self._log.debug(f"APM reconcile: regime classification failed for {symbol}")
+            except Exception as e:
+                self._log.debug(f"APM reconcile: regime classification failed for {symbol}: {type(e).__name__}: {e}")
 
         # 4. initial_risk_per_unit from ATR or Entry Price Fallback
         # CAP: maximum 5% of entry price — prevents catastrophic losses
@@ -589,8 +590,8 @@ class ActivePositionManager:
                         pos["stop_loss"] = str(sl_price)
                         changed = True
                         self._log.warning(f"APM reconcile: {symbol} exchange SL corrected to {sl_price}")
-                    except Exception:
-                        self._log.debug(f"APM reconcile: SL placement failed for {symbol}")
+                    except Exception as e:
+                        self._log.error(f"APM reconcile: SL placement failed for {symbol}: {type(e).__name__}: {e}")
                 else:
                     self._log.debug(f"APM reconcile: SL placement failed for {symbol}: {e}")
 
@@ -610,8 +611,8 @@ class ActivePositionManager:
                         pos["take_profit"] = str(tp_price)
                         changed = True
                         self._log.warning(f"APM reconcile: {symbol} exchange TP set to {tp_price}")
-                    except Exception:
-                        self._log.debug(f"APM reconcile: TP placement failed for {symbol}")
+                    except Exception as e:
+                        self._log.error(f"APM reconcile: TP placement failed for {symbol}: {type(e).__name__}: {e}")
 
         # 8. Persist changes
         if changed:
@@ -644,8 +645,8 @@ class ActivePositionManager:
                     len(changed_fields),
                     changed_fields,
                 )
-            except Exception:
-                self._log.exception(f"APM reconcile: persist failed for {symbol}")
+            except Exception as e:
+                self._log.exception(f"APM reconcile: persist failed for {symbol}: {type(e).__name__}: {e}")
 
         return changed
 
@@ -713,8 +714,8 @@ class ActivePositionManager:
                         side_key = _normalize_side(side)
                         redis_key = f"karsa:position:{symbol}:{side_key}"
                         await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log.warning(f"Operation failed: {type(e).__name__}: {e}")
                     return
                 pos["last_wick_guard_ts"] = str(time.time())
 
@@ -736,8 +737,8 @@ class ActivePositionManager:
                     pos["stop_loss"] = str(tight_sl)
                     sl_price = tight_sl
                     self._log.warning(f"APM WICK GUARD: tightened SL for {symbol} to {tight_sl}")
-                except Exception:
-                    self._log.exception(f"APM WICK GUARD: SL tighten failed for {symbol}")
+                except Exception as e:
+                    self._log.error(f"APM WICK GUARD: SL tighten failed for {symbol}: {type(e).__name__}: {e}")
 
                 pos["last_tick_price"] = str(live_price)
                 try:
@@ -745,8 +746,8 @@ class ActivePositionManager:
                     side_key = _normalize_side(side)
                     redis_key = f"karsa:position:{symbol}:{side_key}"
                     await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log.warning(f"Operation failed: {type(e).__name__}: {e}")
                 return
 
         pos["last_tick_price"] = str(live_price)
@@ -977,8 +978,8 @@ class ActivePositionManager:
                 if existing_order_id:
                     try:
                         await self._client.cancel_order(existing_order_id, symbol)  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log.debug(f"APM TRAILING LIMIT: cancel order failed for {symbol}: {type(e).__name__}: {e}")
 
                 # Market exit
                 await self._force_close_position(pos, f"trailing_limit_timeout_{timeout_s}s")
@@ -1022,8 +1023,8 @@ class ActivePositionManager:
                         # Cancel old order
                         try:
                             await self._client.cancel_order(existing_order_id, symbol)  # type: ignore[attr-defined]
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            self._log.debug(f"APM TRAILING LIMIT: cancel old order failed for {symbol}: {type(e).__name__}: {e}")
 
             if needs_new_order:
                 try:
@@ -1250,8 +1251,8 @@ class ActivePositionManager:
                 if result > 0:
                     self._log.info(f"APM: computed ATR for {symbol} = {result}")
                 return result
-        except Exception:
-            self._log.debug(f"APM: ATR computation failed for {symbol}")
+        except Exception as e:
+            self._log.debug(f"APM: ATR computation failed for {symbol}: {type(e).__name__}: {e}")
         return Decimal("0")
 
     @staticmethod
@@ -1297,8 +1298,8 @@ class ActivePositionManager:
             await self._client.set_trading_stop(symbol, api_side, take_profit=tp_price)  # type: ignore[attr-defined]
             pos["tp_placed"] = True
             self._log.info(f"APM: atomic TP placed for {symbol} @ {tp_price} ({tp_mult}:1 R/R)")
-        except Exception:
-            self._log.exception(f"APM: TP placement failed for {symbol}")
+        except Exception as e:
+            self._log.error(f"APM: TP placement failed for {symbol}: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     # Scale-out (partial close)
@@ -1318,8 +1319,8 @@ class ActivePositionManager:
             # Update amount in pos dict so subsequent calculations use reduced quantity
             new_amount = amount - close_qty
             pos["amount"] = str(new_amount)
-        except Exception:
-            self._log.exception(f"APM: scale-out failed for {symbol}")
+        except Exception as e:
+            self._log.error(f"APM: scale-out failed for {symbol}: {type(e).__name__}: {e}")
 
     async def proactive_scale_out(
         self, symbol: str, side: str = "LONG", ratio: Decimal = Decimal("0.50")
@@ -1387,13 +1388,13 @@ class ActivePositionManager:
                 await self._client.amend_stop_loss(
                     sl_order_id, symbol, api_side, new_sl, amount
                 )  # type: ignore[attr-defined]
-            except Exception:
-                self._log.warning(f"APM: breakeven amend failed for {symbol}, retrying")
+            except Exception as e:
+                self._log.error(f"APM: breakeven amend failed for {symbol}, retrying: {type(e).__name__}: {e}")
                 await self._client.amend_stop_loss(
                     sl_order_id, symbol, api_side, new_sl, amount
                 )  # type: ignore[attr-defined]
 
-            # BUG-4 fix: persist breakeven flag + new SL price to Redis so this
+            # Persist breakeven flag + new SL price to Redis so this
             # does not re-trigger on every 2s cycle.
             pos["moved_to_breakeven"] = True
             pos["current_sl"] = new_sl_str
@@ -1404,14 +1405,14 @@ class ActivePositionManager:
                 side_key = _normalize_side(side)
                 redis_key = f"karsa:position:{pos.get('symbol', '')}:{side_key}"
                 await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-            except Exception:
-                self._log.exception(f"APM: failed to persist breakeven flag for {symbol}")
+            except Exception as e:
+                self._log.warning(f"APM: failed to persist breakeven flag for {symbol}: {type(e).__name__}: {e}")
 
             await self._store.update_sl(symbol, api_side, sl_order_id, new_sl)  # type: ignore[attr-defined]
             self._log.info(f"APM: breakeven locked for {symbol} at {new_sl_str}")
 
-        except Exception:
-            self._log.exception(f"APM: breakeven CRITICAL failure for {symbol}")
+        except Exception as e:
+            self._log.error(f"APM: breakeven CRITICAL failure for {symbol}: {type(e).__name__}: {e}")
             if self._alert:
                 await self._alert.send(f"⚠️ APM breakeven FAILED for {symbol}")  # type: ignore[attr-defined]
 
@@ -1462,8 +1463,8 @@ class ActivePositionManager:
             pos["current_sl"] = new_sl_str
             pos["stop_loss"] = new_sl_str
             self._log.info(f"APM: trailing SL amended for {symbol} to {new_sl} (Peak={peak})")
-        except Exception:
-            self._log.exception(f"APM: trailing SL amend failed for {symbol}")
+        except Exception as e:
+            self._log.error(f"APM: trailing SL amend failed for {symbol}: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     # Time exit
@@ -1482,7 +1483,7 @@ class ActivePositionManager:
     ) -> bool:
         """Force close if position held beyond max_hold_time_mins or if it is stale underwater.
 
-        BUG-6 fix: entry_time from Redis is always an ISO string, not a datetime.
+        entry_time from Redis is always an ISO string, not a datetime.
         Parse it here before the isinstance guard.
         Returns True if the position was closed, False otherwise.
         """
@@ -1492,8 +1493,8 @@ class ActivePositionManager:
                 entry_time = datetime.fromisoformat(entry_time)
                 if entry_time.tzinfo is None:
                     entry_time = entry_time.replace(tzinfo=UTC)
-            except Exception:
-                self._log.debug("APM: could not parse entry_time=%r for time-exit", entry_time)
+            except Exception as e:
+                self._log.debug(f"APM: could not parse entry_time={entry_time!r} for time-exit: {type(e).__name__}: {e}")
                 return False
 
         if not isinstance(entry_time, datetime):
@@ -1608,8 +1609,8 @@ class ActivePositionManager:
             else:
                 self._regime_shift_counts.pop(symbol, None)
 
-        except Exception:
-            self._log.exception(f"APM: regime check failed for {symbol}")
+        except Exception as e:
+            self._log.warning(f"APM: regime check failed for {symbol}: {type(e).__name__}: {e}")
         return False
 
     # ------------------------------------------------------------------
@@ -1674,8 +1675,8 @@ class ActivePositionManager:
                     side_key = _normalize_side(side)
                     redis_key = f"karsa:position:{symbol}:{side_key}"
                     await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log.warning(f"APM: failed to persist retry cooldown for {symbol}: {type(e).__name__}: {e}")
                 if self._alert:
                     await self._alert.send(
                         f"🚨 APM FORCE CLOSE FAILED {symbol} — retry in 5min, MANUAL INTERVENTION NEEDED"
@@ -1694,8 +1695,8 @@ class ActivePositionManager:
                         side_key = _normalize_side(side)
                         redis_key = f"karsa:position:{symbol}:{side_key}"
                         await self._store.redis.set(redis_key, _json.dumps(pos))  # type: ignore[attr-defined]
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        self._log.warning(f"APM: failed to persist exit price for {symbol}: {type(e).__name__}: {e}")
 
                 # Remove from local state (side needed for Redis key)
                 try:
@@ -1729,8 +1730,8 @@ class ActivePositionManager:
                                 if et.tzinfo is None:
                                     et = et.replace(tzinfo=UTC)
                                 hold_min = int((datetime.now(UTC) - et).total_seconds() / 60)
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                self._log.debug(f"APM: could not parse entry_time={entry_time_str!r} for hold_min: {type(e).__name__}: {e}")
                         await self._trade_memory.store(
                             symbol=symbol,
                             pnl_pct=pnl_pct,
@@ -1748,8 +1749,8 @@ class ActivePositionManager:
                 # Ensure it's removed from local state to prevent orphan loop
                 try:
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
+                except Exception as e:
+                    self._log.warning(f"APM: failed to remove {symbol} from store during cleanup: {type(e).__name__}: {e}")
 
     # ------------------------------------------------------------------
     # Reconciliation
@@ -1795,11 +1796,10 @@ class ActivePositionManager:
                             symbol, api_side, stop_loss=sl_price
                         )
                         self._log.info(f"APM: SL missing — re-placed for {symbol} at {sl_price}")
-                    except Exception:
-                        self._log.warning(f"APM: SL reconciliation failed for {symbol}")
+                    except Exception as e:
+                        self._log.error(f"APM: SL reconciliation failed for {symbol}: {type(e).__name__}: {e}")
                 elif current_sl > 0:
                     self._log.debug(f"APM: SL exists for {symbol} at {current_sl} — skipping reconciliation re-place")
 
-        except Exception:
-            self._log.exception("APM: reconciliation failed")
-            self._log.exception("APM: reconciliation failed")
+        except Exception as e:
+            self._log.error(f"APM: reconciliation failed: {type(e).__name__}: {e}")

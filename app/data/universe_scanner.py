@@ -180,15 +180,22 @@ class DynamicUniverseScanner:
         )
 
         # 3. Compute ATR for top candidates (cap to limit API calls)
+        #    Symbols that fail OHLCV fetch are invalid on Bybit — exclude them.
         sort_by_vol = sorted(candidates, key=lambda c: c["volume_usd"], reverse=True)
+        valid_candidates: list[dict[str, Any]] = []
         for cand in sort_by_vol[:ATR_CAP_CANDIDATES]:
             try:
                 cand["atr"] = await self._compute_symbol_atr(cand["symbol"])
+                valid_candidates.append(cand)
             except Exception:
-                logger.debug("UniverseScanner: ATR failed for {}", cand["symbol"])
-                cand["atr"] = 0.0
+                logger.warning(
+                    "UniverseScanner: excluding %s — OHLCV fetch failed (invalid on Bybit)",
+                    cand["symbol"],
+                )
         for cand in sort_by_vol[ATR_CAP_CANDIDATES:]:
             cand["atr"] = 0.0
+            valid_candidates.append(cand)
+        candidates = valid_candidates
 
         # 4. Compute composite score: 40% volume + 30% ATR + 30% gainer/momentum
         # Use log scale for volume to prevent BTC/ETH from squashing altcoins to 0.0

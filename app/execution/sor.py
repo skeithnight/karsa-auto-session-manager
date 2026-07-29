@@ -428,8 +428,8 @@ class SmartOrderRouter:
                             f"SOR exit: partial fill detected — {filled_qty} filled, "
                             f"{remaining} remaining (total_filled={total_filled})"
                         )
-                except Exception:
-                    pass  # proceed with cancel anyway
+                except Exception as e:
+                    logger.warning(f"SOR exit: partial fill status check failed: {type(e).__name__}: {e}")
 
             if side == "buy":
                 current_price += effective_tick
@@ -515,8 +515,8 @@ class SmartOrderRouter:
                     for so in stop_orders:
                         try:
                             await self.client.cancel_order(so["id"], symbol)
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"SL cleanup: failed to cancel stale stop order {so.get('id')}: {type(e).__name__}: {e}")
                     await asyncio.sleep(0.3)  # Let Bybit process cancellations
             except Exception as e:
                 logger.warning(f"SL cleanup failed for {symbol}: {e}")
@@ -755,9 +755,12 @@ class SmartOrderRouter:
                 )
                 return False
             return True
-        except Exception:
+        except Exception as e:
             logger.warning(
-                "SOR: spread check failed for %s, rejecting (fail-closed)", symbol
+                "SOR: spread check failed for %s, rejecting (fail-closed): %s: %s",
+                symbol,
+                type(e).__name__,
+                e,
             )
             return False
 
@@ -838,8 +841,8 @@ class SmartOrderRouter:
                     )
                     order["sl_order_id"] = sl_id
                     return order
-            except Exception:
-                logger.debug("SOR: reprice %d failed", attempt + 1)
+            except Exception as e:
+                logger.debug("SOR: reprice %d failed: %s: %s", attempt + 1, type(e).__name__, e)
 
         # Step 3: Market fallback
         if order and order.get("id"):
@@ -969,8 +972,8 @@ class SmartOrderRouter:
                 res = await self.client.get_maker_fee_rate(symbol)
                 if isinstance(res, (int, float, str, Decimal)):
                     maker_fee = Decimal(str(res))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning(f"SOR fee_aware: failed to fetch maker fee rate for {symbol}: {type(e).__name__}: {e}")
 
         thin_edge_mult = Decimal("1.0") if maker_fee < 0 else Decimal("1.5")
 

@@ -339,8 +339,8 @@ class CheckpointManager:
                                 }
                             ),
                         )
-                    except Exception:
-                        pass  # non-critical audit trail
+                    except Exception as e:
+                        logger.warning(f"Position judge audit trail failed: {type(e).__name__}: {e}")
                 if verdict.action == "EXIT":
                     await self._exit(pos, state_manager, current_price=current_price)
                     return
@@ -473,8 +473,8 @@ class CheckpointManager:
                                         }
                                     ),
                                 )
-                            except Exception:
-                                pass  # non-critical audit trail
+                            except Exception as e:
+                                logger.warning(f"Checkpoint audit trail failed: {type(e).__name__}: {e}")
                         if verdict.action == "EXIT":
                             await self._exit(
                                 pos,
@@ -593,8 +593,8 @@ class CheckpointManager:
                             await self.alert_service.send(
                                 f"⚠️ CRITICAL: {symbol} exit_price=0 — manual review needed. Order ID: {order_id}"
                             )
-                        except Exception:
-                            pass
+                        except Exception as e:
+                            logger.warning(f"Alert send failed: {type(e).__name__}: {e}")
                     return
                 try:
                     await self.trade_store.close_trade(

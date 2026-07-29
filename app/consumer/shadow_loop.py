@@ -258,6 +258,7 @@ async def _on_signal_shadow(
             amount=signal.amount,
             entry_price=fill_price,
             regime=signal.regime.value,
+            ai_confidence=analyst_result.ai_confidence if analyst_result else None,
             risk_profile_json=signal.risk_profile.to_json(),
             trace_id=signal.trace_id,
             cvd_slope=signal.cvd_slope,

@@ -212,8 +212,8 @@ class DecisionEngineV2:
         stage_timings["feature_extraction"] = time.perf_counter() - t_start
 
         # --- REGIME CLASSIFICATION ---
-        market_state = self._analyzer.current_state
-        regime = MarketRegime(market_state.regime)
+        # Try per-symbol regime from Redis first, fall back to MarketAnalyzer
+        regime = await self._get_per_symbol_regime(symbol)
 
         # Regime hysteresis
         regime = self._apply_regime_hysteresis(symbol, regime)
@@ -313,6 +313,45 @@ class DecisionEngineV2:
                 best_signal = signal
 
         return best_signal
+
+    async def _get_per_symbol_regime(self, symbol: str) -> MarketRegime:
+        """Read per-symbol regime from Redis, fall back to MarketAnalyzer.
+
+        Redis key: system:regime:{symbol} (e.g., system:regime:BTC:USDT)
+        Written by RegimeEngine in data_engine every 15 minutes.
+        Falls back to MarketAnalyzer.current_state if Redis has no per-symbol data.
+        """
+        if self._redis is not None:
+            try:
+                raw = await self._redis.get(f"system:regime:{symbol}")
+                if raw is not None:
+                    regime_str = raw.decode() if isinstance(raw, bytes) else str(raw)
+                    regime_str = regime_str.strip().upper()
+                    # Map old regime names to new MarketRegime enum
+                    regime_map = {
+                        "RANGE": MarketRegime.RANGE,
+                        "TREND_BULL": MarketRegime.TREND_BULL,
+                        "TREND_BEAR": MarketRegime.TREND_BEAR,
+                        "MEAN_REVERSION": MarketRegime.RANGE,  # alias
+                        "CHOP": MarketRegime.RANGE,  # alias
+                        "HYPER_BULL": MarketRegime.HYPER_BULL,
+                        "HYPER_BEAR": MarketRegime.HYPER_BEAR,
+                    }
+                    if regime_str in regime_map:
+                        return regime_map[regime_str]
+                    logger.debug(
+                        "DecisionEngineV2: unknown regime '%s' for %s, falling back",
+                        regime_str, symbol,
+                    )
+            except Exception as e:
+                logger.debug(
+                    "DecisionEngineV2: failed to read regime for %s from Redis: %s",
+                    symbol, e,
+                )
+
+        # Fallback to MarketAnalyzer's global state
+        market_state = self._analyzer.current_state
+        return MarketRegime(market_state.regime)
 
     async def _check_ranking_gate(self) -> str:
         """Read cached ranking decision from Redis.

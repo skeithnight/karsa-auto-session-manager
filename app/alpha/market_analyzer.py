@@ -47,11 +47,16 @@ except ImportError:
 class MarketAnalyzer:
     """Quantitative analyzer providing event-driven market state updates."""
 
+    # Redis key for candle cache (persists across restarts)
+    CANDLE_CACHE_KEY = "system:market_analyzer:candle_cache"
+    CANDLE_CACHE_TTL = 3600  # 1 hour TTL
+
     def __init__(self, redis_client: object | None = None) -> None:
         self._redis = redis_client
         self._current_state: MarketState = MarketState()
         self._hmm_model: Any | None = None
         self._last_candle_ts: int = 0
+        self._candle_cache: dict[str, list[list[Any]]] = {}  # symbol -> candles
 
     @property
     def current_state(self) -> MarketState:
@@ -62,17 +67,63 @@ class MarketAnalyzer:
         """Check if analyzer state is stale (>10 minutes)."""
         return self._current_state.is_degraded
 
+    async def _load_candle_cache_from_redis(self) -> None:
+        """Load candle cache from Redis on startup to avoid cold-start warmup."""
+        if self._redis is None:
+            return
+        try:
+            import json
+            cached = await self._redis.get(self.CANDLE_CACHE_KEY)
+            if cached:
+                self._candle_cache = json.loads(cached)
+                total_candles = sum(len(v) for v in self._candle_cache.values())
+                logger.info(f"MarketAnalyzer: loaded {len(self._candle_cache)} symbols, {total_candles} candles from Redis cache")
+        except Exception as e:
+            logger.debug(f"MarketAnalyzer: failed to load candle cache from Redis: {e}")
+
+    async def _save_candle_cache_to_redis(self, symbol: str, candles: list[list[Any]]) -> None:
+        """Save candle cache to Redis for persistence across restarts."""
+        if self._redis is None:
+            return
+        try:
+            import json
+            # Update cache for this symbol (keep last 100 candles to limit memory)
+            self._candle_cache[symbol] = candles[-100:] if len(candles) > 100 else candles
+            await self._redis.set(
+                self.CANDLE_CACHE_KEY,
+                json.dumps(self._candle_cache),
+                ex=self.CANDLE_CACHE_TTL,
+            )
+        except Exception as e:
+            logger.debug(f"MarketAnalyzer: failed to save candle cache to Redis: {e}")
+
+    def get_cached_candles(self, symbol: str) -> list[list[Any]] | None:
+        """Get cached candles for a symbol (from in-memory cache)."""
+        return self._candle_cache.get(symbol)
+
     async def update_on_candle_close(self, symbol: str, candles: list[list[Any]]) -> MarketState:
         """Triggered on 15m candle close. Runs calculations in a thread executor."""
+        # If we have fewer than 30 candles, check the cache for补充
         if not candles or len(candles) < 30:
-            logger.warning("MarketAnalyzer: insufficient candles (<30), skipping update")
-            return self._current_state
+            cached = self._candle_cache.get(symbol)
+            if cached and len(cached) >= 30:
+                # Merge cached candles with new candles (prepend cached, append new)
+                all_candles = cached + candles if candles else cached
+                # Keep only the most recent 100 candles
+                candles = all_candles[-100:] if len(all_candles) > 100 else all_candles
+                logger.info(f"MarketAnalyzer: merged {len(cached)} cached candles for {symbol}, total={len(candles)}")
+            else:
+                logger.warning(f"MarketAnalyzer: insufficient candles (<30) for {symbol}, skipping update (cached={len(cached) if cached else 0})")
+                return self._current_state
 
         ts = int(candles[-1][0])
         if ts <= self._last_candle_ts:
             return self._current_state
 
         self._last_candle_ts = ts
+
+        # Save candles to cache for persistence across restarts
+        await self._save_candle_cache_to_redis(symbol, candles)
 
         # Run heavy indicator math in thread pool to prevent event loop lag (>5ms)
         new_state = await asyncio.to_thread(self._compute_market_state_sync, symbol, candles)

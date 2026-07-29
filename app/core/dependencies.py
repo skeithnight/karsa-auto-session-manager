@@ -48,6 +48,10 @@ async def startup(settings: Settings | None = None) -> None:
             settings.redis_url,
             decode_responses=True,
             max_connections=500,
+            socket_connect_timeout=10,
+            socket_timeout=5,
+            retry_on_timeout=True,
+            health_check_interval=30,
         )
         # Verify connectivity
         await _redis.ping()

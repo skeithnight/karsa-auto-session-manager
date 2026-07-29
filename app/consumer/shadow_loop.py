@@ -421,6 +421,8 @@ async def main() -> None:
 
     classifier = RegimeClassifier(redis_client=redis)
     analyzer = MarketAnalyzer(redis_client=redis)
+    # Load candle cache from Redis to avoid cold-start warmup after restarts
+    await analyzer._load_candle_cache_from_redis()
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
     trade_memory = TradeMemory(redis)

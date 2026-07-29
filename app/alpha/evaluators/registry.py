@@ -17,6 +17,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from loguru import logger
+
 from app.alpha.evaluators.fusion import EvaluatorFusion, FusionResult
 from app.alpha.evaluators.momentum_evaluator import MomentumEvaluator
 from app.alpha.evaluators.trend_evaluator import EvaluatorResult, TrendEvaluator
@@ -116,7 +118,7 @@ class EvaluatorRegistry:
                 names.append(name)
             except Exception as e:
                 # Log error but continue with other evaluators
-                print(f"Warning: Evaluator '{name}' failed: {e}")
+                logger.warning("Evaluator '%s' failed: %s", name, e)
 
         # Fuse results
         if weights:

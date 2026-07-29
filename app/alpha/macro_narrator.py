@@ -83,8 +83,6 @@ class MacroNarrator:
 
     async def run(self) -> None:
         """Main loop — runs every 4 hours. First assessment runs immediately."""
-        import sys
-        print(f"MACRO_NARRATOR: run() called, interval={self._interval}", file=sys.stderr, flush=True)
         logger.warning("MacroNarrator: starting (interval=%ds)", self._interval)
         # Run immediately on startup — don't wait 4 hours for first assessment
         try:

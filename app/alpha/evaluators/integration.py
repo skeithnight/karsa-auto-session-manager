@@ -116,7 +116,7 @@ class EvaluatorBridge:
 
         except Exception as e:
             # Log error but don't crash the main pipeline
-            print(f"EvaluatorBridge error: {e}")
+            logger.warning("EvaluatorBridge error: %s", e)
             self._last_metrics = None
             return None
 

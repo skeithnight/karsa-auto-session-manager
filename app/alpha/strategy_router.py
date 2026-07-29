@@ -813,6 +813,11 @@ class StrategyRouter:
         Four components, each requiring specific micro-structure evidence.
         Need 3/4 to pass gate (70+). One or two components = rejected.
         """
+        # Need enough candles for reliable confluence scoring
+        n = len(candles)
+        if n < 20:
+            return 0
+
         score = 0
         closes = (
             candles[:, 4].astype(float)

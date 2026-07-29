@@ -56,13 +56,14 @@ class ReconcileReport:
 
 
 def _normalize_side(side: str) -> str:
-    """Normalize side to canonical 'Buy'/'Sell'."""
+    """Normalize side to canonical 'LONG'/'SHORT'."""
     s = side.lower()
     if s in ("buy", "long"):
-        return "Buy"
+        return "LONG"
     if s in ("sell", "short"):
-        return "Sell"
-    return side
+        return "SHORT"
+    logger.warning("Unknown side=%r — defaulting to LONG", side)
+    return "LONG"
 
 
 class TradeReconciler:

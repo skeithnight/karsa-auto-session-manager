@@ -109,7 +109,7 @@ class MarketDataIngestor:
         await self._session.load_markets()
 
         logger.info(
-            "MarketDataIngestor: starting poll loop symbols=%s interval=%ds",
+            "MarketDataIngestor: starting poll loop symbols={} interval={}s",
             self._symbols,
             self._interval,
         )
@@ -212,7 +212,7 @@ class MarketDataIngestor:
         count = self._failure_counts[symbol]
         if count > self._escalation_threshold:
             logger.warning(
-                "MarketDataIngestor: persistent %s fetch failure for %s (%d consecutive) — %s",
+                "MarketDataIngestor: persistent {} fetch failure for {} ({} consecutive) — {}",
                 field,
                 symbol,
                 count,
@@ -220,7 +220,7 @@ class MarketDataIngestor:
             )
         else:
             logger.debug(
-                "MarketDataIngestor: %s fetch failed %s — %s", field, symbol, error
+                "MarketDataIngestor: {} fetch failed {} — {}", field, symbol, error
             )
 
     async def _fetch_orderbook(self, symbol: str, ccxt_sym: str) -> None:
@@ -363,7 +363,7 @@ class MarketDataIngestor:
                         price_history = price_history[-60:]
                     await self._redis.set(history_key, _json.dumps(price_history), ex=3600)
                 except Exception:
-                    logger.debug("MarketDataIngestor: price history store failed for %s", symbol)
+                    logger.debug("MarketDataIngestor: price history store failed for {}", symbol)
 
     async def _fetch_funding_rate(self, symbol: str, ccxt_sym: str) -> None:
         """Fetch current funding rate AND predicted next funding rate.
@@ -466,7 +466,7 @@ class MarketDataIngestor:
                 oi_history = oi_history[-20:]
             await self._redis.set(history_key, _json.dumps(oi_history), ex=3600)
         except Exception:
-            logger.debug("MarketDataIngestor: OI history store failed for %s", symbol)
+            logger.debug("MarketDataIngestor: OI history store failed for {}", symbol)
 
     async def _update_volatility_floor(self) -> None:
         """Calculate rolling percentile of BTC 1H ATR (configurable via settings).
@@ -538,7 +538,7 @@ class MarketDataIngestor:
                 percentile, floor_threshold, float(atrs[-1]) if atrs else 0,
             )
         except Exception as e:
-            logger.warning("VolatilityFloor: calculation failed (fail-closed — keeping existing threshold): %s", e)
+            logger.warning("VolatilityFloor: calculation failed (fail-closed — keeping existing threshold): {}", e)
 
     async def _publish(self, symbol: str, field: str, value: str) -> None:
         """Publish a single value to Redis key."""
@@ -546,7 +546,7 @@ class MarketDataIngestor:
             await self._redis.set(f"{REDIS_KEY_PREFIX}:{symbol}:{field}", value)
         except Exception:
             logger.debug(
-                "MarketDataIngestor: redis publish %s failed %s", field, symbol
+                "MarketDataIngestor: redis publish {} failed {}", field, symbol
             )
 
     def update_consumer(self, consumer: Any) -> None:

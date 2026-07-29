@@ -319,13 +319,13 @@ class RegimeClassifier:
                                 regime_str,
                             )
                             logger.debug(
-                                "RegimeClassifier: %s → %s (adx=%.1f, hurst=%.3f)",
+                                "RegimeClassifier: {} → {} (adx={:.1f}, hurst={:.3f})",
                                 symbol, regime_str,
                                 features.adx_14 or 0.0,
                                 features.hurst or 0.5,
                             )
                     except Exception:
-                        logger.debug("RegimeClassifier: per-symbol classify failed for %s", symbol)
+                        logger.debug("RegimeClassifier: per-symbol classify failed for {}", symbol)
 
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:

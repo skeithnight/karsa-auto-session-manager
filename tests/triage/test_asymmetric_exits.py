@@ -226,36 +226,39 @@ class TestMacroNarrator:
         assert MACRO_MULTIPLIERS[MacroState.RISK_OFF] == 0.25
         assert MACRO_MULTIPLIERS[MacroState.CHOP] == 0.5
 
-    def test_get_macro_multiplier_default(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_default(self):
         """get_macro_multiplier should return 1.0 when Redis has no data."""
         from app.alpha.macro_narrator import get_macro_multiplier
 
-        mock_redis = MagicMock()
+        mock_redis = AsyncMock()
         mock_redis.get.return_value = None
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 1.0, "Default multiplier should be 1.0 (no adjustment)"
 
-    def test_get_macro_multiplier_risk_on(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_risk_on(self):
         """get_macro_multiplier should return 1.0 for RISK_ON."""
         from app.alpha.macro_narrator import get_macro_multiplier
         import json
 
-        mock_redis = MagicMock()
+        mock_redis = AsyncMock()
         mock_redis.get.return_value = json.dumps({"multiplier": 1.0, "state": "RISK_ON"}).encode()
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 1.0
 
-    def test_get_macro_multiplier_chop(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_chop(self):
         """get_macro_multiplier should return 0.5 for CHOP."""
         from app.alpha.macro_narrator import get_macro_multiplier
         import json
 
-        mock_redis = MagicMock()
+        mock_redis = AsyncMock()
         mock_redis.get.return_value = json.dumps({"multiplier": 0.5, "state": "CHOP"}).encode()
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 0.5
 
 

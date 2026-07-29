@@ -168,30 +168,44 @@ class TestDecisionTree:
 # ------------------------------------------------------------------
 
 
+def _classify_candles(candles: np.ndarray, symbol: str = "TEST/USDT") -> MarketRegime:
+    """Helper: build snapshot + features from candles, run classify()."""
+    from app.alpha.regime_classifier import RegimeClassifier
+    from app.core.feature_extractor import FeatureExtractor
+    from app.core.feature_store import FeatureStore
+    from app.core.market_snapshot import MarketSnapshot
+
+    snapshot = MarketSnapshot(
+        symbol=symbol,
+        timestamp_ms=int(candles[-1][0]),
+        candles=candles,
+    )
+    store = FeatureStore(snapshot)
+    features = FeatureExtractor.extract(store)
+    classifier = RegimeClassifier()
+    return classifier.classify(features, snapshot)
+
+
 class TestClassify:
     """Test classify() with realistic candle data."""
 
     def test_less_than_50_candles_returns_chop(self) -> None:
-        classifier = RegimeClassifier()
         candles = _make_candles(49)
-        assert classifier.classify(candles) == MarketRegime.CHOP
+        assert _classify_candles(candles) == MarketRegime.CHOP
 
     def test_exactly_50_candles_works(self) -> None:
-        classifier = RegimeClassifier()
         candles = _make_trending_candles(50)
-        result = classifier.classify(candles)
+        result = _classify_candles(candles)
         assert result in list(MarketRegime)
 
     def test_all_flat_returns_range(self) -> None:
-        classifier = RegimeClassifier()
         candles = _make_flat_candles(100)
-        assert classifier.classify(candles) == MarketRegime.RANGE
+        assert _classify_candles(candles) == MarketRegime.RANGE
 
     def test_list_input_accepted(self) -> None:
-        """classify() accepts list[list] not just numpy."""
-        classifier = RegimeClassifier()
+        """classify() accepts list[list] via numpy conversion."""
         candles_list = _make_trending_candles(60).tolist()
-        result = classifier.classify(candles_list)
+        result = _classify_candles(np.array(candles_list))
         assert result in list(MarketRegime)
 
 

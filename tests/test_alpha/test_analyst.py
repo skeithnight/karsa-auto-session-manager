@@ -43,7 +43,7 @@ class TestCryptoAnalyst:
     @pytest.mark.asyncio
     async def test_analyze_returns_result(self, analyst, mock_ai):
         mock_ai.complete.return_value = json.dumps({
-            "direction": "LONG", "confidence": 75, "reasoning": "strong trend"
+            "decision_recommendation": "STRONG_BUY", "confidence_score": 75, "primary_edge": "trend", "critical_risk_flag": ""
         })
         candles = [[i * 3600000, 100.0, 105.0, 95.0, 100.0 + (i % 10), 1000.0] for i in range(200)]
         analyst.fetcher.fetch = AsyncMock(return_value=candles)
@@ -74,13 +74,15 @@ class TestCryptoAnalyst:
         analyst.ai_client.complete.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_ai_unavailable_returns_none(self, analyst, mock_ai):
+    async def test_ai_unavailable_returns_flat(self, analyst, mock_ai):
+        """AI unavailable returns FLAT result (circuit breaker), not None."""
         mock_ai.complete.return_value = None
         candles = [[i * 3600000, 100.0, 105.0, 95.0, 100.0, 1000.0] for i in range(200)]
         analyst.fetcher.fetch = AsyncMock(return_value=candles)
 
         result = await analyst.analyze("BTC/USDT", "LONG", 0.70, "TREND_BULL", 0.001, 0.0, 0.0, Decimal("50000"))
-        assert result is None
+        assert result is not None
+        assert result.direction == "FLAT"
 
     @pytest.mark.asyncio
     async def test_insufficient_candles(self, analyst):
@@ -116,7 +118,7 @@ class TestCryptoAnalyst:
     async def test_analyze_forced_high_confidence_signal(self, analyst, mock_ai):
         """Validates AI with forced high-confidence signal."""
         mock_ai.complete.return_value = json.dumps({
-            "direction": "LONG", "confidence": 95, "reasoning": "forced high confidence"
+            "decision_recommendation": "STRONG_BUY", "confidence_score": 95, "primary_edge": "trend", "critical_risk_flag": ""
         })
         candles = [[i * 3600000, 100.0, 105.0, 95.0, 100.0 + (i % 10), 1000.0] for i in range(200)]
         analyst.fetcher.fetch = AsyncMock(return_value=candles)

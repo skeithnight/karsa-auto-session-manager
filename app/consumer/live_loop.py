@@ -1842,7 +1842,6 @@ async def main() -> None:  # noqa: PLR0915
     # ── Per-Symbol Regime Classification Loop ────────────────────────
     # Classifies each symbol's own candles (not just BTC) and writes
     # system:regime:{symbol} for DecisionEngineV2 to read.
-    from app.alpha.regime_classifier import RegimeClassifier
     regime_classifier = RegimeClassifier(redis_client=redis)
     per_symbol_regime_task = asyncio.create_task(
         regime_classifier.run_per_symbol_classification_loop(

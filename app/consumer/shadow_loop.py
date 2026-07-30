@@ -864,7 +864,58 @@ async def main() -> None:
         name="shadow-garch",
     )
 
-    logger.info("karsa-shadow started (with Sprint 3 HMM + GARCH loops)")
+    # ── Regime Classification Loop (with conviction) ─────────────────
+    from app.alpha.regime_classifier import RegimeClassifier
+    regime_classifier = RegimeClassifier(redis_client=redis)
+
+    async def _regime_classification_loop():
+        """Classify regime for all universe symbols every hour, write conviction to Redis."""
+        while True:
+            try:
+                symbols_raw = await redis.get("system:universe:symbols")
+                if symbols_raw:
+                    import json as _json
+                    symbols = _json.loads(symbols_raw) if isinstance(symbols_raw, str) else []
+                else:
+                    symbols = []
+
+                # Always include BTC
+                if "BTC/USDT" not in symbols:
+                    symbols.append("BTC/USDT")
+
+                import asyncio as _aio
+                import numpy as _np
+
+                sem = _aio.Semaphore(5)  # max 5 concurrent fetches
+
+                async def _classify_one(sym: str) -> None:
+                    async with sem:
+                        try:
+                            candles_raw = await ohlcv_fetcher.fetch(sym, "1h", 200, ttl_seconds=900)
+                            if not candles_raw or len(candles_raw) < 50:
+                                return
+                            candles = _np.array(candles_raw, dtype=float)
+                            regime, conviction = await _aio.to_thread(
+                                regime_classifier.classify_with_conviction, candles
+                            )
+                            await redis.set_symbol_regime(sym, regime.value, conviction)
+                            logger.debug("Regime %s: %s conviction=%.3f", sym, regime.value, conviction)
+                        except Exception as e:
+                            logger.debug("Regime classification failed for %s: %s", sym, e)
+
+                await _aio.gather(*[_classify_one(s) for s in symbols])
+                logger.info("Regime classification loop complete: %d symbols", len(symbols))
+            except Exception as e:
+                logger.warning("Regime classification loop error: %s", e)
+
+            await _aio.sleep(3600)  # run every hour
+
+    regime_task = asyncio.create_task(
+        _regime_classification_loop(),
+        name="shadow-regime-classification",
+    )
+
+    logger.info("karsa-shadow started (with HMM + GARCH + regime classification loops)")
 
     try:
         await shutdown_event.wait()
@@ -882,6 +933,7 @@ async def main() -> None:
         hmm_task.cancel()
         garch_task.cancel()
         ranking_task.cancel()
+        regime_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):

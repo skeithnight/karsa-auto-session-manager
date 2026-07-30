@@ -875,7 +875,14 @@ async def main() -> None:
                 symbols_raw = await redis.get("system:universe:symbols")
                 if symbols_raw:
                     import json as _json
-                    symbols = _json.loads(symbols_raw) if isinstance(symbols_raw, str) else []
+                    parsed = _json.loads(symbols_raw) if isinstance(symbols_raw, str) else symbols_raw
+                    # Handle both {"symbols": [...]} and plain list formats
+                    if isinstance(parsed, dict):
+                        symbols = parsed.get("symbols", [])
+                    elif isinstance(parsed, list):
+                        symbols = parsed
+                    else:
+                        symbols = []
                 else:
                     symbols = []
 

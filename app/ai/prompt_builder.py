@@ -105,12 +105,13 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         "rsi_14": _fmt(fv.rsi_14),
         "adx_14": _fmt(fv.adx_14),
         "funding_rate": _fmt(fv.funding_rate),
-        # Cross-asset & regime features (from StatisticalFeatureEngine)
-        "distance_from_ema50_pct": _fmt(context.features_snapshot.get("distance_from_ema50_pct", 0.0)),
-        "correlation_24h": _fmt(context.features_snapshot.get("correlation_24h", 0.0)),
-        "beta_30d": _fmt(context.features_snapshot.get("beta_30d", 0.0)),
-        "volume_spike_ratio": _fmt(context.features_snapshot.get("volume_spike_ratio", 1.0)),
-        "breakout_confirmed": context.features_snapshot.get("breakout_confirmed", False),
+        # Cross-asset & regime features — use defaults if not in FeatureVector
+        # These are computed by StatisticalFeatureEngine but not in FeatureVector
+        "distance_from_ema50_pct": "N/A",
+        "correlation_24h": "N/A",
+        "beta_30d": "N/A",
+        "volume_spike_ratio": "N/A",
+        "breakout_confirmed": "N/A",
     }
 
     user_prompt = _USER_TEMPLATE.format(

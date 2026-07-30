@@ -478,14 +478,28 @@ class HybridDecisionEngine:
         regime: str,
         direction: str,
     ) -> str:
-        """Determine trading action from AI decision or regime heuristic."""
+        """Determine trading action from AI decision or regime heuristic.
+
+        RANGE override: AI can override RANGE block only with high confidence (>= 70).
+        This prevents low-conviction RANGE entries while allowing strong setups.
+        """
+        regime_upper = regime.upper().strip()
+
         if ai_decision is not None:
             if ai_decision.position_size.value == "BLOCK":
                 return "BLOCK"
+
+            # RANGE override requires high confidence
+            if regime_upper == "RANGE":
+                if ai_decision.confidence_score < 70:
+                    return "BLOCK"
+                logger.debug(
+                    f"AI overriding RANGE block with confidence={ai_decision.confidence_score}"
+                )
+
             return direction.upper()
 
         # No AI — use regime heuristic
-        regime_upper = regime.upper().strip()
         if regime_upper == "CHOP":
             return "BLOCK"
         if regime_upper in ("RANGE",):

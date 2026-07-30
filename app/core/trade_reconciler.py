@@ -18,7 +18,7 @@ from loguru import logger
 
 from app.bot.alert_service import AlertService
 from app.core import metrics
-from app.core.trade_store import TradeStore
+from app.core.trade_store import TradeStore, TradeType
 from app.execution.bybit_client import BybitClient
 
 
@@ -177,6 +177,7 @@ class TradeReconciler:
                     entry_time=entry_time,
                     exit_time=exit_time,
                     exit_reason="bybit_sync",
+                    trade_type=TradeType.BACKFILL,
                 )
                 local_keys.add(f"{ccxt_sym}:{side}:{minute_key}")
                 inserted += 1

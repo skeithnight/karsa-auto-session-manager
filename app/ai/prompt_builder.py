@@ -71,9 +71,16 @@ Analyze the following market snapshot and decide on a {direction} entry for {sym
 - SMA 20: {sma_20}
 - RSI (14): {rsi_14}
 - ADX (14): {adx_14}
+- Distance from EMA50: {distance_from_ema50_pct}%
+
+### Cross-Asset & Regime
+- BTC correlation (30d): {correlation_24h}
+- Beta to BTC (30d): {beta_30d}
 
 ### Derivatives & Microstructure
 - Funding rate: {funding_rate}
+- Volume spike ratio: {volume_spike_ratio}x
+- Breakout confirmed: {breakout_confirmed}
 
 Respond with the JSON decision object only.
 """
@@ -98,6 +105,12 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         "rsi_14": _fmt(fv.rsi_14),
         "adx_14": _fmt(fv.adx_14),
         "funding_rate": _fmt(fv.funding_rate),
+        # Cross-asset & regime features (from StatisticalFeatureEngine)
+        "distance_from_ema50_pct": _fmt(context.features_snapshot.get("distance_from_ema50_pct", 0.0)),
+        "correlation_24h": _fmt(context.features_snapshot.get("correlation_24h", 0.0)),
+        "beta_30d": _fmt(context.features_snapshot.get("beta_30d", 0.0)),
+        "volume_spike_ratio": _fmt(context.features_snapshot.get("volume_spike_ratio", 1.0)),
+        "breakout_confirmed": context.features_snapshot.get("breakout_confirmed", False),
     }
 
     user_prompt = _USER_TEMPLATE.format(

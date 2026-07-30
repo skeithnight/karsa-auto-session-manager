@@ -122,12 +122,36 @@ async def _on_signal_shadow(
             import pandas as _pd
 
             candles_list = signal.candles if hasattr(signal, 'candles') and signal.candles else []
-            if candles_list and len(candles_list) >= 50:
+            if not candles_list or len(candles_list) < 50:
+                logger.debug(
+                    "shadow HybridDecisionEngine skip %s — insufficient candles (%d < 50)",
+                    symbol, len(candles_list) if candles_list else 0,
+                )
+            else:
                 ohlcv_df = _pd.DataFrame(
                     candles_list,
                     columns=["timestamp", "open", "high", "low", "close", "volume"],
                 )
-                btc_ohlcv_df = ohlcv_df  # fallback
+
+                # Fetch actual BTC OHLCV for beta/correlation (not same-symbol fallback)
+                btc_ohlcv_df = ohlcv_df  # default fallback
+                if redis and symbol != "BTC/USDT":
+                    try:
+                        import json as _json
+                        btc_candles_raw = await redis.get("karsa:candles:BTC:USDT:1h")
+                        if btc_candles_raw:
+                            btc_candles = _json.loads(btc_candles_raw)
+                            if btc_candles and len(btc_candles) >= 50:
+                                btc_ohlcv_df = _pd.DataFrame(
+                                    btc_candles,
+                                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                                )
+                                logger.debug(
+                                    "shadow HybridDecisionEngine: using BTC/USDT candles for %s beta/correlation",
+                                    symbol,
+                                )
+                    except Exception as e:
+                        logger.debug("shadow: failed to fetch BTC candles for %s: %s", symbol, e)
 
                 regime_str = signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime)
                 funding = 0.0
@@ -141,10 +165,20 @@ async def _on_signal_shadow(
 
                 concurrent = total_open
 
+                # Fetch actual BTC regime from Redis (not hardcoded RANGE)
+                btc_regime = "RANGE"  # default fallback
+                if redis:
+                    try:
+                        btc_regime_raw = await redis.get("system:regime:BTC/USDT")
+                        if btc_regime_raw:
+                            btc_regime = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                    except Exception:
+                        pass
+
                 hybrid_decision = await hybrid_engine.evaluate(
                     symbol=symbol,
                     regime=regime_str,
-                    btc_regime="RANGE",
+                    btc_regime=btc_regime,
                     ohlcv=ohlcv_df,
                     btc_ohlcv=btc_ohlcv_df,
                     direction=signal.direction,

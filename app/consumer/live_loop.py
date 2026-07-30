@@ -357,10 +357,20 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
                 open_positions = await position_store.list_all()
                 concurrent = len(open_positions)
 
+                # Fetch actual BTC regime from Redis (not hardcoded RANGE)
+                btc_regime = "RANGE"  # default fallback
+                if engine._redis:
+                    try:
+                        btc_regime_raw = await engine._redis.get("system:regime:BTC/USDT")
+                        if btc_regime_raw:
+                            btc_regime = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                    except Exception:
+                        pass
+
                 hybrid_decision = await hybrid_engine.evaluate(
                     symbol=symbol,
                     regime=regime_str,
-                    btc_regime="RANGE",  # default; real BTC regime from Redis if available
+                    btc_regime=btc_regime,
                     ohlcv=ohlcv_df,
                     btc_ohlcv=btc_ohlcv_df,
                     direction=signal.direction,

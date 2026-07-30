@@ -214,7 +214,9 @@ class HybridDecisionEngine:
             )
 
         # 3. AI evaluation — fall back to statistical-only on failure
-        ai_decision, ai_source = await self._get_ai_decision(symbol, features, regime, direction)
+        ai_decision, ai_source = await self._get_ai_decision(
+            symbol, features, regime, direction, current_price=current_price,
+        )
         ai_timed_out = ai_source == "timeout"
 
         if ai_timed_out:
@@ -324,9 +326,23 @@ class HybridDecisionEngine:
         close = current_price if current_price > 0 else features.get("close", 0.0)
         return FeatureVector(
             close=close,
+            ema_20=features.get("ema_20"),
+            ema_200=features.get("ema_200"),
+            sma_20=features.get("sma_20"),
             atr=features.get("atr_pct", 0.0),
             atr_pct=features.get("atr_pct", 0.0),
+            rsi_14=features.get("rsi_14"),
+            adx_14=features.get("adx_14"),
+            hurst=features.get("hurst"),
             funding_rate=features.get("funding_rate", 0.0),
+            oi_change=features.get("oi_change"),
+            orderbook_delta=features.get("orderbook_delta"),
+            cvd_slope=features.get("cvd_slope"),
+            spread_pct=features.get("spread_pct"),
+            market_quality_score=features.get("market_quality_score"),
+            candle_quality_score=features.get("candle_quality_score"),
+            noise_score=features.get("noise_score"),
+            liquidity_score=features.get("liquidity_score"),
         )
 
     # ------------------------------------------------------------------
@@ -422,13 +438,14 @@ class HybridDecisionEngine:
         features: dict,
         regime: str,
         direction: str,
+        current_price: float = 0.0,
     ) -> tuple[AIDecisionDTO | None, str]:
         """Call AI service and return (decision, source).
 
         Source is 'ai' on success, 'timeout' on timeout, 'fallback' on error.
         """
         market_regime = _to_market_regime(regime)
-        price = features.get("close", 0.0)
+        price = current_price if current_price > 0 else features.get("close", 0.0)
         feature_vector = self._build_feature_vector(features, price)
 
         context = DecisionContext(

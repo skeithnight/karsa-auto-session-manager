@@ -62,8 +62,7 @@ Analyze the following market snapshot and decide on a {direction} entry for {sym
 
 ### Price & Volatility
 - Last close: {close}
-- ATR (14): {atr}
-- ATR percentile: {atr_pct}
+- ATR (14) %: {atr_pct}
 - Hurst exponent: {hurst}
 
 ### Trend
@@ -75,16 +74,6 @@ Analyze the following market snapshot and decide on a {direction} entry for {sym
 
 ### Derivatives & Microstructure
 - Funding rate: {funding_rate}
-- OI change: {oi_change}
-- Orderbook delta: {orderbook_delta}
-- CVD slope: {cvd_slope}
-- Spread %: {spread_pct}
-
-### Quality Scores
-- Market quality: {market_quality_score}
-- Candle quality: {candle_quality_score}
-- Noise score: {noise_score}
-- Liquidity score: {liquidity_score}
 
 Respond with the JSON decision object only.
 """
@@ -101,7 +90,6 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
 
     feature_map: dict[str, Any] = {
         "close": _fmt(fv.close),
-        "atr": _fmt(fv.atr),
         "atr_pct": _fmt(fv.atr_pct),
         "hurst": _fmt(fv.hurst),
         "ema_20": _fmt(fv.ema_20),
@@ -110,14 +98,6 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         "rsi_14": _fmt(fv.rsi_14),
         "adx_14": _fmt(fv.adx_14),
         "funding_rate": _fmt(fv.funding_rate),
-        "oi_change": _fmt(fv.oi_change),
-        "orderbook_delta": _fmt(fv.orderbook_delta),
-        "cvd_slope": _fmt(fv.cvd_slope),
-        "spread_pct": _fmt(fv.spread_pct),
-        "market_quality_score": _fmt(fv.market_quality_score),
-        "candle_quality_score": _fmt(fv.candle_quality_score),
-        "noise_score": _fmt(fv.noise_score),
-        "liquidity_score": _fmt(fv.liquidity_score),
     }
 
     user_prompt = _USER_TEMPLATE.format(
@@ -125,6 +105,16 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         direction=context.direction,
         regime=context.regime.value,
         **feature_map,
+    )
+
+    # DEBUG: log features being sent to AI
+    import logging
+    logger = logging.getLogger("karsa.ai.prompt")
+    logger.debug(
+        f"PromptBuilder: features for {context.symbol} — "
+        f"close={feature_map.get('close')} rsi={feature_map.get('rsi_14')} "
+        f"atr={feature_map.get('atr')} adx={feature_map.get('adx_14')} "
+        f"regime={context.regime.value} direction={context.direction}"
     )
 
     messages = [

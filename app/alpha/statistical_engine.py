@@ -124,6 +124,12 @@ class StatisticalFeatureEngine:
             "breakout_confirmed": False,
             "overextended": False,
             "volume_confirmed": False,
+            "rsi_14": 50.0,
+            "adx_14": 0.0,
+            "ema_20": 0.0,
+            "ema_200": 0.0,
+            "sma_20": 0.0,
+            "hurst": 0.5,
         }
 
         if ohlcv is None or btc_ohlcv is None:
@@ -186,6 +192,15 @@ class StatisticalFeatureEngine:
             )
             result["volume_trend_slope"] = round(self._volume_trend_slope(volumes), 6)
             result["volume_regime"] = self._get_volume_regime(result["volume_spike_ratio"])
+
+            # 4b. Technical indicators (RSI, ADX, EMA20/200, SMA20, Hurst)
+            closes_list = closes.tolist()
+            result["rsi_14"] = round(self._calculate_rsi(closes_list, 14), 4)
+            result["adx_14"] = round(self._calculate_adx(highs.tolist(), lows.tolist(), closes_list, 14), 4)
+            result["ema_20"] = round(self._ema(closes, 20) or 0.0, 4)
+            result["ema_200"] = round(self._ema(closes, 200) or 0.0, 4)
+            result["sma_20"] = round(self._sma(closes, 20), 4)
+            result["hurst"] = round(self._calculate_hurst(coin_returns.values if len(coin_returns) > 0 else np.array([])), 4)
 
             # 5. Price position: distance from EMA50, distance from VWAP
             ema50 = self._ema(closes, 50)
@@ -508,3 +523,106 @@ class StatisticalFeatureEngine:
         elif volume_spike >= VOL_SPIKE_HIGH:
             return "ELEVATED"
         return "NORMAL"
+
+    # ------------------------------------------------------------------
+    # Technical indicators (RSI, ADX, Hurst)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _calculate_rsi(closes: list[float], period: int = 14) -> float:
+        """Relative Strength Index (Wilder's smoothing)."""
+        if len(closes) < period + 1:
+            return 50.0
+        deltas = [closes[i] - closes[i - 1] for i in range(1, len(closes))]
+        gains = [max(d, 0) for d in deltas]
+        losses = [abs(min(d, 0)) for d in deltas]
+        avg_gain = sum(gains[:period]) / period
+        avg_loss = sum(losses[:period]) / period
+        for i in range(period, len(deltas)):
+            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - (100.0 / (1.0 + rs))
+
+    @staticmethod
+    def _calculate_adx(
+        highs: list[float], lows: list[float], closes: list[float], period: int = 14
+    ) -> float:
+        """Average Directional Index."""
+        if len(closes) < period + 1:
+            return 0.0
+        plus_dm = []
+        minus_dm = []
+        tr_list = []
+        for i in range(1, len(closes)):
+            h_diff = highs[i] - highs[i - 1]
+            l_diff = lows[i - 1] - lows[i]
+            plus_dm.append(max(h_diff, 0) if h_diff > l_diff else 0.0)
+            minus_dm.append(max(l_diff, 0) if l_diff > h_diff else 0.0)
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
+            tr_list.append(tr)
+        if len(tr_list) < period:
+            return 0.0
+        atr = sum(tr_list[:period])
+        smooth_plus = sum(plus_dm[:period])
+        smooth_minus = sum(minus_dm[:period])
+        dx_list = []
+        for i in range(period, len(tr_list)):
+            atr = atr - atr / period + tr_list[i]
+            smooth_plus = smooth_plus - smooth_plus / period + plus_dm[i]
+            smooth_minus = smooth_minus - smooth_minus / period + minus_dm[i]
+            if atr == 0:
+                continue
+            plus_di = 100.0 * smooth_plus / atr
+            minus_di = 100.0 * smooth_minus / atr
+            di_sum = plus_di + minus_di
+            if di_sum == 0:
+                continue
+            dx_list.append(100.0 * abs(plus_di - minus_di) / di_sum)
+        if not dx_list:
+            return 0.0
+        adx = sum(dx_list) / len(dx_list)
+        return adx
+
+    @staticmethod
+    def _calculate_hurst(returns: np.ndarray) -> float:
+        """Hurst exponent via rescaled range (R/S) analysis."""
+        n = len(returns)
+        if n < 20:
+            return 0.5
+        max_k = min(n // 2, 100)
+        sizes = []
+        rs_values = []
+        for k in range(10, max_k + 1, 5):
+            n_chunks = n // k
+            if n_chunks < 1:
+                break
+            rs_list = []
+            for c in range(n_chunks):
+                chunk = returns[c * k : (c + 1) * k]
+                mean = float(np.mean(chunk))
+                deviations = np.cumsum(chunk - mean)
+                r = float(np.max(deviations) - np.min(deviations))
+                s = float(np.std(chunk, ddof=1)) if k > 1 else 1.0
+                if s > 0:
+                    rs_list.append(r / s)
+            if rs_list:
+                sizes.append(k)
+                rs_values.append(float(np.mean(rs_list)))
+        if len(sizes) < 2:
+            return 0.5
+        log_n = np.log(sizes)
+        log_rs = np.log(rs_values)
+        x_mean = float(np.mean(log_n))
+        y_mean = float(np.mean(log_rs))
+        ss_xx = float(np.sum((log_n - x_mean) ** 2))
+        if ss_xx == 0:
+            return 0.5
+        ss_xy = float(np.sum((log_n - x_mean) * (log_rs - y_mean)))
+        return max(0.0, min(1.0, ss_xy / ss_xx))

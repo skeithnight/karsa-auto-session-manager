@@ -15,6 +15,7 @@ Cache invalidation triggers:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 from typing import Any
@@ -159,7 +160,10 @@ class NineRouterService(IAIService):
         timeout_seconds: float = 10.0,
     ) -> None:
         self._owned_client = http_client is None
-        self.client = http_client or httpx.AsyncClient(timeout=httpx.Timeout(timeout_seconds))
+        self.client = http_client or httpx.AsyncClient(
+            timeout=httpx.Timeout(timeout_seconds),
+            verify=False,  # ponytail: internal network, no SSL needed
+        )
         self.circuit_breaker = circuit_breaker or AICircuitBreaker()
         self.redis = redis_client
         self.timeout_seconds = timeout_seconds
@@ -196,11 +200,28 @@ class NineRouterService(IAIService):
                 continue
 
             try:
-                raw_response = await self._call_provider(provider, messages)
-                decision = parse_decision(
-                    raw_response,
-                    provider=provider.name,
-                    model=provider.model,
+                # Retry up to 2 times on parse errors (model sometimes returns empty/malformed)
+                raw_response = None
+                for attempt in range(2):
+                    try:
+                        raw_response = await self._call_provider(provider, messages)
+                        decision = parse_decision(
+                            raw_response,
+                            provider=provider.name,
+                            model=provider.model,
+                        )
+                        break  # success
+                    except ParseError as exc:
+                        if attempt == 0:
+                            logger.debug(f"NineRouterService: parse retry for {context.symbol}: {exc}")
+                            await asyncio.sleep(0.5)
+                            continue
+                        raise  # second attempt failed, propagate
+
+                # DEBUG: log raw response for troubleshooting
+                logger.debug(
+                    f"NineRouterService: raw response for {context.symbol} "
+                    f"(first 500 chars): {raw_response[:500]}"
                 )
                 self.circuit_breaker.record_success()
                 self._provider_failures[provider.name] = 0
@@ -210,7 +231,7 @@ class NineRouterService(IAIService):
                 logger.info(
                     f"NineRouterService: decision for {context.symbol} "
                     f"via {provider.name} — confidence={decision.confidence_score} "
-                    f"size={decision.position_size.value}"
+                    f"size={decision.position_size.value} reasoning={decision.reasoning[:100]}"
                 )
                 return decision
 
@@ -221,9 +242,11 @@ class NineRouterService(IAIService):
                 continue
 
             except (httpx.TimeoutException, httpx.HTTPError, OSError) as exc:
-                last_error = f"{provider.name}: transport error: {exc}"
+                last_error = f"{provider.name}: transport error: {type(exc).__name__}: {exc}"
                 logger.warning(last_error)
                 self._provider_failures[provider.name] = self._provider_failures.get(provider.name, 0) + 1
+                # ponytail: retry once after brief delay on transport errors
+                await asyncio.sleep(1.0)
                 continue
 
             except Exception as exc:
@@ -247,12 +270,12 @@ class NineRouterService(IAIService):
     # ------------------------------------------------------------------
     async def _call_provider(self, provider: _ProviderConfig, messages: list[dict]) -> str:
         """Call a single provider and return raw response text."""
-        url = f"{provider.base_url}/chat/completions"
+        url = f"{provider.base_url}/v1/chat/completions"
         payload = {
             "model": provider.model,
             "messages": messages,
-            "max_tokens": 1024,
-            "temperature": 0.0,
+            "max_tokens": 2048,
+            "temperature": 0.1,
             "stream": False,
         }
 

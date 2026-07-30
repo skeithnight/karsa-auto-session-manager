@@ -823,7 +823,7 @@ async def regime_engine_task(
     _fetch_sem = asyncio.Semaphore(5)
 
     async def _classify_one(symbol: str) -> None:
-        """Fetch 1H candles + classify single symbol."""
+        """Fetch 1H candles + classify single symbol with conviction."""
         try:
             async with _fetch_sem:
                 candles_raw = await ohlcv_fetcher.fetch(
@@ -837,9 +837,11 @@ async def regime_engine_task(
             import numpy as _np
 
             candles = _np.array(candles_raw, dtype=float)
-            regime = await asyncio.to_thread(regime_classifier.classify, candles)
-            await redis_client.set_symbol_regime(symbol, regime.value)
-            logger.info(f"Regime {symbol}: {regime.value}")
+            regime, conviction = await asyncio.to_thread(
+                regime_classifier.classify_with_conviction, candles
+            )
+            await redis_client.set_symbol_regime(symbol, regime.value, conviction)
+            logger.info(f"Regime {symbol}: {regime.value} conviction={conviction:.3f}")
         except Exception as e:
             logger.warning(f"RegimeClassifier {symbol} error: {e}")
 

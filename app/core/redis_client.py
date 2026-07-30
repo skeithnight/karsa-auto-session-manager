@@ -117,12 +117,18 @@ class RedisClient:
 
     # --- Per-Symbol Regime ---
 
-    async def set_symbol_regime(self, symbol: str, regime: str) -> None:
-        """Set per-symbol regime. Key: system:regime:{symbol}."""
+    async def set_symbol_regime(self, symbol: str, regime: str, conviction: float = 0.5) -> None:
+        """Set per-symbol regime. Key: system:regime:{symbol}.
+
+        Also writes conviction score to system:regime:{symbol}:conviction.
+        """
         if not self.redis:
             raise RuntimeError("Redis not connected")
         key = f"system:regime:{symbol.replace('/', ':')}"
         await self.redis.set(key, regime)
+        # Write conviction score for downstream consumers
+        conviction_key = f"system:regime:{symbol.replace('/', ':')}:conviction"
+        await self.redis.set(conviction_key, str(conviction))
 
     async def get_symbol_regime(self, symbol: str) -> str | None:
         """Get per-symbol regime. Falls back to global if not set."""
@@ -134,6 +140,19 @@ class RedisClient:
             # Fallback to global BTC regime
             return await self.get_session_config()
         return result
+
+    async def get_symbol_regime_conviction(self, symbol: str) -> float:
+        """Get per-symbol regime conviction score (0.0-1.0). Defaults to 0.5 if not set."""
+        if not self.redis:
+            return 0.5
+        try:
+            key = f"system:regime:{symbol.replace('/', ':')}:conviction"
+            result = await self.redis.get(key)
+            if result is not None:
+                return float(result)
+        except Exception:
+            pass
+        return 0.5
 
     # --- GlobalState Cache ---
 

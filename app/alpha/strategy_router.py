@@ -429,6 +429,13 @@ class StrategyRouter:
                 elif edge_profile.expectancy < -0.5:
                     context.add_evidence("expected_edge", -1.0, 20.0, f"Negative historical expectancy: {edge_profile.expectancy:.2f}%")
 
+        # Wire regime conviction to score (prevents boundary whipsaw)
+        # Conviction is 0.0-1.0 from classify_with_conviction(), written to Redis
+        conviction = getattr(context, 'regime_conviction', 0.5)
+        if conviction < 1.0:
+            context.total_confidence *= conviction
+            logger.debug(f"StrategyRouter: score weighted by conviction={conviction:.3f}")
+
         atr_pct = features.atr_pct or VOLATILITY_REFERENCE_ATR_PCT
         vol_factor = (
             self._volatility_factor(atr_pct) if self.volatility_scaling else 1.0

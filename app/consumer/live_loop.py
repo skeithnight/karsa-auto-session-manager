@@ -634,12 +634,18 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
     # Record trade
     if trade_store:
+        # Capture AI confidence from analyst result (if available)
+        ai_conf = None
+        if 'analyst_result' in dir() and analyst_result is not None:
+            ai_conf = analyst_result.ai_confidence
+
         await trade_store.record_entry(
             symbol=symbol,
             side=signal.direction,
             amount=signal.amount,
             entry_price=fill_price,
             regime=signal.regime.value,
+            ai_confidence=ai_conf,
             risk_profile_json=signal.risk_profile.to_json(),
             trace_id=signal.trace_id,
             cvd_slope=signal.cvd_slope,

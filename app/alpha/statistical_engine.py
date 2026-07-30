@@ -22,6 +22,24 @@ except ImportError:
 
 from loguru import logger
 
+
+def _to_native(obj):
+    """Convert numpy types to Python native types for JSON serialization."""
+    if isinstance(obj, dict):
+        return {k: _to_native(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_to_native(v) for v in obj]
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.integer):
+        return int(obj)
+    if isinstance(obj, np.floating):
+        return float(obj)
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+    return obj
+
+
 # Volatility regime thresholds (ATR%)
 VOL_LOW_THRESHOLD = 2.0
 VOL_HIGH_THRESHOLD = 5.0
@@ -212,13 +230,14 @@ class StatisticalFeatureEngine:
         if self._redis is not None:
             try:
                 cache_key = f"karsa:features:{symbol.replace('/', ':')}"
-                await self._redis.set(cache_key, json.dumps(result))
+                safe = _to_native(result)
+                await self._redis.set(cache_key, json.dumps(safe))
                 # TTL is not set via a single call here because the Redis client
                 # exposes `set` (no TTL) and `setex` is on the raw redis object.
                 # For robustness, use the raw client's setex when available.
                 raw = getattr(self._redis, "redis", None)
                 if raw is not None:
-                    await raw.setex(cache_key, CACHE_TTL, json.dumps(result))
+                    await raw.setex(cache_key, CACHE_TTL, json.dumps(safe))
             except Exception as e:
                 logger.debug(f"calculate_features: Redis cache write failed for {symbol}: {e}")
 

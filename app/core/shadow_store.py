@@ -9,7 +9,7 @@ Separate namespace from live stores — zero collision risk.
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
@@ -123,7 +123,7 @@ class ShadowTradeStore(TradeStore):
         vol_factor: float | None = None,
     ) -> int:
         """Record shadow trade entry. Returns trade id."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         try:
             async with self.db.engine.connect() as conn:
                 result = await conn.execute(
@@ -195,7 +195,7 @@ class ShadowTradeStore(TradeStore):
         peak_r_multiple: Decimal | None = None,
     ) -> int:
         """Close shadow trade. Updates most recent open shadow trade for symbol."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         regime_clause = ", regime = :regime" if regime else ""
         mae_clause = ", mae = :mae" if mae is not None else ""
         mfe_clause = ", mfe = :mfe" if mfe is not None else ""

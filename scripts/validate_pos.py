@@ -1,6 +1,6 @@
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import redis.asyncio as redis
 
@@ -31,9 +31,9 @@ async def main():
 
         entered_at = datetime.fromisoformat(entered_at_str)
         if entered_at.tzinfo is None:
-            entered_at = entered_at.replace(tzinfo=UTC)
+            entered_at = entered_at.replace(tzinfo=timezone.utc)
 
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         held_mins = (now - entered_at).total_seconds() / 60.0
 
         # Calculate fees

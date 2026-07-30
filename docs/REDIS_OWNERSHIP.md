@@ -38,6 +38,10 @@
 | `karsa:settings:regime_filter` | Bot (settings callback) | Bot (settings), Alpha Bridge | None | `"1"` / `"0"` | Regime filter toggle |
 | `karsa:state:risk_profile` | Bot (settings callback) | Bot (settings), Risk Gate | None | `"conservative"` / `"semi_aggressive"` / `"aggressive"` | Risk profile |
 | `karsa:crypto_cooldown` | Bot (`/sell_all`) | Alpha Bridge | 900s | `"1"` | 15-min post-sell cooldown |
+| `karsa:features:{symbol}` | StatisticalFeatureEngine | HybridDecisionEngine, Alpha Bridge | 3600s | JSON: `{beta, correlation, atr, volume_metrics}` | Statistical features cache |
+| `karsa:ai_decision:{symbol}` | NineRouterService | HybridDecisionEngine, Bot (`/status`) | 14400s | JSON: `{direction, confidence, model, reasoning}` | AI decision cache |
+| `karsa:hybrid_decision:{symbol}` | HybridDecisionEngine | Executor Task, Bot (`/positions`) | None | JSON: `{final_score, hard_pass, soft_penalties}` | Hybrid decision output |
+| `karsa:settings:*` | SettingsStore | Bot handlers, Alpha Bridge | None | Setting value string | User settings persistence |
 
 ---
 

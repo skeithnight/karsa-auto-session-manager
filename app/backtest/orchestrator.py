@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -77,6 +77,14 @@ class BacktestTradeResult:
     entry_time: datetime | None
     exit_time: datetime | None
     trade_taken: bool
+    # Hybrid intelligence fields
+    ai_confidence: float | None = None
+    beta: float | None = None
+    correlation: float | None = None
+    volume_spike: float | None = None
+    guardrail_type: str | None = None
+    guardrail_action: str | None = None
+    monthly_bucket: str | None = None
 
 
 class BacktestOrchestrator:
@@ -113,7 +121,7 @@ class BacktestOrchestrator:
         status_data = {
             "status": "pending",
             "symbol": spec.symbol,
-            "submitted_at": datetime.now(UTC).isoformat(),
+            "submitted_at": datetime.now(timezone.utc).isoformat(),
         }
         await self._redis.redis.setex(
             telemetry_key, RESULTS_TTL_S, json.dumps(status_data)
@@ -187,7 +195,9 @@ class BacktestOrchestrator:
                                entry_price, exit_price, exit_reason,
                                sl_price, tp_price, amount, size_multiplier,
                                pnl_gross, pnl_net, total_fees, total_funding,
-                               bars_held, entry_time, exit_time
+                               bars_held, entry_time, exit_time,
+                               ai_confidence, beta, correlation, volume_spike,
+                               guardrail_type, guardrail_action, monthly_bucket
                         FROM backtest_results
                         WHERE job_id = :job_id
                         ORDER BY entry_time ASC
@@ -227,6 +237,13 @@ class BacktestOrchestrator:
                             entry_time=row[17],
                             exit_time=row[18],
                             trade_taken=True,
+                            ai_confidence=float(row[19]) if row[19] else None,
+                            beta=float(row[20]) if row[20] else None,
+                            correlation=float(row[21]) if row[21] else None,
+                            volume_spike=float(row[22]) if row[22] else None,
+                            guardrail_type=row[23],
+                            guardrail_action=row[24],
+                            monthly_bucket=row[25],
                         )
                     )
         except Exception as exc:
@@ -435,7 +452,7 @@ class BacktestOrchestrator:
             "trades_taken": trades_taken,
             "total_pnl": total_pnl,
             "error": error,
-            "completed_at": datetime.now(UTC).isoformat(),
+            "completed_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             await self._redis.redis.setex(

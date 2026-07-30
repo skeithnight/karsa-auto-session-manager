@@ -10,7 +10,7 @@ ponytail: single class, no ABC/interface. Reuses TradeStore + BybitClient.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, DecimalException
 from typing import Any
 
@@ -123,7 +123,7 @@ class TradeReconciler:
 
         # Fetch all existing local trades for dedup
         oldest_ts = min(int(r.get("createdTime", "0")) for r in all_records)
-        oldest_dt = datetime.fromtimestamp(oldest_ts / 1000, tz=UTC)
+        oldest_dt = datetime.fromtimestamp(oldest_ts / 1000, tz=timezone.utc)
         local_trades = await self.store.get_trades_since(oldest_dt)
 
         # Index local trades by (symbol, side, approximate entry_time) for dedup
@@ -154,8 +154,8 @@ class TradeReconciler:
             pnl = _safe_decimal(r.get("closedPnl", "0"))
             created_ts = int(r.get("createdTime", "0"))
             updated_ts = int(r.get("updatedTime", r.get("createdTime", "0")))
-            entry_time = datetime.fromtimestamp(created_ts / 1000, tz=UTC)
-            exit_time = datetime.fromtimestamp(updated_ts / 1000, tz=UTC)
+            entry_time = datetime.fromtimestamp(created_ts / 1000, tz=timezone.utc)
+            exit_time = datetime.fromtimestamp(updated_ts / 1000, tz=timezone.utc)
 
             # Dedup check
             minute_key = entry_time.strftime("%Y%m%d%H%M")
@@ -264,7 +264,7 @@ class TradeReconciler:
 
     async def reconcile(self) -> ReconcileReport:
         """Main entry. Fetch-compare-repair cycle."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         since = now - timedelta(hours=self.lookback_hours)
         grace = now - timedelta(minutes=self.GRACE_PERIOD_MINUTES)
         report = ReconcileReport(
@@ -434,7 +434,7 @@ class TradeReconciler:
                 weighted_price = weighted_price / total_qty
 
             exec_time_ms = int(fills[0].get("execTime", "0"))
-            exec_time = datetime.fromtimestamp(exec_time_ms / 1000, tz=UTC)
+            exec_time = datetime.fromtimestamp(exec_time_ms / 1000, tz=timezone.utc)
 
             # Skip very recent fills (race with live trading)
             if exec_time > grace:
@@ -577,7 +577,7 @@ class TradeReconciler:
                 local_exit_time = t.get("exit_time")
                 if local_exit_time:
                     bybit_exit_time = datetime.fromtimestamp(
-                        updated_time_ms / 1000, tz=UTC
+                        updated_time_ms / 1000, tz=timezone.utc
                     )
                     time_diff = abs((local_exit_time - bybit_exit_time).total_seconds())
                     if time_diff < 1800:  # 30 mins
@@ -709,7 +709,7 @@ class TradeReconciler:
             repairable = repairable[: self.MAX_REPAIRS_PER_CYCLE]
 
         repairs = 0
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         for d in repairable:
             try:
                 amount = _safe_decimal(d.bybit_data.get("qty", "0"))

@@ -8,7 +8,7 @@ Mirrors ShadowAPM's worst_price_seen / funding / fee logic exactly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import numpy as np
@@ -150,7 +150,7 @@ class BacktestEngine:
             for direction in directions:
                 # Live gate: Session block (Asian dead zone)
                 if self._enable_live_gates:
-                    candle_ts = datetime.fromtimestamp(context_candles[-1][0] / 1000, tz=UTC)
+                    candle_ts = datetime.fromtimestamp(context_candles[-1][0] / 1000, tz=timezone.utc)
                     hour = candle_ts.hour
                     if 0 <= hour < 7 and symbol not in ("BTC/USDT", "ETH/USDT"):
                         continue  # Skip altcoin entries during Asian session
@@ -264,7 +264,7 @@ class BacktestEngine:
         last_funding_bar = entry_candle_idx
         bars_held = 0
         ts_ms = entry_candle[0]
-        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
 
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
@@ -460,7 +460,7 @@ class BacktestEngine:
         bars_held,
         accumulated_funding,
     ) -> BacktestReport:
-        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=UTC)
+        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc)
 
         if direction == "LONG":
             pnl_gross = (exit_price - entry_price) * amount

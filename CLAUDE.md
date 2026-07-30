@@ -45,6 +45,12 @@ Rationale + full detail: `AGENTS.md` §2 and §8.
 7. Touching `app/consumer/`, `app/commander/`, `app/backtest/`, `app/analytics/`, `app/data_engine/` → read the relevant section in `AGENTS.md` §3 directory map + agent section before writing.
 8. Touching `app/research/` → read `app/research/ranking_engine.py` and `app/research/metrics_engine.py` first.
 9. Touching `app/risk/volatility_surface.py` → understand it publishes to `karsa:vol_surface:*` Redis keys.
+10. Touching `app/alpha/statistical_engine.py` or `app/alpha/hybrid_decision_engine.py` → read the hybrid intelligence pipeline spec below (§3 module map).
+11. Touching `app/ai/` → read `app/ai/nine_router_service.py` for the multi-provider fallback pattern.
+12. Touching `app/execution/tp_manager.py` or `app/execution/exit_manager.py` → read `docs/execution/active_position_manager.md`.
+13. Touching `app/bot/handlers/` → read `AGENTS.md` §3 for the handler module map (13 modules).
+14. Touching `app/bot/daily_summary.py` → read the daily summary service section below.
+15. Touching `app/core/settings_store.py` → read `docs/DATA_MODEL.md` for the `user_settings` table schema.
 
 ---
 
@@ -115,6 +121,10 @@ karsa:alert:rebalance           — JSON: rebalance opportunity alert (5min TTL)
 system:hmm:regime               — JSON: {state, state_name, signal, probabilities, confidence}
 system:regime:{symbol}          — Regime string (RANGE, TREND_BULL, etc.)
 karsa:position:{symbol}:{side}  — Position state dict
+karsa:features:{symbol}         — JSON: statistical features (beta, correlation, ATR, volume metrics) (1h TTL)
+karsa:ai_decision:{symbol}      — JSON: AI decision output (4h TTL)
+karsa:hybrid_decision:{symbol}  — JSON: hybrid decision with guardrail flags
+karsa:settings:*                — User settings (written by SettingsStore)
 ```
 
 ---

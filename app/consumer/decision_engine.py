@@ -8,13 +8,13 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import numpy as np
 
 from app.alpha.evidence_collector import EvidenceCollector
-from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
+from app.alpha.regime_classifier import MarketRegime
 from app.alpha.market_analyzer import MarketAnalyzer
 from app.alpha.strategy_router import StrategyRouter
 from app.core.decision_context import DecisionContext
@@ -28,7 +28,6 @@ from app.learning.statistical_learning import StatisticalLearning
 from app.alpha.sector_filter import SectorRotationFilter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 from app.risk.kelly_sizer import KellySizer
-from app.research.ranking_engine import RankingEngine, PromotionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -207,26 +206,6 @@ class DecisionEngine:
             pass
         return 1500.0
 
-    @staticmethod
-    def compute_elo(rating_a: float, rating_b: float, score_a: float, k_factor: float = 32.0) -> tuple[float, float]:
-        """Compute ELO rating update.
-
-        Args:
-            rating_a: Current ELO of strategy A.
-            rating_b: Current ELO of strategy B (or baseline 1500).
-            score_a: Score for A (1.0 = win, 0.5 = draw, 0.0 = loss).
-            k_factor: K-factor for update speed.
-
-        Returns:
-            Tuple of (new_rating_a, new_rating_b).
-        """
-        import math
-        expected_a = 1.0 / (1.0 + math.pow(10, (rating_b - rating_a) / 400.0))
-        expected_b = 1.0 - expected_a
-        new_a = rating_a + k_factor * (score_a - expected_a)
-        new_b = rating_b + k_factor * ((1.0 - score_a) - expected_b)
-        return new_a, new_b
-
     async def _get_risk_pct(self) -> Decimal:
         """Read risk_pct from Redis karsa:auto:config. Default10%."""
         if self._redis is None:
@@ -328,7 +307,7 @@ class DecisionEngine:
         # ─── SESSION HARD-BLOCK (Asian Dead Zone) ────────────────────────
         # Block altcoin entries during low-liquidity Asian session.
         # Cash is a position — the system should sleep during dead zones.
-        now_utc = datetime.now(UTC)
+        now_utc = datetime.now(timezone.utc)
         current_hour = now_utc.hour
         try:
             from app.core.config import get_settings
@@ -337,7 +316,7 @@ class DecisionEngine:
                 # Allow BTC/ETH if configured
                 if not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT"):
                     logger.warning(
-                        "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d UTC). Altcoin entries blocked.",
+                        "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d timezone.utc). Altcoin entries blocked.",
                         symbol, current_hour, _s.session_block_start_hour, _s.session_block_end_hour,
                     )
                     ObservabilityLogger.log_reject_reason(
@@ -704,7 +683,6 @@ class DecisionEngine:
             # Penalize tokens with upcoming large token unlocks (sell pressure)
             if self._redis is not None:
                 try:
-                    from datetime import timedelta
                     unlock_penalty = await self._check_token_unlock(symbol, direction)
                     if unlock_penalty > 0:
                         score -= unlock_penalty
@@ -773,7 +751,7 @@ class DecisionEngine:
                     logger.debug(f"evaluate: HMM signal check failed for {symbol}: {e}")
 
             # Session / Time-of-Day Volatility Filtering
-            now_utc = datetime.now(UTC)
+            now_utc = datetime.now(timezone.utc)
             hour = now_utc.hour
             if 0 <= hour < 7:
                 session_mult, session_name = 0.7, "ASIA"

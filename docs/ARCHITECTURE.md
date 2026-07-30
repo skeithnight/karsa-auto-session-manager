@@ -414,6 +414,76 @@ flowchart LR
 3. **Fail-safe defaults.** Parse failure → FLAT/EXIT (never HOLD). AI unavailable → conservative HOLD (don't exit without AI). 3 consecutive HOLDs on loser → forced EXIT.
 4. **Redis-backed cache.** Analyst results cached in Redis (`ai:cache:*`) with 5min TTL, shared across process restarts. Position Judge has no cache (evaluates fresh each time).
 
+### 6D. Hybrid Intelligence Pipeline
+
+The Hybrid Intelligence Pipeline combines statistical feature extraction, AI analysis, and guardrail-based decision-making into a unified flow.
+
+```mermaid
+flowchart LR
+    subgraph STAT["Statistical Feature Engine"]
+        SE[statistical_engine.py<br/>Beta, Correlation, ATR<br/>Volume Metrics]
+    end
+
+    subgraph AI_LAYER["AI Decision Layer"]
+        PB[prompt_builder.py<br/>Structured prompts]
+        NR[nine_router_service.py<br/>Multi-provider fallback]
+        PA[parser.py<br/>JSON response parser]
+    end
+
+    subgraph HYBRID["Hybrid Decision Engine"]
+        HDE[hybrid_decision_engine.py<br/>10 Hard + 5 Soft Guardrails]
+    end
+
+    subgraph EXEC["Execution Enhancements"]
+        TP[tp_manager.py<br/>Take-Profit Management]
+        EX[exit_manager.py<br/>Close-based Trailing Stop]
+        PR[position_reconciler.py<br/>Position Reconciliation]
+    end
+
+    SE -->|features cached<br/>1h TTL| PB
+    PB -->|structured prompt| NR
+    NR -->|raw response| PA
+    PA -->|parsed decision| HDE
+    HDE -->|guardrail flags| TP
+    HDE -->|guardrail flags| EX
+    HDE -->|reconciliation signals| PR
+```
+
+**Statistical Feature Engine** (`app/alpha/statistical_engine.py`):
+- Computes beta (correlation to BTC), rolling correlation, ATR (multiple timeframes), volume metrics (relative volume, volume trend).
+- Features cached in Redis `karsa:features:{symbol}` with 1h TTL.
+- Pure math, no network calls. Deterministic output.
+
+**AI Decision Engine** (`app/ai/nine_router_service.py`):
+- Multi-provider fallback: tries primary model, falls back to secondary on failure.
+- Circuit breaker pattern (`app/ai/circuit_breaker.py`) prevents cascade failures.
+- Structured prompts built by `prompt_builder.py`, responses parsed by `parser.py`.
+- Decisions cached in Redis `karsa:ai_decision:{symbol}` with 4h TTL.
+
+**Hybrid Decision Engine** (`app/alpha/hybrid_decision_engine.py`):
+- **10 Hard Guardrails** (mandatory pass, non-negotiable):
+  1. Regime not CHOP
+  2. Spread < 0.3%
+  3. Depth ratio > 0.8
+  4. Not dead hours (00:00-01:00 UTC)
+  5. No duplicate position
+  6. Circuit breaker not tripped
+  7. Liquidity sufficient (24h vol >= $1M)
+  8. Sector cap not exceeded
+  9. Beta < 1.5 (not over-correlated)
+  10. ATR-based volatility within bounds
+- **5 Soft Guardrails** (penalize confidence, can reject):
+  1. Multi-timeframe trend agreement (0.5x penalty if fighting 4H trend)
+  2. Macro anchor alignment (0.8x penalty if BTC/ETH contradict)
+  3. Volume anomaly detection (penalize extreme spikes)
+  4. Correlation penalty (reduce size for correlated positions)
+  5. Funding rate divergence (penalize if funding > 0.05%)
+
+**Execution Enhancements:**
+- **Smart Order Routing** (`app/execution/sor.py`): Three modes — MARKET (immediate), LIMIT_RETEST (post-only with reprice), WAIT_PULLBACK (limit below market with timeout).
+- **Close-based Trailing Stop** (`app/execution/exit_manager.py`): Trail based on close price, not wick. Prevents premature stops on volatile wicks.
+- **Position Reconciler** (`app/execution/position_reconciler.py`): Continuous reconciliation between local state and Bybit positions. Handles orphan detection, stale state cleanup.
+
 ---
 
 ## 8. Technology Stack

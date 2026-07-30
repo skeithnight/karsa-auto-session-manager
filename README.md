@@ -94,3 +94,26 @@ This bot operates with real capital in live environments. Any changes to the **R
 | **Volatility Surface** | BTC/ETH term structure and vol regime | `karsa:vol_surface:*` |
 | **Walk-Forward Optimization** | Robustness scoring for strategy validation | (CLI output) |
 | **Research CLI** | `python -m app.research.cli {ranking,elo,gate,vol,trades,metrics}` | (various) |
+
+## 🤖 Hybrid Intelligence Trading System
+
+| Feature | Description | Module |
+|---------|-------------|--------|
+| **Statistical Feature Engine** | Beta, correlation, ATR, volume metrics computation | `app/alpha/statistical_engine.py` |
+| **AI Decision Engine** | Multi-provider fallback with circuit breaker | `app/ai/nine_router_service.py` |
+| **Hybrid Decision Engine** | 10 hard + 5 soft guardrails for entry/exit decisions | `app/alpha/hybrid_decision_engine.py` |
+| **Smart Order Routing** | MARKET/LIMIT_RETEST/WAIT_PULLBACK execution modes | `app/execution/sor.py` |
+| **Close-based Trailing Stop** | Trail based on close price, not wick | `app/execution/exit_manager.py` |
+| **Position Reconciler** | Continuous local/exchange state synchronization | `app/execution/position_reconciler.py` |
+| **Take-Profit Manager** | Dynamic TP management with multiple strategies | `app/execution/tp_manager.py` |
+
+## 📱 Telegram Bot Features
+
+| Feature | Description | Module |
+|---------|-------------|--------|
+| **Hybrid Dashboard** | Real-time trading dashboard with hybrid decisions | `app/bot/handlers/dashboard.py` |
+| **Position Management** | View, monitor, and close positions from Telegram | `app/bot/handlers/positions.py` |
+| **Daily Summary Alerts** | Automated daily performance reports | `app/bot/daily_summary.py` |
+| **Settings Persistence** | User settings saved to database | `app/core/settings_store.py` |
+| **Hybrid Backtest Reports** | Backtest results with guardrail analysis | `app/backtest/hybrid_report.py` |
+| **Report Generation** | Performance, trade history, and analytics reports | `app/bot/handlers/reports.py` |

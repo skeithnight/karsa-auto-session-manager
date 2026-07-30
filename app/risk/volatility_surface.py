@@ -161,16 +161,3 @@ class VolatilitySurface:
         elif composite > 0.70:
             return "HIGH"
         return "NORMAL"
-
-    def get_sizing_factor(self, asset: str = "btc") -> float:
-        """Get position sizing factor based on vol regime.
-
-        Returns:
-            1.2x for LOW vol, 1.0x for NORMAL, 0.7x for HIGH vol.
-        """
-        regime = self.get_vol_regime(asset)
-        if regime == "LOW":
-            return 1.2
-        elif regime == "HIGH":
-            return 0.7
-        return 1.0

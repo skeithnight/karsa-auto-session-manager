@@ -13,7 +13,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -121,7 +121,7 @@ async def fetch_all_candles_for_symbol(
 ) -> list[dict]:
     """Fetch all historical candles for one symbol using backward pagination."""
     market_id = _exchange_market_id(unified_symbol, exchange)
-    since_dt = datetime.now(UTC) - timedelta(days=lookback_days)
+    since_dt = datetime.now(timezone.utc) - timedelta(days=lookback_days)
     since_ms = int(since_dt.timestamp() * 1000)
 
     all_candles: list[list] = []
@@ -161,7 +161,7 @@ async def fetch_all_candles_for_symbol(
         {
             "symbol": unified_symbol,
             "timeframe": timeframe,
-            "ts": datetime.fromtimestamp(c[0] / 1000, tz=UTC),
+            "ts": datetime.fromtimestamp(c[0] / 1000, tz=timezone.utc),
             "open": str(Decimal(str(c[1]))),
             "high": str(Decimal(str(c[2]))),
             "low": str(Decimal(str(c[3]))),
@@ -222,7 +222,7 @@ def _timeframe_to_ms(tf: str) -> int:
 
 
 def _ts(ms: int) -> str:
-    return datetime.fromtimestamp(ms / 1000, tz=UTC).isoformat(timespec="seconds")
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat(timespec="seconds")
 
 
 def _now_ms() -> int:

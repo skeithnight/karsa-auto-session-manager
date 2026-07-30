@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 from uuid import uuid4
@@ -29,7 +29,7 @@ class TradingSignal:
         self.confidence = confidence  # 0.0 - 1.0
         self.size = size
         self.metrics = metrics or {}
-        self.generated_at = datetime.now(UTC)
+        self.generated_at = datetime.now(timezone.utc)
         self.atr = atr  # 1H ATR for position lifecycle (trailing stop, partial TP)
         logger.debug("TradingSignal.__init__: returning")
 

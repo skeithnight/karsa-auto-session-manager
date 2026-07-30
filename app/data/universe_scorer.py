@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
@@ -259,7 +259,7 @@ class UniverseScorer:
         payload = {
             "symbols": symbols,
             "scores": {s["symbol"]: s["total_score"] for s in selected},
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             await self.redis.set(

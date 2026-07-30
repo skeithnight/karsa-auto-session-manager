@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 
@@ -145,8 +145,8 @@ def match_trades(
                 shadow_fees=Decimal(str(best_match.get("fees", 0))),
                 live_slippage=Decimal(str(live.get("slippage", 0))),
                 shadow_slippage=Decimal(str(best_match.get("slippage", 0))),
-                live_entry_time=live.get("entry_time", datetime.now(UTC)),
-                shadow_entry_time=best_match.get("entry_time", datetime.now(UTC)),
+                live_entry_time=live.get("entry_time", datetime.now(timezone.utc)),
+                shadow_entry_time=best_match.get("entry_time", datetime.now(timezone.utc)),
                 entry_price_delta=entry_delta,
                 exit_price_delta=exit_delta,
                 pnl_delta=pnl_delta,

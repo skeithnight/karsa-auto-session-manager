@@ -1,4 +1,7 @@
+from __future__ import annotations
+
 from datetime import datetime
+
 from app.bot.utils.format import fmt, pre
 
 
@@ -124,6 +127,61 @@ def format_live_funnel(metrics: dict, report: object) -> str:
         f"  Total Slippage: ${slippage:.2f}{slip_warn}"
     )
 
+    # AI Engine Performance Block
+    ai_stats = metrics.get("ai_engine", {})
+    ai_total = ai_stats.get("total_evaluations", 0)
+    ai_avg_conf = ai_stats.get("avg_confidence", 0)
+    ai_high_count = ai_stats.get("high_confidence_trades", 0)
+    ai_high_wr = ai_stats.get("high_confidence_win_rate", 0.0)
+    ai_low_count = ai_stats.get("low_confidence_trades", 0)
+    ai_low_wr = ai_stats.get("low_confidence_win_rate", 0.0)
+    ai_accuracy = ai_stats.get("ai_accuracy", 0.0)
+    ai_cost = ai_stats.get("api_cost", 0.0)
+
+    ai_performance_block = (
+        f"🧠 AI ENGINE PERFORMANCE\n"
+        f"  Total Evaluations: {ai_total}\n"
+        f"  Avg Confidence: {ai_avg_conf}/100\n"
+        f"  High Confidence (>80) Trades: {ai_high_count}\n"
+        f"  High Confidence Win Rate: {ai_high_wr:.1f}%\n"
+        f"  Low Confidence (<60) Trades: {ai_low_count}\n"
+        f"  Low Confidence Win Rate: {ai_low_wr:.1f}%\n"
+        f"  AI Accuracy: {ai_accuracy:.0f}%\n"
+        f"  API Cost: ${ai_cost:.2f}"
+    )
+
+    # Guardrail Statistics Block
+    guardrails = metrics.get("guardrails", {})
+    hard_triggered = guardrails.get("hard_triggered", 0)
+    trades_blocked = guardrails.get("trades_blocked", 0)
+    losses_prevented = guardrails.get("estimated_losses_prevented", 0.0)
+    soft_triggered = guardrails.get("soft_triggered", 0)
+    downgrades = guardrails.get("position_downgrades", 0)
+
+    guardrail_block = (
+        f"🛡️ GUARDRAIL STATISTICS\n"
+        f"  Hard Guardrails Triggered: {hard_triggered}\n"
+        f"  Trades Blocked: {trades_blocked}\n"
+        f"  Estimated Losses Prevented: ${losses_prevented:,.2f}\n"
+        f"  Soft Guardrails Triggered: {soft_triggered}\n"
+        f"  Position Downgrades: {downgrades}"
+    )
+
+    # Statistical Features Summary Block
+    features = metrics.get("statistical_features", {})
+    avg_beta = features.get("avg_beta", 0.0)
+    avg_corr = features.get("avg_correlation", 0.0)
+    avg_atr = features.get("avg_atr_pct", 0.0)
+    vol_confirmed = features.get("volume_confirmed_pct", 0.0)
+
+    features_block = (
+        f"📊 STATISTICAL FEATURES SUMMARY\n"
+        f"  Avg Beta: {avg_beta:.2f}\n"
+        f"  Avg Correlation: {avg_corr:.2f}\n"
+        f"  Avg ATR: {avg_atr:.1f}%\n"
+        f"  Volume Confirmed Trades: {vol_confirmed:.0f}%"
+    )
+
     return fmt(
         pre(header),
         "\n\n",
@@ -137,5 +195,11 @@ def format_live_funnel(metrics: dict, report: object) -> str:
         "\n\n",
         pre(perf_table),
         "\n\n",
-        pre(costs_table)
+        pre(costs_table),
+        "\n\n",
+        pre(ai_performance_block),
+        "\n\n",
+        pre(guardrail_block),
+        "\n\n",
+        pre(features_block),
     )

@@ -19,7 +19,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from app.alpha.regime_classifier import RegimeClassifier
+from app.alpha.hybrid_decision_engine import HybridDecisionEngine
+from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.alpha.strategy_router import StrategyRouter
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
 from app.consumer.market_consumer import MarketConsumer
@@ -57,6 +58,7 @@ async def _on_signal_shadow(
     risk_manager: Any | None = None,
     engine: Any | None = None,
     redis: Any | None = None,
+    hybrid_engine: HybridDecisionEngine | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
 
@@ -113,6 +115,88 @@ async def _on_signal_shadow(
     elif total_open >= max_positions:
         logger.info("shadow skip %s — all slots full (%d/%d)", symbol, total_open, max_positions)
         return
+
+    # Hybrid Decision Engine evaluation (statistical guardrails + AI)
+    if hybrid_engine is not None:
+        try:
+            import pandas as _pd
+
+            candles_list = signal.candles if hasattr(signal, 'candles') and signal.candles else []
+            if candles_list and len(candles_list) >= 50:
+                ohlcv_df = _pd.DataFrame(
+                    candles_list,
+                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                )
+                btc_ohlcv_df = ohlcv_df  # fallback
+
+                regime_str = signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime)
+                funding = 0.0
+                if redis:
+                    try:
+                        fr_raw = await redis.get(f"karsa:funding:{symbol}")
+                        if fr_raw:
+                            funding = float(fr_raw)
+                    except Exception:
+                        pass
+
+                concurrent = total_open
+
+                hybrid_decision = await hybrid_engine.evaluate(
+                    symbol=symbol,
+                    regime=regime_str,
+                    btc_regime="RANGE",
+                    ohlcv=ohlcv_df,
+                    btc_ohlcv=btc_ohlcv_df,
+                    direction=signal.direction,
+                    funding_rate=funding,
+                    concurrent_positions=concurrent,
+                    current_price=float(signal.entry_price),
+                )
+
+                # Store shadow hybrid decision in Redis
+                if redis:
+                    try:
+                        import json as _json
+                        decision_dict = {
+                            "action": hybrid_decision.action,
+                            "size": hybrid_decision.size,
+                            "size_pct": hybrid_decision.size_pct,
+                            "confidence": hybrid_decision.confidence,
+                            "risk_level": hybrid_decision.risk_level,
+                            "entry_strategy": hybrid_decision.entry_strategy,
+                            "stop_loss_strategy": hybrid_decision.stop_loss_strategy,
+                            "reasoning": hybrid_decision.reasoning,
+                            "guardrails_triggered": hybrid_decision.guardrails_triggered,
+                        }
+                        await redis.set(
+                            f"shadow:hybrid_decision:{symbol}",
+                            _json.dumps(decision_dict),
+                        )
+                    except Exception:
+                        logger.debug("Failed to store shadow hybrid decision for %s", symbol)
+
+                if hybrid_decision.action == "BLOCK":
+                    logger.info(
+                        "shadow HybridDecisionEngine BLOCKED %s: %s",
+                        symbol,
+                        hybrid_decision.reasoning,
+                    )
+                    return
+
+                if hybrid_decision.size_pct > 0 and hybrid_decision.size_pct < 1.0:
+                    original_amount = signal.amount
+                    adjusted_amount = original_amount * Decimal(str(hybrid_decision.size_pct))
+                    object.__setattr__(signal, "amount", adjusted_amount)
+                    logger.info(
+                        "shadow HybridDecisionEngine sizing %s: %s -> %s (size=%s)",
+                        symbol,
+                        original_amount,
+                        adjusted_amount,
+                        hybrid_decision.size,
+                    )
+
+        except Exception as e:
+            logger.warning("shadow HybridDecisionEngine evaluation failed for %s: %s", symbol, e)
 
     # AI Analyst gate (mandatory, mirroring live loop)
     if crypto_analyst:
@@ -417,7 +501,6 @@ async def main() -> None:
     from app.data.ohlcv_fetcher import OHLCVFetcher
     from app.alpha.market_analyzer import MarketAnalyzer
 
-    classifier = RegimeClassifier(redis_client=redis)
     analyzer = MarketAnalyzer(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
@@ -506,6 +589,22 @@ async def main() -> None:
         await shutdown()
         return
 
+    # Hybrid Intelligence System — statistical guardrails + AI evaluation
+    hybrid_engine: HybridDecisionEngine | None = None
+    try:
+        from app.ai.nine_router_service import NineRouterService
+
+        stat_engine = StatisticalFeatureEngine(redis_client=redis)
+        nine_router = NineRouterService()
+        hybrid_engine = HybridDecisionEngine(
+            statistical_engine=stat_engine,
+            ai_service=nine_router,
+        )
+        logger.info("shadow HybridDecisionEngine initialized")
+    except Exception as e:
+        logger.warning(f"shadow HybridDecisionEngine init failed: {e}")
+        hybrid_engine = None
+
     # Wire signal handler
     WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "10"))
     signal_queues = [asyncio.Queue(maxsize=100) for _ in range(WORKER_COUNT)]
@@ -535,6 +634,7 @@ async def main() -> None:
                         risk_manager,
                         engine,
                         redis,
+                        hybrid_engine,
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
@@ -608,6 +708,49 @@ async def main() -> None:
             task = asyncio.create_task(analyzer.update_on_candle_close(symbol, history))
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
+
+            # Statistical Feature Engine: compute features on each candle close
+            if hybrid_engine is not None and len(history) >= 50:
+                async def _compute_features(sym: str, candles: list) -> None:
+                    try:
+                        import pandas as _pd
+
+                        ohlcv_df = _pd.DataFrame(
+                            candles,
+                            columns=["timestamp", "open", "high", "low", "close", "volume"],
+                        )
+                        btc_ohlcv_df = ohlcv_df  # fallback
+                        try:
+                            btc_raw = await ohlcv_fetcher.fetch("BTC/USDT", "1h", limit=len(candles))
+                            if btc_raw and len(btc_raw) >= 50:
+                                btc_ohlcv_df = _pd.DataFrame(
+                                    btc_raw,
+                                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                                )
+                        except Exception:
+                            pass
+
+                        funding = 0.0
+                        try:
+                            fr_raw = await redis.get(f"karsa:funding:{sym}")
+                            if fr_raw:
+                                funding = float(fr_raw)
+                        except Exception:
+                            pass
+
+                        stat_engine = hybrid_engine._stat_engine
+                        await stat_engine.calculate_features(
+                            symbol=sym,
+                            ohlcv=ohlcv_df,
+                            btc_ohlcv=btc_ohlcv_df,
+                            funding_rate=funding,
+                        )
+                    except Exception as e:
+                        logger.debug(f"shadow feature calculation failed for {sym}: {e}")
+
+                feature_task = asyncio.create_task(_compute_features(symbol, history))
+                background_tasks.add(feature_task)
+                feature_task.add_done_callback(background_tasks.discard)
 
     consumer = MarketConsumer(
         redis_client=redis, 

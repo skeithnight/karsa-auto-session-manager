@@ -12,7 +12,7 @@ All callers MUST go through _normalize_side() so the Redis key is always
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -83,9 +83,9 @@ class PositionStore:
             else "",
             "regime": regime or "",
             "checkpoint": "OPEN",
-            "entry_time": datetime.now(UTC).isoformat(),
-            "entered_at": datetime.now(UTC).isoformat(),  # Keep for backwards compatibility
-            "last_check_at": datetime.now(UTC).isoformat(),
+            "entry_time": datetime.now(timezone.utc).isoformat(),
+            "entered_at": datetime.now(timezone.utc).isoformat(),  # Keep for backwards compatibility
+            "last_check_at": datetime.now(timezone.utc).isoformat(),
             "entry_regime": entry_regime or regime or "",
             "initial_risk_per_unit": initial_risk_per_unit or "",
             "risk_profile_json": risk_profile_json or "",
@@ -137,7 +137,7 @@ class PositionStore:
 
         if updated:
             pos["peak_price"] = str(price)
-            pos["last_check_at"] = datetime.now(UTC).isoformat()
+            pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
             await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_sl(
@@ -159,7 +159,7 @@ class PositionStore:
         if new_sl_price is not None and new_sl_price > Decimal("0"):
             pos["current_sl"] = str(new_sl_price)
             pos["stop_loss"] = str(new_sl_price)
-        pos["last_check_at"] = datetime.now(UTC).isoformat()
+        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def update_checkpoint(self, symbol: str, side: str, checkpoint: str) -> None:
@@ -168,7 +168,7 @@ class PositionStore:
         if not pos:
             return
         pos["checkpoint"] = checkpoint
-        pos["last_check_at"] = datetime.now(UTC).isoformat()
+        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
 
     async def remove(self, symbol: str, side: str) -> None:
@@ -254,7 +254,7 @@ class PositionStore:
             logger.warning("update_fields: no position found for %s %s", symbol, side)
             return
         pos.update(updates)
-        pos["last_check_at"] = datetime.now(UTC).isoformat()
+        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
         await self.redis.set(self._key(symbol, side), json.dumps(pos))
         logger.debug(
             "update_fields: patched %s %s fields=%s", symbol, side, list(updates.keys())

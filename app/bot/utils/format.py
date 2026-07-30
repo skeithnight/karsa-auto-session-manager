@@ -35,14 +35,6 @@ def italic(t: TextLike) -> HTML:
     return HTML(f"<i>{_safe(t)}</i>")
 
 
-def underline(t: TextLike) -> HTML:
-    return HTML(f"<u>{_safe(t)}</u>")
-
-
-def strike(t: TextLike) -> HTML:
-    return HTML(f"<s>{_safe(t)}</s>")
-
-
 def code(t: TextLike) -> HTML:
     return HTML(f"<code>{_safe(t)}</code>")
 
@@ -55,10 +47,6 @@ def pre(t: TextLike, lang: str = None) -> HTML:
             f'<pre><code class="language-{escape(lang)}">{content}</code></pre>'
         )
     return HTML(f"<pre>{content}</pre>")
-
-
-def link(t: TextLike, url: str) -> HTML:
-    return HTML(f'<a href="{escape(url)}">{_safe(t)}</a>')
 
 
 # ── Composers ─────────────────────────────────────────────────────

@@ -22,7 +22,7 @@ import asyncio
 import contextlib
 import json
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -96,7 +96,7 @@ class SystemWatchdog:
             desyncs.append(ob_desync)
 
         self._status = {
-            "last_check": datetime.now(UTC).isoformat(),
+            "last_check": datetime.now(timezone.utc).isoformat(),
             "desyncs": desyncs,
             "halted": self._halted,
         }

@@ -18,13 +18,11 @@ import json
 import math
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
-
 from loguru import logger
 
 from app.alpha.regime_classifier import RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
-from app.backtest.engine import BacktestEngine, BacktestReport
+from app.backtest.engine import BacktestEngine
 from app.risk.dynamic_risk_gate import DynamicRiskGate
 
 

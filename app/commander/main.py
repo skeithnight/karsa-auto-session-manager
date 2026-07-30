@@ -201,7 +201,7 @@ async def shadow_feedback_task(
     """Periodically queries shadow performance and disables unprofitable regimes for Live."""
     logger.debug("shadow_feedback_task: entering")
     import json
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import text
 
@@ -211,7 +211,7 @@ async def shadow_feedback_task(
     while not kill_switch.is_set():
         try:
             logger.info("shadow_feedback_task: running Auto-Adjustment check")
-            current_date_utc = datetime.now(UTC)
+            current_date_utc = datetime.now(timezone.utc)
             cutoff_date = current_date_utc - timedelta(days=7)
 
             regime_stats = {}
@@ -339,7 +339,7 @@ async def shadow_feedback_task(
                         try:
                             disabled_at = datetime.fromisoformat(disabled_at_str)
                             if disabled_at.tzinfo is None:
-                                disabled_at = disabled_at.replace(tzinfo=UTC)
+                                disabled_at = disabled_at.replace(tzinfo=timezone.utc)
                                 
                             days_disabled = (current_date_utc - disabled_at).total_seconds() / 86400.0
                             if days_disabled >= 14:

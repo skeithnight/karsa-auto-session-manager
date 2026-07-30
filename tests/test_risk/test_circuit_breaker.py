@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 from app.risk.circuit_breaker import CircuitBreaker
@@ -55,7 +55,7 @@ class TestCircuitBreaker:
         assert self.cb.is_paused() is False
 
     def test_is_paused_true(self):
-        self.cb.paused_until = datetime.now(UTC) + timedelta(hours=1)
+        self.cb.paused_until = datetime.now(timezone.utc) + timedelta(hours=1)
         assert self.cb.is_paused() is True
 
     def test_is_halted(self):

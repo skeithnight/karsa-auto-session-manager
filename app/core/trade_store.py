@@ -7,7 +7,7 @@ Schema: trades + ai_decisions tables from scripts/init_db.sql.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -52,7 +52,7 @@ class TradeStore:
         vol_factor: float | None = None,
     ) -> int:
         """Record trade entry. Returns trade id."""
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         try:
             async with self.db.engine.connect() as conn:
                 result = await conn.execute(
@@ -125,7 +125,7 @@ class TradeStore:
         Returns number of rows updated (0 means no matching open trade found).
         If regime is set, also updates the regime column.
         """
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         regime_clause = ", regime = :regime" if regime else ""
         mae_clause = ", mae = :mae" if mae is not None else ""
         mfe_clause = ", mfe = :mfe" if mfe is not None else ""

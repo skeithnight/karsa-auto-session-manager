@@ -10,12 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
-try:
-    from datetime import UTC
-except ImportError:
-    from datetime import timezone
-    UTC = timezone.utc  # type: ignore[misc]
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -135,7 +130,7 @@ class CircuitBreaker:
         if self.consecutive_losses >= self.max_consecutive_losses:
             from datetime import timedelta
 
-            self.paused_until = datetime.now(UTC) + timedelta(
+            self.paused_until = datetime.now(timezone.utc) + timedelta(
                 minutes=self.loss_pause_minutes
             )
             metrics.circuit_breaker_trips.labels(
@@ -159,7 +154,7 @@ class CircuitBreaker:
         if self.paused_until is None:
             return False
 
-        if datetime.now(UTC) >= self.paused_until:
+        if datetime.now(timezone.utc) >= self.paused_until:
             self.paused_until = None
             metrics.circuit_breaker_state.labels(symbol="GLOBAL", reason="consecutive_losses").set(0)
             return False

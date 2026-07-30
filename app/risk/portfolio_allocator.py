@@ -127,21 +127,3 @@ class PortfolioAllocator:
             )
 
         return allocations
-
-    def should_replace(
-        self,
-        new_signal: Any,
-        existing_signals: list[Any],
-    ) -> bool:
-        """Check if a new signal should replace a lower-EV existing allocation.
-
-        Used for dynamic reallocation when a higher-EV opportunity appears.
-        """
-        if len(existing_signals) < self.max_positions:
-            return True
-
-        # Find lowest EV in existing
-        min_ev = min(getattr(s, "expected_value", 0) for s in existing_signals)
-        new_ev = getattr(new_signal, "expected_value", 0)
-
-        return new_ev > min_ev * 1.5  # 50% better to justify replacement

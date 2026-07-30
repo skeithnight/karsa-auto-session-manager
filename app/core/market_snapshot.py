@@ -42,6 +42,3 @@ class MarketSnapshot:
 
     def get_low_prices(self) -> np.ndarray:
         return self.candles[:, 3].astype(float)
-
-    def get_volumes(self) -> np.ndarray:
-        return self.candles[:, 5].astype(float)

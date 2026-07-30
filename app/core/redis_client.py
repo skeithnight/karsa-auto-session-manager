@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import redis.asyncio as aioredis
@@ -171,7 +171,7 @@ class RedisClient:
             raise RuntimeError("Redis not connected")
 
         key = "system:heartbeat"
-        value = datetime.now(UTC).isoformat()
+        value = datetime.now(timezone.utc).isoformat()
         await self.redis.setex(key, 30, value)
         logger.debug("set_heartbeat: returning None")
 
@@ -198,7 +198,7 @@ class RedisClient:
             {
                 "status": status,
                 "reason": reason,
-                "triggered_at": datetime.now(UTC).isoformat()
+                "triggered_at": datetime.now(timezone.utc).isoformat()
                 if status == "TRIGGERED"
                 else None,
             }
@@ -276,7 +276,7 @@ class RedisClient:
             await self.redis.hset(
                 "system:heartbeats",
                 exchange,
-                datetime.now(UTC).isoformat(),
+                datetime.now(timezone.utc).isoformat(),
             )
         except Exception as e:
             logger.error(f"set_exchange_heartbeat: error={e}")

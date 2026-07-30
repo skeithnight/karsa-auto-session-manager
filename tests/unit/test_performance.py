@@ -1,7 +1,7 @@
 """Tests for app.analytics.performance and app.analytics.reconciliation."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -25,7 +25,7 @@ from app.analytics.reconciliation import (
 
 
 def _ts(y: int = 2024, m: int = 1, d: int = 1) -> datetime:
-    return datetime(y, m, d, tzinfo=UTC)
+    return datetime(y, m, d, tzinfo=timezone.utc)
 
 
 def _winning_trade(pnl: float = 10.0) -> TradeRecord:

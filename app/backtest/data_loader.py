@@ -8,8 +8,6 @@ exchange rate limits during repeated backtest and optimization runs.
 from __future__ import annotations
 
 import asyncio
-import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 import ccxt.async_support as ccxt

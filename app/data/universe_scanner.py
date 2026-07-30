@@ -15,7 +15,7 @@ import asyncio
 import contextlib
 import json
 import math
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -254,10 +254,10 @@ class DynamicUniverseScanner:
         payload = {
             "symbols": self.symbols,
             "scores": self.scores,
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         status_data = {
-            "last_refresh": datetime.now(UTC).isoformat(),
+            "last_refresh": datetime.now(timezone.utc).isoformat(),
             "symbol_count": len(self.symbols),
             "top_symbol": self.symbols[0] if self.symbols else "",
         }

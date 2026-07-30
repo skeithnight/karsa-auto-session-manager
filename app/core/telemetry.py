@@ -18,12 +18,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-try:
-    from datetime import UTC
-except ImportError:
-    from datetime import timezone
-    UTC = timezone.utc  # type: ignore[misc]
-from datetime import datetime
+from datetime import datetime, timezone
 
 logger = logging.getLogger("karsa.telemetry")
 
@@ -76,7 +71,7 @@ def _default_health(service_name: str) -> dict:
     """Build a default health payload dict."""
     return {
         "service_name": service_name,
-        "last_heartbeat": datetime.now(UTC).isoformat(),
+        "last_heartbeat": datetime.now(timezone.utc).isoformat(),
         "last_candle_ts": "",
         "candles_ingested": 0,
         "positions_open": 0,
@@ -184,7 +179,7 @@ class TelemetryEmitter:
 
     async def _write_heartbeat(self) -> None:
         payload = _default_health(self.service_name)
-        payload["last_heartbeat"] = datetime.now(UTC).isoformat()
+        payload["last_heartbeat"] = datetime.now(timezone.utc).isoformat()
         payload["last_candle_ts"] = self.last_candle_ts
         payload["candles_ingested"] = self.candles_ingested
         payload["positions_open"] = self.positions_open
@@ -260,7 +255,7 @@ async def get_all_services_health(redis_client: object) -> dict[str, ServiceHeal
         )
         try:
             hb = datetime.fromisoformat(h.last_heartbeat)
-            age_s = (datetime.now(UTC) - hb).total_seconds()
+            age_s = (datetime.now(timezone.utc) - hb).total_seconds()
         except (ValueError, TypeError):
             age_s = float("inf")
 
@@ -302,7 +297,7 @@ def format_health_summary(services: dict[str, ServiceHealth]) -> str:
                 ts = float(h.last_candle_ts)
                 if ts > 1e11:  # likely in milliseconds
                     ts /= 1000.0
-                dt = datetime.fromtimestamp(ts, UTC)
+                dt = datetime.fromtimestamp(ts, timezone.utc)
                 last_candle_str = dt.strftime("%H:%M")
             except (ValueError, TypeError):
                 last_candle_str = str(h.last_candle_ts)[:5]

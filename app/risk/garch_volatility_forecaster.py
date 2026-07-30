@@ -46,9 +46,6 @@ class GARCHVolatilityForecaster:
         """
         try:
             from arch import arch_model
-            from app.core.config import get_settings
-
-            settings = get_settings()
 
             if len(returns) < _MIN_RETURNS:
                 logger.warning(

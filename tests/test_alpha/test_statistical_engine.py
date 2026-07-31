@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from app.alpha.statistical_engine import (
     BREAKOUT_DISTANCE_PCT,
@@ -321,15 +322,14 @@ class TestBreakoutConfirmation:
 
 
 class TestFeatureOutputStructure:
-    def test_output_has_all_fields(self):
+    @pytest.mark.asyncio
+    async def test_output_has_all_fields(self):
         """Feature dict should contain all required fields."""
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(100)
         btc = _make_btc_ohlcv(100)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0001)
-        )
+        result = await engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0001)
 
         required_fields = [
             "symbol",
@@ -356,45 +356,41 @@ class TestFeatureOutputStructure:
         for field in required_fields:
             assert field in result, f"Missing required field: {field}"
 
-    def test_output_symbol_matches(self):
+    @pytest.mark.asyncio
+    async def test_output_symbol_matches(self):
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(100)
         btc = _make_btc_ohlcv(100)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("ETH/USDT", ohlcv, btc)
-        )
+        result = await engine.calculate_features("ETH/USDT", ohlcv, btc)
         assert result["symbol"] == "ETH/USDT"
 
-    def test_output_timestamp_is_iso(self):
+    @pytest.mark.asyncio
+    async def test_output_timestamp_is_iso(self):
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(100)
         btc = _make_btc_ohlcv(100)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("BTC/USDT", ohlcv, btc)
-        )
+        result = await engine.calculate_features("BTC/USDT", ohlcv, btc)
         # Should be parseable as ISO format
         datetime.fromisoformat(result["timestamp"])
 
-    def test_insufficient_candles_returns_defaults(self):
+    @pytest.mark.asyncio
+    async def test_insufficient_candles_returns_defaults(self):
         """With fewer than MIN_CANDLES, should return default feature dict."""
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(10)
         btc = _make_btc_ohlcv(10)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("SOL/USDT", ohlcv, btc)
-        )
+        result = await engine.calculate_features("SOL/USDT", ohlcv, btc)
         assert result["beta_30d"] == 0.0
         assert result["volatility_regime"] == "MEDIUM"
         assert result["volume_spike_ratio"] == 1.0
 
-    def test_null_dataframe_returns_defaults(self):
+    @pytest.mark.asyncio
+    async def test_null_dataframe_returns_defaults(self):
         engine = StatisticalFeatureEngine()
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("SOL/USDT", None, None)
-        )
+        result = await engine.calculate_features("SOL/USDT", None, None)
         assert result["beta_30d"] == 0.0
 
 
@@ -404,26 +400,24 @@ class TestFeatureOutputStructure:
 
 
 class TestFundingRate:
-    def test_annualized_funding_cost(self):
+    @pytest.mark.asyncio
+    async def test_annualized_funding_cost(self):
         """Annualized cost = rate * 3 * 365 * 100."""
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(100)
         btc = _make_btc_ohlcv(100)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0001)
-        )
+        result = await engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0001)
         expected = round(0.0001 * 3 * 365 * 100, 4)
         assert result["annualized_funding_cost_pct"] == expected
 
-    def test_zero_funding_rate(self):
+    @pytest.mark.asyncio
+    async def test_zero_funding_rate(self):
         engine = StatisticalFeatureEngine()
         ohlcv = _make_ohlcv(100)
         btc = _make_btc_ohlcv(100)
 
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0)
-        )
+        result = await engine.calculate_features("SOL/USDT", ohlcv, btc, funding_rate=0.0)
         assert result["funding_rate"] == 0.0
         assert result["annualized_funding_cost_pct"] == 0.0
 
@@ -434,34 +428,31 @@ class TestFundingRate:
 
 
 class TestRedisCaching:
-    def test_get_features_returns_none_without_redis(self):
+    @pytest.mark.asyncio
+    async def test_get_features_returns_none_without_redis(self):
         engine = StatisticalFeatureEngine(redis_client=None)
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.get_features("SOL/USDT")
-        )
+        result = await engine.get_features("SOL/USDT")
         assert result is None
 
-    def test_get_features_returns_cached_data(self):
+    @pytest.mark.asyncio
+    async def test_get_features_returns_cached_data(self):
         mock_redis = AsyncMock()
         cached = {"symbol": "SOL/USDT", "beta_30d": 1.5}
         mock_redis.get = AsyncMock(return_value=json.dumps(cached))
 
         engine = StatisticalFeatureEngine(redis_client=mock_redis)
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.get_features("SOL/USDT")
-        )
+        result = await engine.get_features("SOL/USDT")
         assert result is not None
         assert result["symbol"] == "SOL/USDT"
         assert result["beta_30d"] == 1.5
 
-    def test_get_features_returns_none_on_missing_key(self):
+    @pytest.mark.asyncio
+    async def test_get_features_returns_none_on_missing_key(self):
         mock_redis = AsyncMock()
         mock_redis.get = AsyncMock(return_value=None)
 
         engine = StatisticalFeatureEngine(redis_client=mock_redis)
-        result = asyncio.get_event_loop().run_until_complete(
-            engine.get_features("SOL/USDT")
-        )
+        result = await engine.get_features("SOL/USDT")
         assert result is None
 
 

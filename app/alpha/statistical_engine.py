@@ -133,13 +133,24 @@ class StatisticalFeatureEngine:
         }
 
         if ohlcv is None or btc_ohlcv is None:
-            logger.warning(f"calculate_features: null DataFrame(s) for {symbol}")
+            logger.warning(
+                f"calculate_features: NULL DataFrame for {symbol} "
+                f"(ohlcv={type(ohlcv).__name__ if ohlcv is not None else 'None'}, "
+                f"btc_ohlcv={type(btc_ohlcv).__name__ if btc_ohlcv is not None else 'None'})"
+            )
             return result
 
         if len(ohlcv) < MIN_CANDLES:
             logger.warning(
-                f"calculate_features: insufficient candles for {symbol} "
+                f"calculate_features: INSUFFICIENT candles for {symbol} "
                 f"({len(ohlcv)} < {MIN_CANDLES})"
+            )
+            return result
+
+        if len(btc_ohlcv) < MIN_CANDLES:
+            logger.warning(
+                f"calculate_features: INSUFFICIENT BTC candles for {symbol} "
+                f"({len(btc_ohlcv)} < {MIN_CANDLES})"
             )
             return result
 
@@ -241,18 +252,19 @@ class StatisticalFeatureEngine:
         except Exception as e:
             logger.error(f"calculate_features: error for {symbol}: {e}")
 
-        # Cache to Redis if available
+        # Cache to Redis if available — use setex for atomic set+TTL
         if self._redis is not None:
             try:
                 cache_key = f"karsa:features:{symbol.replace('/', ':')}"
                 safe = _to_native(result)
-                await self._redis.set(cache_key, json.dumps(safe))
-                # TTL is not set via a single call here because the Redis client
-                # exposes `set` (no TTL) and `setex` is on the raw redis object.
-                # For robustness, use the raw client's setex when available.
+                payload = json.dumps(safe)
+                # Try raw redis client first (has setex), fall back to wrapper set
                 raw = getattr(self._redis, "redis", None)
                 if raw is not None:
-                    await raw.setex(cache_key, CACHE_TTL, json.dumps(safe))
+                    await raw.setex(cache_key, CACHE_TTL, payload)
+                else:
+                    await self._redis.set(cache_key, payload)
+                logger.debug(f"calculate_features: cached features for {symbol} (TTL={CACHE_TTL}s)")
             except Exception as e:
                 logger.debug(f"calculate_features: Redis cache write failed for {symbol}: {e}")
 

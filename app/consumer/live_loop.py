@@ -19,6 +19,7 @@ from decimal import Decimal
 from typing import Any
 
 from app.alpha.hybrid_decision_engine import HybridDecisionEngine
+from app.alpha.ai_ranker import AISignalRanker
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
 from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.alpha.strategy_router import StrategyRouter
@@ -143,8 +144,8 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     risk_manager: Any,
     trade_store: TradeStore,
     engine: Any | None = None,
-    crypto_analyst: Any | None = None,
     hybrid_engine: HybridDecisionEngine | None = None,
+    ai_ranker: AISignalRanker | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a real order on Bybit.
 
@@ -280,11 +281,6 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
             total_open,
             max_pos,
         )
-        return
-
-            # Consecutive loss block
-    if engine and await engine.check_consecutive_losses(symbol, signal.regime):
-        logger.info("skip %s — consecutive loss block", symbol)
         return
 
     # ML Prefilter Gate
@@ -429,79 +425,28 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         except Exception as e:
             logger.warning("HybridDecisionEngine evaluation failed for %s: %s", symbol, e)
 
-    # AI Analyst Gate (mandatory, fail-closed)
-    if crypto_analyst:
-        from app.core import metrics
-        metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
-        metrics.funnel_ai_calls.inc()
-        analyst_result = await crypto_analyst.analyze(
-            symbol=symbol,
-            direction=signal.direction,
-            confidence=signal.confidence,
-            regime=signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime),
-            spread_pct=0.0,
-            funding_rate=0.0,
-            oi_change=0.0,
-            price=signal.entry_price,
-            recent_trades="",
-        )
-        # --- Debug logging for AI rejection diagnosis ---
-        if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
-            reason = "unavailable" if not analyst_result else f"rejected_{analyst_result.direction}"
-            from app.core import metrics
-            metrics.ai_analyst_rejections.labels(reason=reason).inc()
-
-            # Detailed debug log showing AI reasoning
-            if analyst_result:
-                logger.warning(
-                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
-                    f"AI: {analyst_result.direction} (confidence={analyst_result.ai_confidence}) | "
-                    f"AI Reason: {analyst_result.reasoning} | "
-                    f"AI Recommendation: {analyst_result.decision_recommendation} | "
-                    f"Regime: {signal.regime.value if hasattr(signal.regime, 'value') else signal.regime}"
+    # AI Signal Ranker — adjust sizing based on signal quality ranking
+    if ai_ranker is not None:
+        try:
+            signal_dict = {
+                "symbol": symbol,
+                "direction": signal.direction,
+                "score": signal.score,
+                "ev_score": getattr(signal, "expected_value", 0.0),
+                "regime": signal.regime.value if hasattr(signal.regime, "value") else str(signal.regime),
+            }
+            ranked = await ai_ranker.rank([signal_dict])
+            if ranked and ranked[0].sizing_multiplier != 1.0:
+                original_amount = signal.amount
+                adjusted_amount = original_amount * Decimal(str(ranked[0].sizing_multiplier))
+                object.__setattr__(signal, "amount", adjusted_amount)
+                logger.info(
+                    "AI Ranker sizing %s: %s -> %s (multiplier=%.2f, thesis=%s)",
+                    symbol, original_amount, adjusted_amount,
+                    ranked[0].sizing_multiplier, ranked[0].edge_thesis,
                 )
-            else:
-                logger.warning(
-                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
-                    f"AI: NONE (unavailable)"
-                )
-
-            # --- Soft Gate (Step 4): Score penalty instead of hard veto ---
-            # FLAT = AI is unsure, light penalty (not hard reject)
-            # Direction mismatch = AI disagrees, heavier penalty
-            # Unavailable = hard reject
-            if analyst_result:
-                if analyst_result.direction == signal.direction:
-                    # AI agrees: Boost confidence
-                    new_score = signal.score + 10
-                    object.__setattr__(signal, "score", new_score)
-                    logger.info(f"AI CONFIRMED: {symbol} {signal.direction}. Score boosted +10 → {new_score:.1f}")
-                elif analyst_result.direction == "FLAT":
-                    # AI is unsure (FLAT): Light penalty — AI doesn't disagree, just lacks conviction
-                    penalty = max(2, int(analyst_result.ai_confidence * 0.10))  # e.g., 25% confidence = -2 points (minimum)
-                    new_score = signal.score - penalty
-                    object.__setattr__(signal, "score", new_score)
-                    logger.warning(
-                        f"AI FLAT: {symbol} (conf={analyst_result.ai_confidence}). "
-                        f"Light penalty -{penalty}. New score: {new_score:.1f}"
-                    )
-                else:
-                    # AI actively disagrees (different direction): Heavier penalty
-                    penalty = int(analyst_result.ai_confidence * 0.25)  # e.g., 60% confidence = -15 points
-                    new_score = signal.score - penalty
-                    object.__setattr__(signal, "score", new_score)
-                    logger.warning(
-                        f"AI DISAGREES: {symbol} (AI={analyst_result.direction}, conf={analyst_result.ai_confidence}). "
-                        f"Penalized score by {penalty}. New score: {new_score:.1f}"
-                    )
-                # Signal continues through pipeline — gate check will reject if score too low
-            else:
-                # AI unavailable — hard reject
-                return
-
-        from app.core import metrics
-        metrics.ai_analyst_approvals.inc()
-        metrics.funnel_ai_approved.inc()
+        except Exception as e:
+            logger.debug("AI Ranker failed for %s: %s", symbol, e)
 
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:
@@ -1534,22 +1479,6 @@ async def main() -> None:  # noqa: PLR0915
     ohlcv_fetcher = OHLCVFetcher(exchange)
     multi_tf = MultiTFFilter(ohlcv_fetcher)
 
-    # AI Integration
-    crypto_analyst = None
-    try:
-        from app.core.ai_client import AIClient
-        from app.alpha.analyst import CryptoAnalyst
-        
-        ai_client = AIClient(
-            router_url=settings.nine_router_base_url,
-            auth_token=settings.nine_router_auth_token,
-            model=settings.nine_router_model,
-        )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
-    except Exception as e:
-        logger.warning(f"AI Client init failed: {e}")
-        crypto_analyst = None
-
     engine = DecisionEngine(
         analyzer,
         router,
@@ -1557,8 +1486,21 @@ async def main() -> None:  # noqa: PLR0915
         trade_memory=trade_memory,
         redis_client=redis,
         multi_tf=multi_tf,
-        crypto_analyst=crypto_analyst,
     )
+
+    # AI Signal Ranker — batch ranks top signals instead of individual veto
+    ai_ranker = None
+    try:
+        from app.core.ai_client import AIClient
+        ai_client = AIClient(
+            router_url=settings.nine_router_base_url,
+            auth_token=settings.nine_router_auth_token,
+            model=settings.nine_router_model,
+        )
+        ai_ranker = AISignalRanker(ai_client)
+        logger.info("AISignalRanker initialized")
+    except Exception as e:
+        logger.warning(f"AISignalRanker init failed: {e}")
 
     position_store = PositionStore(redis)
 
@@ -1611,20 +1553,6 @@ async def main() -> None:  # noqa: PLR0915
     )
 
     from app.risk.portfolio_risk_manager import PortfolioRiskManager
-
-    try:
-        from app.alpha.analyst import CryptoAnalyst
-        from app.core.ai_client import AIClient
-
-        ai_client = AIClient(
-            router_url=settings.nine_router_base_url,
-            auth_token=settings.nine_router_auth_token,
-            model=settings.nine_router_model,
-        )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
-    except Exception as e:
-        crypto_analyst = None
-        logger.warning(f"Could not initialize CryptoAnalyst in live loop: {e}")
 
     trade_store = None
     try:
@@ -1703,7 +1631,7 @@ async def main() -> None:  # noqa: PLR0915
                 metrics.pipeline_queue_wait_seconds.labels(worker_id=str(worker_id)).observe(wait_time)
                 metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(1.0)
                 try:
-                    await _on_signal_live(sym, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst, hybrid_engine)
+                    await _on_signal_live(sym, sig, position_store, executor, risk_manager, trade_store, engine, hybrid_engine, ai_ranker)
                 except Exception as e:
                     logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
                 finally:

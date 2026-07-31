@@ -36,7 +36,7 @@ BTC_BETA_THRESHOLD = 1.2
 FUNDING_RATE_LONG_THRESHOLD = 0.0001  # 0.01% per 8h (as decimal)
 BREAKOUT_VOLUME_MIN = 1.2
 EMA50_OVEREXTENSION_HARD_PCT = 10.0
-MAX_CONCURRENT_POSITIONS = 3
+MAX_CONCURRENT_POSITIONS = 5
 CORRELATION_HARD_THRESHOLD = 0.85
 ATR_EXTREME_PCT = 8.0
 AI_TIMEOUT_SECONDS = 10.0
@@ -98,6 +98,8 @@ _SIMPLE_TO_REGIME: dict[str, MarketRegime] = {
     "RANGE": MarketRegime.RANGE,
     "CHOP": MarketRegime.CHOP,
     "SNIPER": MarketRegime.SNIPER,
+    "TRANSITION_BULL": MarketRegime.TRANSITION_BULL,
+    "TRANSITION_BEAR": MarketRegime.TRANSITION_BEAR,
 }
 
 
@@ -378,10 +380,9 @@ class HybridDecisionEngine:
         if features.get("atr_pct", 0.0) > ATR_EXTREME_PCT:
             triggered.append("GR-08")
 
-        # GR-09: Market regime = CHOP
-        regime_upper = regime.upper().strip()
-        if regime_upper == "CHOP":
-            triggered.append("GR-09")
+        # GR-09: Market regime = CHOP — sizing reduction, not hard block
+        # CHOP is 35-45% of market; blocking it kills half of trading hours
+        # Instead, let soft guardrails handle CHOP sizing (QUARTER size)
 
         # GR-10 is handled in _get_ai_decision (timeout detection)
 
@@ -500,8 +501,7 @@ class HybridDecisionEngine:
             return direction.upper()
 
         # No AI — use regime heuristic
-        if regime_upper == "CHOP":
-            return "BLOCK"
+        # CHOP: allow trading with reduced sizing (soft guardrails handle this)
         if regime_upper in ("RANGE",):
             return "BLOCK"
         return direction.upper()

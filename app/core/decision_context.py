@@ -55,6 +55,7 @@ class DecisionContext:
     trace: DecisionTrace = field(default_factory=DecisionTrace)
 
     total_confidence: float = 0.0
+    regime_conviction: float = 0.5
     evidence: list[Evidence] = field(default_factory=list)
 
     def add_evidence(self, name: str, value: float, weight: float, description: str) -> None:

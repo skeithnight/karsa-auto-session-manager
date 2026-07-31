@@ -60,6 +60,9 @@ class MarketRegime(enum.Enum):
     RANGE = "RANGE"
     CHOP = "CHOP"
     SNIPER = "SNIPER"
+    # Phase 2: Transition states — most profitable moment to trade
+    TRANSITION_BULL = "TRANSITION_BULL"  # CHOP/RANGE → TREND_BULL
+    TRANSITION_BEAR = "TRANSITION_BEAR"  # CHOP/RANGE → TREND_BEAR
 
     def encode(self) -> int:
         """Returns integer encoding for ML feature vector."""
@@ -71,6 +74,8 @@ class MarketRegime(enum.Enum):
             "HYPER_BEAR": 4,
             "CHOP": 5,
             "SNIPER": 6,
+            "TRANSITION_BULL": 7,
+            "TRANSITION_BEAR": 8,
         }.get(self.value, 0)
 
 
@@ -79,6 +84,7 @@ class RegimeClassifier:
 
     def __init__(self, redis_client: object | None = None) -> None:
         self._redis = redis_client
+        self._prev_adx: dict[str, float] = {}  # Phase 2: track ADX for transition detection
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,7 +121,12 @@ class RegimeClassifier:
         sma20 = features.sma_20 or float(closes[-1])
         last_close = float(closes[-1])
 
-        regime = self._decision_tree(adx, hurst, atr_pct, last_close, sma20)
+        # Phase 2: Get previous ADX for transition detection
+        symbol = snapshot.symbol
+        adx_prev = self._prev_adx.get(symbol, adx)  # default to current if no history
+        self._prev_adx[symbol] = adx  # store for next call
+
+        regime = self._decision_tree(adx, hurst, atr_pct, last_close, sma20, adx_prev)
 
         from app.core import metrics as m
 
@@ -271,7 +282,8 @@ class RegimeClassifier:
 
     @staticmethod
     def _decision_tree(
-        adx: float, hurst: float, atr_pct: float, close: float, sma20: float
+        adx: float, hurst: float, atr_pct: float, close: float, sma20: float,
+        adx_prev: float = 0.0,
     ) -> MarketRegime:
         """Ordered decision tree — first match wins."""
         # Priority 1: choppy market with high volatility
@@ -284,6 +296,18 @@ class RegimeClassifier:
                 return MarketRegime.HYPER_BULL
             else:
                 return MarketRegime.HYPER_BEAR
+
+        # Priority 1.8: Phase 2 — Transition detection
+        # CHOP/RANGE → TREND: ADX crossing above 18 with acceleration
+        adx_acceleration = adx - adx_prev
+        if adx > 18.0 and adx_acceleration > 2.0:
+            # ADX rising fast — potential breakout
+            if adx < REGIME_ADX_TREND_THRESHOLD:
+                # Still below trend threshold — transition zone
+                if close > sma20:
+                    return MarketRegime.TRANSITION_BULL
+                else:
+                    return MarketRegime.TRANSITION_BEAR
 
         # Priority 2/3: trending (ADX >= 25, inclusive)
         if adx >= REGIME_ADX_TREND_THRESHOLD:

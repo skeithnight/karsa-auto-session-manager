@@ -93,6 +93,7 @@ class SignalGenerator:
         funding_rate: float | None = None,
         oi_change: float | None = None,
         strategy_score: float | None = None,
+        calibration_profile: object | None = None,
     ) -> TradingSignal | None:
         """Generate trading signal from composite multi-signal confidence.
 
@@ -108,18 +109,23 @@ class SignalGenerator:
         # No longer hard-blocked. CHOP scoring uses funding-heavy contrarian weights.
 
         # --- Individual signal scores (all normalized to [-1, 1]) ---
+        # Use calibration profile if available, fallback to hardcoded defaults
+        skew_norm = getattr(calibration_profile, 'skew_95pct', 0.8) if calibration_profile else 0.8
+        lead_lag_norm = getattr(calibration_profile, 'lead_lag_95pct', 0.005) if calibration_profile else 0.005
+        funding_norm = getattr(calibration_profile, 'funding_95pct', 0.0003) if calibration_profile else 0.0003
+
         # Skew: direct normalization
-        s_skew = max(-1.0, min(1.0, aggregate_skew / 0.8))
+        s_skew = max(-1.0, min(1.0, aggregate_skew / skew_norm)) if skew_norm > 0 else 0.0
 
         # Lead-lag: positive delta = lead outperforming → LONG bias
         s_lead_lag = 0.0
         if lead_lag_delta is not None:
-            s_lead_lag = max(-1.0, min(1.0, lead_lag_delta / 0.005))
+            s_lead_lag = max(-1.0, min(1.0, lead_lag_delta / lead_lag_norm)) if lead_lag_norm > 0 else 0.0
 
         # Funding: contrarian — negative funding → LONG bias
         s_funding = 0.0
         if funding_rate is not None:
-            s_funding = max(-1.0, min(1.0, -funding_rate / 0.0003))
+            s_funding = max(-1.0, min(1.0, -funding_rate / funding_norm)) if funding_norm > 0 else 0.0
 
         # OI: binary — rising = 1.0, falling = -1.0
         # Dead-band: require meaningful OI change (>0.1% relative) to avoid noise

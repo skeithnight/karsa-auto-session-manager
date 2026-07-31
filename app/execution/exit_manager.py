@@ -38,6 +38,7 @@ class ExitManager:
         alert_service: object,
         trade_memory: object | None = None,
         logger_: Any | None = None,
+        ai_exit_brain: object | None = None,
     ) -> None:
         self._client = bybit_client
         self._store = position_store
@@ -47,6 +48,7 @@ class ExitManager:
         self._log = logger_ or logger
         self._regime_shift_counts: dict[str, int] = {}
         self._recently_force_closed: dict[str, float] = {}
+        self._ai_exit_brain = ai_exit_brain
 
     # ------------------------------------------------------------------
     # R-multiple calculation
@@ -170,6 +172,60 @@ class ExitManager:
                     f"SL moved to breakeven {breakeven_sl}"
                 )
                 return False
+
+        # --- AI Exit Brain (ambiguous zone: +0.3R to +2.0R) ---
+        if self._ai_exit_brain is not None:
+            from decimal import Decimal as D
+            r_float = float(r_multiple)
+            if D("0.3") <= r_multiple <= D("2.0"):
+                try:
+                    from app.alpha.ai_exit_brain import AIExitBrain
+                    if isinstance(self._ai_exit_brain, AIExitBrain):
+                        # Build position data for AI evaluation
+                        position_data = {
+                            "symbol": symbol,
+                            "direction": side,
+                            "entry_price": float(entry_price),
+                            "current_price": float(live_price),
+                            "sl_price": float(current_sl),
+                            "r_multiple": r_float,
+                            "hold_minutes": 0,  # TODO: track hold time
+                            "max_hold_minutes": 240,
+                        }
+                        market_data = {
+                            "regime": pos.get("regime", "UNKNOWN"),
+                            "cvd_slope": 0.0,
+                            "funding_rate": 0.0,
+                            "volume_ratio": 1.0,
+                        }
+                        exit_decision = await self._ai_exit_brain.evaluate_exit(
+                            position_data, market_data
+                        )
+                        if exit_decision and exit_decision.action == "FULL_EXIT":
+                            self._log.info(
+                                f"APM: AI EXIT BRAIN {symbol} {side} — FULL_EXIT "
+                                f"(R={r_float:.2f}, reason={exit_decision.reasoning})"
+                            )
+                            return True
+                        elif exit_decision and exit_decision.action == "PARTIAL_EXIT":
+                            self._log.info(
+                                f"APM: AI EXIT BRAIN {symbol} {side} — PARTIAL_EXIT "
+                                f"(R={r_float:.2f}, reason={exit_decision.reasoning})"
+                            )
+                            # TODO: Execute partial exit via SOR
+                        elif exit_decision and exit_decision.action == "TIGHTEN_TRAIL":
+                            if exit_decision.suggested_sl:
+                                new_ai_sl = D(str(exit_decision.suggested_sl))
+                                if side == "LONG" and new_ai_sl > current_sl:
+                                    await self._amend_sl(pos, symbol, side, new_ai_sl)
+                                elif side == "SHORT" and new_ai_sl < current_sl:
+                                    await self._amend_sl(pos, symbol, side, new_ai_sl)
+                            self._log.info(
+                                f"APM: AI EXIT BRAIN {symbol} {side} — TIGHTEN_TRAIL "
+                                f"(R={r_float:.2f}, reason={exit_decision.reasoning})"
+                            )
+                except Exception as e:
+                    self._log.debug(f"AI Exit Brain failed for {symbol}: {e}")
 
         # --- Close-based trailing stop ---
         if r_multiple < APM_TREND_TRAIL_ACTIVATE_R:

@@ -8,7 +8,7 @@
 
 An autonomous crypto perpetuals trading bot that reads market data from multiple exchanges (Binance, OKX, Bybit) to build a "true" global price picture, but only ever *trades* on Bybit — because Bybit requires a proxy (geo-restriction) and multi-venue execution would compound that latency into a fatal flaw. To make the proxy latency irrelevant, the strategy trades 15m–4h swing/intraday structure instead of HFT. Everything runs as a single Python `asyncio` process (not microservices) specifically to avoid internal state-sync bugs on top of an already-fragile external proxy dependency.
 
-Currently: **Phase 2 (Core Trading Engine) ~90% built. Phase 3.1 (Shadow Mode) fully built with all 4 refinements.** The system has been upgraded from a static trend-following strategy into an Institutional-Grade Adaptive Multi-Strategy Bot using a Hub-and-Spoke architecture. Backtest Worker (Phase 3.2), Commander (Phase 4), and full Telemetry (Phase 5) remain unbuilt — see §8 for blueprint phase completion breakdown.
+Currently: **Phase 2 (Core Trading Engine) ~90% built. Phase 3.1 (Shadow Mode) fully built with all 4 refinements.** The system has been upgraded from a static trend-following strategy into an Institutional-Grade Adaptive Multi-Strategy Bot using a Hub-and-Spoke architecture. **Crypto Trader Master Plan (Phases 1-7) fully implemented** — EV composite scoring replaces 25+ binary filters, CHOP is now tradeable via sub-strategies, AI shifted from veto gate to ranker/exit brain. Backtest Worker (Phase 3.2), Commander (Phase 4), and full Telemetry (Phase 5) remain unbuilt — see §8 for blueprint phase completion breakdown.
 
 ---
 
@@ -37,19 +37,21 @@ Note: `app/core/session.py` (Session Orchestrator, UTC time-block regime logic) 
 
 ### Alpha Bridge Expansion (Key 2 Detail)
 
-The Alpha Bridge now operates as a **Hub-and-Spoke** system. The `RegimeClassifier` is the central hub; the `StrategyRouter` applies regime-specific confidence scoring:
+The Alpha Bridge now operates as a **Hub-and-Spoke** system with **EV Composite Scoring**. The `RegimeClassifier` is the central hub; the `EVScorer` replaces 25+ binary filters with 9 weighted components:
 
 ```mermaid
 graph TD
-    DATA[Global Data Engine] --> RC[RegimeClassifier\nADX + Hurst + ATR]
-    RC -->|TREND_BULL / TREND_BEAR| TS[Trend Strategy\nMomentum + Breakouts\n+ Global Sync]
-    RC -->|RANGE| RS[Range Strategy\nBB Edge-Fade\n+ Wick Rejection]
-    RC -->|CHOP| CS[Chop Strategy\nOrderbook Liquidity Sweep\n+ Funding Extremes]
-    TS & RS & CS --> ACE[Adaptive Confidence Engine\n0–100 score]
-    ACE --> PRM[PortfolioRiskManager\nPre-trade Gate]
-    PRM --> RG[Dynamic Risk Gate]
+    DATA[Global Data Engine] --> RC[RegimeClassifier\nADX + Hurst + ATR + Transition Detection]
+    RC -->|Regime + Conviction| EV[EVScorer\n9 Components: regime 0.20, momentum 0.20, microstructure 0.15, funding 0.10, spread 0.10, multi_tf 0.10, historical 0.08, conviction 0.05, oi 0.02]
+    EV -->|EV Score| DT[DynamicThreshold\nBase 0.55 + drawdown/session/cold_streak adj]
+    DT -->|Above Threshold| AR[AI Ranker\nTop 5 signals, never rejects]
+    DT -->|Below Threshold| RST[RejectedSignalTracker\nRedis Stream for calibration]
+    AR -->|Ranked + Sizing| SP[SizingPipeline\nKelly + Per-Asset Calibration]
+    SP --> PRM[PortfolioRiskManager\nPre-trade Gate]
+    PRM --> RG[Dynamic Risk Gate\nCHOP Sub-strategies + TRANSITION profiles]
     RG --> EX[Bybit Executor]
     EX --> APM[ActivePositionManager\n2s monitoring loop]
+    APM -->|Ambiguous Zone| AEB[AI Exit Brain\n+0.3R to +2.0R decisions]
 ```
 
 ---

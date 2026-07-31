@@ -81,13 +81,14 @@ app/
 │   ├── universe_scorer.py    # Dynamic universe scoring (Volume+Momentum+Squeeze+Overextension)
 │   ├── universe_scanner.py   # Periodic universe re-scan (new listings, delistings)
 │   ├── market_data_ingestor.py  # Historical data ingestion for backtest
-│   └── sector_mapping.py     # Static sector classification with keyword fallback
-├── alpha/                  # Key 2 — Alpha Bridge (Hub-and-Spoke, Phase 6)
+│   ├── sector_mapping.py     # Static sector classification with keyword fallback
+│   └── asset_calibrator.py   # [NEW] Per-asset 95th percentile normalization (skew, lead-lag, funding, spread, ATR, volume)
+├── alpha/                  # Key 2 — Alpha Bridge (Hub-and-Spoke, Phase 6 + Crypto Trader Master Plan)
 │   ├── metrics.py
 │   ├── bridge.py             # AlphaBridge — orchestrates signal generation to TradeSignal
 │   ├── signals.py            # Multi-signal composite (skew+lead_lag+funding+OI)
 │   ├── regime.py             # Hurst + ADX regime classifier (existing)
-│   ├── regime_classifier.py  # [BUILT] RegimeClassifier — The Hub (ADX+Hurst+ATR, Phase 6)
+│   ├── regime_classifier.py  # [BUILT] RegimeClassifier — The Hub (ADX+Hurst+ATR+Transition, Phase 6)
 │   ├── hmm_regime_classifier.py # [ENHANCED] HMM with predict_proba for regime confidence
 │   ├── strategy_router.py    # [BUILT] StrategyRouter — The Spokes (per-regime scoring, Phase 6)
 │   ├── lead_lag_buffer.py    # 15-min rolling price buffer
@@ -102,18 +103,27 @@ app/
 │   ├── ml_prefilter.py       # ML-based signal pre-filter
 │   ├── sector_filter.py      # [ENHANCED] Sector rotation with scoring multiplier
 │   ├── macro_narrator.py     # [FIXED] Async macro multiplier (was sync, returned coroutine)
-│   └── evidence_collector.py # Evidence collection for confidence scoring
+│   ├── evidence_collector.py # Evidence collection for confidence scoring
+│   ├── ev_scorer.py          # [NEW] EV composite scoring (9 weighted components, replaces 25+ filters)
+│   ├── ev_threshold.py       # [NEW] Dynamic threshold (base 0.55, adj by drawdown/session/cold streak)
+│   ├── rejected_signal_tracker.py # [NEW] Redis stream tracking rejected signals with EV scores
+│   ├── multi_resolution_regime.py # [NEW] 15m/1H/4H regime classification matched to strategy holding periods
+│   ├── ai_ranker.py          # [NEW] Batch AI ranking (top 5 signals, never rejects, sizing multiplier)
+│   ├── ai_exit_brain.py      # [NEW] AI exit decisions in ambiguous zone (+0.3R to +2.0R)
+│   ├── ai_regime_disambiguator.py # [NEW] AI regime disambiguation when deterministic conviction <0.45
+│   ├── smart_cooldown.py     # [NEW] Condition-based cooldown (5-20min, regime-aware)
+│   └── session_activity.py   # [NEW] Session quality multiplier (0.5x-1.2x sizing)
 ├── execution/               # Key 4 — Bybit Executor + APM (Phase 6)
 │   ├── bybit_client.py       # Bybit REST/WS client + exchange-side SL
 │   ├── sor.py                # Post-Only -> Reprice -> Market (slippage guard, adaptive reprice)
 │   ├── position_lifecycle.py # Trailing stop + performance checkpoints (existing)
 │   ├── position_manager.py   # [FIXED] APM — SL 5% cap, orphan 5 USDT min, breakeven lock
 │   └── shadow.py             # [BUILT] ShadowExecutor + ShadowAPM + ShadowExchangeClient (Phase 3.1)
-├── risk/                     # Key 3 — Risk Gate (expanded, Phase 6)
+├── risk/                     # Key 3 — Risk Gate (expanded, Phase 6 + Crypto Trader Master Plan)
 │   ├── gates.py              # 3-Layer: liquidity, spread, circuit breaker
 │   ├── circuit_breaker.py    # Per-session hard stop at -2% drawdown
 │   ├── sector_cap.py         # Sector diversity cap (max 2 per sector)
-│   ├── dynamic_risk_gate.py  # [BUILT] Regime-specific RiskProfile (Phase 6)
+│   ├── dynamic_risk_gate.py  # [BUILT] Regime-specific RiskProfile + CHOP sub-strategies + TRANSITION profiles
 │   ├── portfolio_risk_manager.py  # [BUILT] Pre-trade: correlation, exposure, CB, spread detection (Phase 6)
 │   ├── garch_volatility_forecaster.py  # GARCH volatility targeting for Kelly sizing
 │   ├── kelly_sizer.py        # Kelly criterion position sizing with GARCH adjustment

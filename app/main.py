@@ -837,8 +837,20 @@ async def regime_engine_task(
             import numpy as _np
 
             candles = _np.array(candles_raw, dtype=float)
+
+            from app.core.feature_extractor import FeatureExtractor
+            from app.core.feature_store import FeatureStore
+            from app.core.market_snapshot import MarketSnapshot
+
+            snapshot = MarketSnapshot(
+                symbol=symbol,
+                timestamp_ms=int(candles[-1][0]),
+                candles=candles,
+            )
+            store = FeatureStore(snapshot)
+            features = FeatureExtractor.extract(store)
             regime, conviction = await asyncio.to_thread(
-                regime_classifier.classify_with_conviction, candles
+                regime_classifier.classify_with_conviction, features, snapshot
             )
             await redis_client.set_symbol_regime(symbol, regime.value, conviction)
             logger.info(f"Regime {symbol}: {regime.value} conviction={conviction:.3f}")

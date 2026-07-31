@@ -379,6 +379,7 @@ class StrategyRouter:
         regime: MarketRegime,
         direction: str,
         symbol: str = "UNKNOWN",
+        conviction: float = 0.5,
     ) -> tuple[DecisionContext, float]:
         """Score a signal probabilistically using EvidenceCollector.
 
@@ -387,6 +388,7 @@ class StrategyRouter:
             regime: current market regime
             direction: "LONG" or "SHORT"
             symbol: Trading pair
+            conviction: regime conviction 0.0-1.0 from Redis
 
         Returns:
             Tuple of (DecisionContext, vol_factor)
@@ -395,7 +397,8 @@ class StrategyRouter:
             symbol=symbol,
             direction=direction,
             regime=regime,
-            features=features
+            features=features,
+            regime_conviction=conviction,
         )
 
         # ─── PROFITABILITY FIX: EXCLUDE MASSIVE-CAPS FROM HYPER ───
@@ -431,10 +434,9 @@ class StrategyRouter:
 
         # Wire regime conviction to score (prevents boundary whipsaw)
         # Conviction is 0.0-1.0 from classify_with_conviction(), written to Redis
-        conviction = getattr(context, 'regime_conviction', 0.5)
-        if conviction < 1.0:
-            context.total_confidence *= conviction
-            logger.debug(f"StrategyRouter: score weighted by conviction={conviction:.3f}")
+        if context.regime_conviction < 1.0:
+            context.total_confidence *= context.regime_conviction
+            logger.debug(f"StrategyRouter: score weighted by conviction={context.regime_conviction:.3f}")
 
         atr_pct = features.atr_pct or VOLATILITY_REFERENCE_ATR_PCT
         vol_factor = (

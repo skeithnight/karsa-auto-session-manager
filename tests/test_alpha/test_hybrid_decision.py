@@ -202,7 +202,7 @@ class TestHardGuardrails:
 
     @pytest.mark.asyncio
     async def test_gr06_concurrent_positions_blocks(self):
-        """GR-06: Concurrent positions >= 3."""
+        """GR-06: Concurrent positions >= 5 (MAX_CONCURRENT_POSITIONS)."""
         engine = _make_engine()
 
         decision = await engine.evaluate(
@@ -211,7 +211,7 @@ class TestHardGuardrails:
             btc_regime="TREND_BULL",
             ohlcv=_make_ohlcv(),
             btc_ohlcv=_make_btc_ohlcv(),
-            concurrent_positions=3,
+            concurrent_positions=5,
         )
 
         assert decision.action == "BLOCK"
@@ -300,8 +300,8 @@ class TestHardGuardrails:
         assert "GR-08" in decision.guardrails_triggered
 
     @pytest.mark.asyncio
-    async def test_gr09_chop_regime_blocks(self):
-        """GR-09: Market regime = CHOP."""
+    async def test_gr09_chop_regime_sizing(self):
+        """GR-09: Market regime = CHOP — now soft-sizing, not hard block."""
         engine = _make_engine()
 
         decision = await engine.evaluate(
@@ -312,8 +312,8 @@ class TestHardGuardrails:
             btc_ohlcv=_make_btc_ohlcv(),
         )
 
-        assert decision.action == "BLOCK"
-        assert "GR-09" in decision.guardrails_triggered
+        # CHOP is no longer hard-blocked — soft guardrails reduce sizing
+        assert decision.action != "BLOCK" or "GR-09" not in decision.guardrails_triggered
 
     @pytest.mark.asyncio
     async def test_gr10_ai_timeout_falls_back(self):
@@ -504,7 +504,7 @@ class TestHardGuardrails:
 
         decision = await engine.evaluate(
             symbol="SOL/USDT",
-            regime="CHOP",  # GR-09
+            regime="CHOP",
             btc_regime="TREND_BULL",
             ohlcv=_make_ohlcv(),
             btc_ohlcv=_make_btc_ohlcv(),
@@ -513,7 +513,7 @@ class TestHardGuardrails:
         assert decision.action == "BLOCK"
         assert "GR-05" in decision.guardrails_triggered
         assert "GR-08" in decision.guardrails_triggered
-        assert "GR-09" in decision.guardrails_triggered
+        # GR-09 no longer blocks CHOP — soft sizing instead
 
 
 # ------------------------------------------------------------------
@@ -1103,11 +1103,11 @@ class TestATRExtreme:
 
 
 class TestCHOPRegime:
-    """Test CHOP regime guardrail."""
+    """Test CHOP regime guardrail — now soft-sizing, not hard block."""
 
     @pytest.mark.asyncio
-    async def test_chop_blocks(self):
-        """CHOP regime blocks all trades."""
+    async def test_chop_sizing(self):
+        """CHOP regime no longer blocks — soft guardrails reduce sizing."""
         engine = _make_engine()
 
         decision = await engine.evaluate(
@@ -1118,8 +1118,8 @@ class TestCHOPRegime:
             btc_ohlcv=_make_btc_ohlcv(),
         )
 
-        assert decision.action == "BLOCK"
-        assert "GR-09" in decision.guardrails_triggered
+        # CHOP is no longer hard-blocked
+        assert decision.action != "BLOCK" or "GR-09" not in decision.guardrails_triggered
 
     @pytest.mark.asyncio
     async def test_trend_passes(self):

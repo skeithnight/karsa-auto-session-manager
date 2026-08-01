@@ -273,11 +273,14 @@ class SmartOrderRouter:
 
             await asyncio.sleep(delay)
 
-            # Move price toward market (buy: higher, sell: lower)
+            # Move price toward market with strict 3 bps (0.03%) max slippage cap
+            slippage_cap_pct = Decimal("0.0003")  # 3 bps cap
             if side == "buy":
-                current_price += effective_tick
+                max_price = price * (Decimal("1.0") + slippage_cap_pct)
+                current_price = min(current_price + effective_tick, max_price)
             else:
-                current_price -= effective_tick
+                min_price = price * (Decimal("1.0") - slippage_cap_pct)
+                current_price = max(current_price - effective_tick, min_price)
                 # Guard: never go negative or zero
                 if current_price <= 0:
                     logger.warning(

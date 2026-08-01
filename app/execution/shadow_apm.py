@@ -100,7 +100,7 @@ class ShadowAPM:
         is_hyper = str(pos.get("regime", "")).startswith("HYPER")
         quick_profit_mins = 3 if is_hyper else 5
         quick_profit_r = Decimal("1.0") if is_hyper else Decimal("2.0")
-        stag_mins = 3 if is_hyper else 5  # Reduced from 10 to 5 for faster exits
+        stag_mins = 5 if is_hyper else 15  # Adjusted to 15 minutes per trader instruction
         stag_r = Decimal("0.5") if is_hyper else Decimal("0.2")
 
         # Quick Profit Exit

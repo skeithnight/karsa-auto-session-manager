@@ -1156,6 +1156,7 @@ class DecisionEngine:
             drawdown_pct=drawdown_pct,
             recent_win_rate=historical_win_rate,
             hour_utc=hour_utc,
+            regime=regime.value if hasattr(regime, "value") else str(regime),
         )
 
         # Compute EV score

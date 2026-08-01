@@ -65,18 +65,9 @@ class DynamicThreshold:
         drawdown_pct: float = 0.0,
         recent_win_rate: float = 0.5,
         hour_utc: int | None = None,
+        regime: str = "",
     ) -> float:
-        """Compute dynamic EV threshold.
-
-        Args:
-            redis_client: Optional Redis for cached calibration.
-            drawdown_pct: Current account drawdown (0.0 = at peak).
-            recent_win_rate: Win rate over last N trades.
-            hour_utc: Current UTC hour (default: now).
-
-        Returns:
-            Threshold between _MIN_THRESHOLD and _MAX_THRESHOLD.
-        """
+        """Compute dynamic EV threshold."""
         # Try Redis-cached threshold first
         if redis_client is not None:
             cached = await self._read_cached(redis_client)
@@ -85,6 +76,15 @@ class DynamicThreshold:
 
         # Compute from parameters
         threshold = self._base
+
+        # Regime adjustment (Higher selective threshold for CHOP and RANGE)
+        reg_upper = regime.upper()
+        if "CHOP" in reg_upper or "VOLATILITY" in reg_upper:
+            threshold += 0.10
+            logger.info("Threshold: CHOP regime (%s) → +0.10", regime)
+        elif "RANGE" in reg_upper:
+            threshold += 0.08
+            logger.info("Threshold: RANGE regime (%s) → +0.08", regime)
 
         # Drawdown adjustment
         if drawdown_pct > _DD_SEVERE_PCT:

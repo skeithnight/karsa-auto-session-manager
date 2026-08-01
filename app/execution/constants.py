@@ -13,8 +13,8 @@ APM_ERROR_BACKOFF_S: int = 5
 APM_RECONCILE_INTERVAL_S: int = 300
 APM_BREAKEVEN_FEE_PCT = Decimal("0.0025")  # 0.25% -- covers 0.12% round-trip fees + locks ~0.13% profit
 APM_TREND_TRAIL_ATR_MULT = Decimal("2.5")
-APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")  # Trailing activates at +1.5R (after breakeven at +0.75R)
-APM_BREAKEVEN_LOCK_R = Decimal("0.25")  # Free Roll: breakeven at +0.25R -- winning trade must NEVER become a loser
+APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.5")  # Trailing activates at +1.5R (after breakeven at +1.15R)
+APM_BREAKEVEN_LOCK_R = Decimal("1.15")  # Fee-aware Breakeven Lock trigger: requires +1.15R raw move
 APM_BREAKEVEN_ATR_MULT = Decimal("1.5")  # price must move > 1.5x ATR to trigger BE
 
 # Sprint 1: Trailing Limit Exit (Maker-Only)

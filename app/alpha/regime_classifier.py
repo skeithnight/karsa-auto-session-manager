@@ -297,13 +297,12 @@ class RegimeClassifier:
             else:
                 return MarketRegime.HYPER_BEAR
 
-        # Priority 1.8: Phase 2 — Transition detection
-        # CHOP/RANGE → TREND: ADX crossing above 18 with acceleration
+        # Priority 1.8: Phase 2 — Transition & Multi-Resolution Consensus detection
+        # CHOP/RANGE → TREND: ADX crossing above 18 with acceleration OR 15m ADX >= 25.0
         adx_acceleration = adx - adx_prev
-        if adx > 18.0 and adx_acceleration > 2.0:
-            # ADX rising fast — potential breakout
-            if adx < REGIME_ADX_TREND_THRESHOLD:
-                # Still below trend threshold — transition zone
+        if (adx > 18.0 and adx_acceleration > 2.0) or (adx >= 25.0 and hurst < REGIME_HURST_MR_THRESHOLD):
+            # ADX rising fast or strong 15m trend momentum in 1H range — multi-resolution transition zone
+            if adx < 40.0:
                 if close > sma20:
                     return MarketRegime.TRANSITION_BULL
                 else:

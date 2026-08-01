@@ -149,7 +149,7 @@ class CCXTManager:
             logger.error(f"fetch_bybit_perps: fetch_tickers failed: {e}")
             return []
 
-        candidates: list[tuple[str, float]] = []
+        candidates: list[dict[str, Any]] = []
         for symbol, ticker in tickers.items():
             # Only USDT perpetuals (BTC/USDT:USDT format)
             if not symbol.endswith(":USDT"):
@@ -162,13 +162,52 @@ class CCXTManager:
                 continue
             # Normalize to config format: BTC/USDT:USDT -> BTC/USDT
             base = symbol.split(":")[0]
-            candidates.append((base, vol_usd))
+            pct_change = float(ticker.get("percentage") or 0)
+            candidates.append({
+                "symbol": base,
+                "vol_usd": vol_usd,
+                "percentage": pct_change,
+            })
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        result = [s for s, _ in candidates[:top_n]]
+        if not candidates:
+            return []
+
+        # Sort by volume (70% quota) and by absolute 24h percentage gain (30% quota)
+        # This guarantees top gainers (+20%, +50%, +100% movers) are included even if volume rank is lower
+        vol_quota = max(1, int(top_n * 0.7))
+        gain_quota = top_n - vol_quota
+
+        by_vol = sorted(candidates, key=lambda x: x["vol_usd"], reverse=True)
+        by_gain = sorted(candidates, key=lambda x: abs(x["percentage"]), reverse=True)
+
+        selected_set: set[str] = set()
+        result: list[str] = []
+
+        # 1. Add top volume leaders
+        for c in by_vol[:vol_quota]:
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
+        # 2. Add top 24h gainers/movers
+        for c in by_gain:
+            if len(result) >= top_n:
+                break
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
+        # 3. Fill remaining slots if any from volume list
+        for c in by_vol:
+            if len(result) >= top_n:
+                break
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
         logger.info(
             f"fetch_bybit_perps: {len(candidates)} above ${min_volume_usd:,.0f} volume, "
-            f"selected top {len(result)}"
+            f"selected top {len(result)} (volume + top gainers)"
         )
         return result
 

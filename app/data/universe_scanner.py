@@ -179,19 +179,24 @@ class DynamicUniverseScanner:
             self._min_vol,
         )
 
-        # 3. Compute ATR for top candidates (cap to limit API calls)
-        sort_by_vol = sorted(candidates, key=lambda c: c["volume_usd"], reverse=True)
-        for cand in sort_by_vol[:ATR_CAP_CANDIDATES]:
+        # 3. Compute ATR for top candidates (blend volume + 24h gain to pick candidates)
+        sort_by_rank = sorted(
+            candidates,
+            key=lambda c: math.log1p(c["volume_usd"]) * 0.5 + abs(c.get("percentage", 0)) * 0.5,
+            reverse=True,
+        )
+        for cand in sort_by_rank[:ATR_CAP_CANDIDATES]:
             try:
                 cand["atr"] = await self._compute_symbol_atr(cand["symbol"])
             except Exception:
                 logger.debug("UniverseScanner: ATR failed for {}", cand["symbol"])
                 cand["atr"] = 0.0
-        for cand in sort_by_vol[ATR_CAP_CANDIDATES:]:
+        for cand in sort_by_rank[ATR_CAP_CANDIDATES:]:
             cand["atr"] = 0.0
 
-        # 4. Compute composite score: 40% volume + 30% ATR + 30% gainer/momentum
-        # Use log scale for volume to prevent BTC/ETH from squashing altcoins to 0.0
+        # 4. Compute composite score with Pre-Pump Accumulation Detection
+        # Accumulation candidates: low 24h price change (-3% to +6%) with high volume rank
+        # Momentum candidates: price change > 8%
         for cand in candidates:
             cand["log_vol"] = math.log1p(cand["volume_usd"])
 
@@ -203,21 +208,30 @@ class DynamicUniverseScanner:
             norm_vol = cand["log_vol"] / max_log_vol
             norm_atr = cand.get("atr", 0) / max_atr if max_atr > 0 else 0.0
 
-            # Use absolute percentage for momentum, but penalize negative moves slightly
             pct = cand.get("percentage", 0)
             abs_pct = abs(pct)
             norm_pct = abs_pct / max_pct if max_pct > 0 else 0.0
             if pct < 0:
                 norm_pct *= 0.7  # Prefer gainers over losers
 
-            # Hyper-Momentum Boost: Force Top Gainers into the top ranks
+            # Categorize candidate & apply targeted boost
+            category = "VOLUME_LEADER"
+            accumulation_boost = 0.0
             momentum_boost = 0.0
-            if pct > 15.0:
-                momentum_boost = 1.0  # +1.0 ensures it beats slow high-volume coins
-            elif pct > 10.0:
+
+            if -3.0 <= pct <= 6.0 and norm_vol > 0.6:
+                # Pre-Pump Accumulation candidate: High volume rank + price compression at bottom
+                category = "ACCUMULATION"
+                accumulation_boost = 0.8  # Strong boost to capture early accumulation before pump
+            elif pct > 15.0:
+                category = "MOMENTUM_SQUEEZE"
+                momentum_boost = 1.0  # Top gainers actively squeezing
+            elif pct > 8.0:
+                category = "MOMENTUM_BREAKOUT"
                 momentum_boost = 0.5
 
-            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + momentum_boost
+            cand["category"] = category
+            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + accumulation_boost + momentum_boost
 
         # 5. Sort by composite score, take top N
         candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -225,15 +239,17 @@ class DynamicUniverseScanner:
 
         self.symbols = [c["symbol"] for c in selected]
         self.scores = {c["symbol"]: round(c["score"], 4) for c in selected}
+        self.categories = {c["symbol"]: c.get("category", "VOLUME_LEADER") for c in selected}
 
         # 6. Write to Redis
         await self._write_redis()
 
         logger.info(
-            "UniverseScanner: refreshed — %d symbols, top=%s (score=%.3f)",
+            "UniverseScanner: refreshed — %d symbols, top=%s (score=%.3f, cat=%s)",
             len(self.symbols),
             self.symbols[0] if self.symbols else "none",
             self.scores.get(self.symbols[0], 0) if self.symbols else 0,
+            self.categories.get(self.symbols[0], "none") if self.symbols else "none",
         )
         return self.symbols
 
@@ -254,6 +270,7 @@ class DynamicUniverseScanner:
         payload = {
             "symbols": self.symbols,
             "scores": self.scores,
+            "categories": getattr(self, "categories", {}),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         status_data = {

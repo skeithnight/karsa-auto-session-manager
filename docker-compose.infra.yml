@@ -82,6 +82,8 @@ services:
       start_period: 30s
     ports:
       - "20129:20128"
+      - "20128:20128"
+      - "20219:20128"
     networks:
       - karsa-backend
 
@@ -92,10 +94,14 @@ services:
   # only happens if you deliberately rebuild THIS file.
 
   9router:
-    image: 9router:latest
+    image: decolua/9router:latest
     container_name: karsa-9router
     restart: unless-stopped
     env_file: .env
+    environment:
+      - DATA_DIR=/app/data
+      - PORT=20128
+      - HOSTNAME=0.0.0.0
     network_mode: "service:gluetun"
     depends_on:
       gluetun:

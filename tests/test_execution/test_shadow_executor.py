@@ -26,7 +26,7 @@ def shadow_executor(mock_redis):
     mock_trade_store = AsyncMock()
 
     # We patch get_settings to provide predictable shadow configs
-    with patch("app.execution.shadow.get_settings") as mock_settings:
+    with patch("app.core.config.get_settings") as mock_settings:
         settings_mock = MagicMock()
         settings_mock.shadow_slippage_pct = "0.0005"
         settings_mock.shadow_taker_fee_pct = "0.00055"

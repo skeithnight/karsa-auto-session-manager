@@ -148,7 +148,7 @@ class TestShadowAPMWickDetection:
         pos = _make_open_position(virtual_sl="50000", worst_price_seen="51000")
         mock_executor._get_mid_price = AsyncMock(return_value=Decimal("49500"))
 
-        with patch("app.execution.shadow.get_settings") as mock_settings:
+        with patch("app.core.config.get_settings") as mock_settings:
             settings = MagicMock()
             settings.shadow_maker_fee_pct = "0.0002"
             settings.shadow_taker_fee_pct = "0.00055"
@@ -171,7 +171,7 @@ class TestShadowAPMWickDetection:
         pos_tick1 = _make_open_position(virtual_sl="50000", worst_price_seen="51000")
         mock_executor._get_mid_price = AsyncMock(return_value=Decimal("49500"))
 
-        with patch("app.execution.shadow.get_settings") as mock_settings:
+        with patch("app.core.config.get_settings") as mock_settings:
             settings = MagicMock()
             settings.shadow_maker_fee_pct = "0.0002"
             settings.shadow_taker_fee_pct = "0.00055"

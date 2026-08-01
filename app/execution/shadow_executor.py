@@ -183,9 +183,6 @@ class ShadowExecutor:
             "is_shadow": True,
         }
 
-        if is_post_only:
-            result["pending_since"] = datetime.now(timezone.utc).isoformat()
-
         return result
 
     async def execute_exit(

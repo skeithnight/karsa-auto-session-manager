@@ -190,11 +190,11 @@ async def bulk_upsert_candles(
         values = []
         params: list[Any] = []
         for j, c in enumerate(batch):
-            off = j * 9
+            off = j * 8
             values.append(
                 f"(${off + 1}::text, ${off + 2}::text, ${off + 3}::timestamptz, "
                 f"${off + 4}::numeric, ${off + 5}::numeric, "
-                f"${off + 6}::numeric, ${off + 7}::numeric, ${off + 8}::numeric, ${off + 9}::numeric)"
+                f"${off + 6}::numeric, ${off + 7}::numeric, ${off + 8}::numeric)"
             )
             params.extend([
                 c["symbol"], c["timeframe"], c["ts"],

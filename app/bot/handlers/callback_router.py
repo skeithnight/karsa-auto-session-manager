@@ -39,6 +39,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report_menu_cmd,
         ai_accuracy_cmd,
         feature_correlation_cmd,
+        backtest_hybrid_report_cmd,
     )
     from app.bot.handlers.settings import (
         settings_cmd,
@@ -194,6 +195,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Backtest
     elif data == "cmd_backtest":
         await backtest_cmd(update, context)
+
+    # Hybrid Backtest
+    elif data == "cmd_backtest_hybrid":
+        await backtest_hybrid_report_cmd(update, context)
 
     # Trade History
     elif data == "cmd_trade_history":

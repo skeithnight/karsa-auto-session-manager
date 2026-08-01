@@ -101,8 +101,39 @@ class EVScorer:
         )
     """
 
-    def __init__(self, weights: dict[str, float] | None = None) -> None:
+    def __init__(
+        self,
+        weights: dict[str, float] | None = None,
+        redis_client: object | None = None,
+    ) -> None:
         self._weights = weights or WEIGHTS.copy()
+        self._redis = redis_client
+        self._optimized_cache: dict[str, dict[str, float]] = {}
+
+    async def get_weights_for_regime(self, regime: str | None) -> dict[str, float]:
+        """Get weights for a regime, checking Redis for optimized values."""
+        if not regime or self._redis is None:
+            return self._weights
+
+        # Check cache first
+        if regime in self._optimized_cache:
+            return self._optimized_cache[regime]
+
+        # Try to load from Redis
+        try:
+            import json
+            raw = await self._redis.get(f"karsa:ev_weights:{regime}")  # type: ignore[attr-defined]
+            if raw:
+                data = raw.decode() if isinstance(raw, bytes) else str(raw)
+                optimal = json.loads(data)
+                weights = optimal.get("weights", self._weights)
+                self._optimized_cache[regime] = weights
+                logger.debug("Loaded optimized weights for %s from Redis", regime)
+                return weights
+        except Exception as e:
+            logger.debug("Failed to load optimized weights for %s: %s", regime, e)
+
+        return self._weights
 
     def score(
         self,
@@ -152,10 +183,13 @@ class EVScorer:
             session_quality=self._score_session(hour_utc),
         )
 
-        # Weighted sum of components
+        # Weighted sum of components — use regime-specific weights if available
+        weights = self._weights
+        if regime and regime in self._optimized_cache:
+            weights = self._optimized_cache[regime]
         base_ev = sum(
-            self._weights[k] * getattr(components, k)
-            for k in self._weights
+            weights[k] * getattr(components, k)
+            for k in weights
         )
 
         # Session quality is a multiplier, not a component

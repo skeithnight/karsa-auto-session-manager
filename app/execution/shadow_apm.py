@@ -428,12 +428,9 @@ class ShadowAPM:
         # SL hit detection using worst_price_seen (catches wicks)
         if virtual_sl > 0:
             sl_hit = False
-            if (
-                side == "LONG"
-                and worst <= virtual_sl
-                or side == "SHORT"
-                and worst >= virtual_sl
-            ):
+            if side == "LONG" and worst <= virtual_sl:
+                sl_hit = True
+            elif side == "SHORT" and worst >= virtual_sl:
                 sl_hit = True
 
             if sl_hit:
@@ -450,13 +447,11 @@ class ShadowAPM:
         virtual_tp = Decimal(pos.get("virtual_tp", "0"))
         if virtual_tp > 0:
             tp_hit = False
-            if (
-                side == "LONG"
-                and mid >= virtual_tp
-                or side == "SHORT"
-                and mid <= virtual_tp
-            ):
+            if side == "LONG" and virtual_tp > entry_price and mid >= virtual_tp:
                 tp_hit = True
+            elif side == "SHORT" and virtual_tp < entry_price and mid <= virtual_tp:
+                tp_hit = True
+
             if tp_hit:
                 logger.info(
                     f"SHADOW TP HIT: {symbol} {side} mid={mid} >= tp={virtual_tp}"

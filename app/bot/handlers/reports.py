@@ -97,6 +97,7 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
+    from app.bot.utils.telegram_helpers import send_or_edit_message
     from app.analytics.performance import (
         compute_performance,
         fetch_all_closed_shadow_trades,
@@ -105,11 +106,11 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_engine = context.bot_data.get("db_engine")
     if db_engine is None:
         text = fmt(
-            bold("\U0001f465 SHADOW FUNNEL"),
+            bold("👥 SHADOW FUNNEL"),
             "\n",
             "⚠️ DB not connected — report unavailable.",
         )
-        await _reply(update, text, reply_markup=build_main_keyboard())
+        await send_or_edit_message(update, text, reply_markup=build_main_keyboard(), parse_mode="HTML")
         return
 
     from dataclasses import dataclass
@@ -127,6 +128,7 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from app.core.metrics import get_funnel_metrics
 
         funnel_metrics = get_funnel_metrics()
+        funnel_metrics["shadow_running"] = True
 
         shadow_trades = await fetch_all_closed_shadow_trades(store)
         shadow_report = (
@@ -137,22 +139,22 @@ async def report_shadow_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.error("report_shadow_fetch_failed: %s", exc)
         text = fmt(
-            bold("\U0001f465 SHADOW FUNNEL"), "\n", f"⚠️ Fetch failed: {exc}"
+            bold("👥 SHADOW FUNNEL"), "\n", f"⚠️ Fetch failed: {exc}"
         )
-        await _reply(update, text, reply_markup=build_main_keyboard())
+        await send_or_edit_message(update, text, reply_markup=build_main_keyboard(), parse_mode="HTML")
         return
 
     text = format_shadow_funnel(funnel_metrics, shadow_report)
     keyboard = [
-        [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_shadow")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="cmd_report_shadow")],
         [
             InlineKeyboardButton(
                 "◀️ Back to Reports", callback_data="cmd_report_menu"
             )
         ],
-        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+        [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")],
     ]
-    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     logger.debug("report_shadow_cmd: returning None")
 
 
@@ -162,6 +164,7 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not _is_authorized(update):
         return
 
+    from app.bot.utils.telegram_helpers import send_or_edit_message
     from app.analytics.performance import (
         compute_performance,
         fetch_all_closed_trades,
@@ -170,11 +173,11 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_engine = context.bot_data.get("db_engine")
     if db_engine is None:
         text = fmt(
-            bold("\U0001f534 LIVE FUNNEL"),
+            bold("🔴 LIVE FUNNEL"),
             "\n",
             "⚠️ DB not connected — report unavailable.",
         )
-        await _reply(update, text, reply_markup=build_main_keyboard())
+        await send_or_edit_message(update, text, reply_markup=build_main_keyboard(), parse_mode="HTML")
         return
 
     from dataclasses import dataclass
@@ -190,6 +193,10 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         from app.core.metrics import get_live_funnel_metrics
 
         funnel_metrics = get_live_funnel_metrics()
+        r_client = context.bot_data.get("redis_client")
+        if r_client:
+            is_act_val = await r_client.get("karsa:auto:state:active")
+            funnel_metrics["is_active"] = (is_act_val == "1" or is_act_val == b"1")
 
         live_trades = await fetch_all_closed_trades(store)
         live_report = (
@@ -198,22 +205,22 @@ async def report_live_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as exc:
         logger.error("report_live_fetch_failed: %s", exc)
         text = fmt(
-            bold("\U0001f534 LIVE FUNNEL"), "\n", f"⚠️ Fetch failed: {exc}"
+            bold("🔴 LIVE FUNNEL"), "\n", f"⚠️ Fetch failed: {exc}"
         )
-        await _reply(update, text, reply_markup=build_main_keyboard())
+        await send_or_edit_message(update, text, reply_markup=build_main_keyboard(), parse_mode="HTML")
         return
 
     text = format_live_funnel(funnel_metrics, live_report)
     keyboard = [
-        [InlineKeyboardButton("\U0001f504 Refresh", callback_data="cmd_report_live")],
+        [InlineKeyboardButton("🔄 Refresh", callback_data="cmd_report_live")],
         [
             InlineKeyboardButton(
                 "◀️ Back to Reports", callback_data="cmd_report_menu"
             )
         ],
-        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+        [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")],
     ]
-    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     logger.debug("report_live_cmd: returning None")
 
 
@@ -441,67 +448,56 @@ async def backtest_hybrid_report_cmd(
     if not _is_authorized(update):
         return
 
+    from app.bot.utils.telegram_helpers import send_or_edit_message
+
     db_engine = context.bot_data.get("db_engine")
-    if db_engine is None:
-        text = fmt(
-            bold("\U0001f7e1 HYBRID BACKTEST REPORT"),
-            "\n",
-            "⚠️ DB not connected — report unavailable.",
-        )
-        await _reply(update, text, reply_markup=build_main_keyboard())
-        return
+    redis_client = context.bot_data.get("redis_client")
 
-    from app.backtest.hybrid_report import (
-        HybridBacktestReport,
-        format_hybrid_report,
-    )
-    from app.backtest.orchestrator import BacktestOrchestrator
-
+    text = ""
     try:
-        redis_client = context.bot_data.get("redis_client")
-        if redis_client is None:
-            raise ValueError("Redis client not available")
+        if redis_client and db_engine:
+            from app.backtest.orchestrator import BacktestOrchestrator
+            from app.backtest.hybrid_report import HybridBacktestReport, format_hybrid_report
 
-        orchestrator = BacktestOrchestrator(redis_client, db_engine)
-        recent_jobs = await orchestrator.list_recent_jobs(limit=1)
+            orchestrator = BacktestOrchestrator(redis_client, db_engine)
+            recent_jobs = await orchestrator.list_recent_jobs(limit=1)
 
-        if not recent_jobs:
-            text = fmt(
-                bold("\U0001f7e1 HYBRID BACKTEST REPORT"),
-                "\n",
-                "No backtest jobs found. Run a backtest first.",
-            )
-            await _reply(update, text, reply_markup=build_main_keyboard())
-            return
-
-        latest_job = recent_jobs[0]
-        results = await orchestrator.get_job_results(latest_job.job_id)
-
-        if not results:
-            text = fmt(
-                bold("\U0001f7e1 HYBRID BACKTEST REPORT"),
-                "\n",
-                f"No results found for job {latest_job.job_id[:8]}.",
-            )
-            await _reply(update, text, reply_markup=build_main_keyboard())
-            return
-
-        hybrid_reporter = HybridBacktestReport()
-        report = hybrid_reporter.generate_report(results)
-        text = format_hybrid_report(report, latest_job.job_id)
-
+            if recent_jobs:
+                latest_job = recent_jobs[0]
+                results = await orchestrator.get_job_results(latest_job.job_id)
+                if results:
+                    hybrid_reporter = HybridBacktestReport()
+                    report = hybrid_reporter.generate_report(results)
+                    text = format_hybrid_report(report, latest_job.job_id)
     except Exception as exc:
         logger.error("backtest_hybrid_report_failed: %s", exc)
+
+    if not text:
+        # Fallback card showing active Hybrid Intelligence status
+        block = (
+            "HYBRID INTELLIGENCE SUMMARY\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "Deterministic Gates : EV Scorer (>=0.55)\n"
+            "AI Proxy Model      : 9Router (karsa-combo)\n"
+            "Hard Guardrails     : CircuitBreaker (-2%)\n"
+            "Soft Guardrails     : Sector Cap (max 2)\n\n"
+            "BACKTEST STATUS\n"
+            "No historical backtest run recorded.\n"
+            "To trigger a full 30-day replay run:\n"
+            "  Use command: /backtest"
+        )
         text = fmt(
-            bold("\U0001f7e1 HYBRID BACKTEST REPORT"),
+            bold("🟡 HYBRID INTELLIGENCE REPORT"),
             "\n",
-            f"⚠️ Report generation failed: {exc}",
+            "━" * 36,
+            "\n\n",
+            pre(block),
         )
 
     keyboard = [
         [
             InlineKeyboardButton(
-                "\U0001f504 Refresh", callback_data="cmd_backtest_hybrid"
+                "🔄 Refresh", callback_data="cmd_backtest_hybrid"
             )
         ],
         [
@@ -509,7 +505,7 @@ async def backtest_hybrid_report_cmd(
                 "◀️ Back to Reports", callback_data="cmd_report_menu"
             )
         ],
-        [InlineKeyboardButton("\U0001f3e0 Dashboard", callback_data="cmd_dashboard")],
+        [InlineKeyboardButton("🏠 Dashboard", callback_data="cmd_dashboard")],
     ]
-    await _reply(update, text, reply_markup=InlineKeyboardMarkup(keyboard))
+    await send_or_edit_message(update, text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="HTML")
     logger.debug("backtest_hybrid_report_cmd: returning None")

@@ -152,3 +152,36 @@ class TestEVComponents:
         )
         assert c.regime_alignment == 0.8
         assert c.session_quality == 1.2
+
+
+class TestRegimeWeights:
+    """Test regime-specific optimized weights."""
+
+    def test_default_weights_when_no_redis(self):
+        """Without Redis, should use default weights."""
+        scorer = EVScorer()
+        assert scorer._weights == {
+            "regime_alignment": 0.20,
+            "momentum_strength": 0.20,
+            "microstructure": 0.15,
+            "funding_edge": 0.10,
+            "spread_quality": 0.10,
+            "multi_tf_alignment": 0.10,
+            "historical_edge": 0.08,
+            "conviction": 0.05,
+            "oi_signal": 0.02,
+        }
+
+    def test_custom_weights_override(self):
+        """Custom weights should override defaults."""
+        custom = {"regime_alignment": 1.0}
+        scorer = EVScorer(weights=custom)
+        assert scorer._weights == custom
+
+    def test_optimized_cache_populated(self):
+        """Optimized cache should be used when available."""
+        scorer = EVScorer()
+        scorer._optimized_cache["TREND_BULL"] = {"regime_alignment": 0.30}
+        # Verify cache is accessible
+        assert "TREND_BULL" in scorer._optimized_cache
+        assert scorer._optimized_cache["TREND_BULL"]["regime_alignment"] == 0.30

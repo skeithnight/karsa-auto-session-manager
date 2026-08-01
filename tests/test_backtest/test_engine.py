@@ -325,3 +325,108 @@ class TestSlippage:
                         expected = Decimal(str(c[4])) * Decimal("0.9995")
                         assert abs(r.entry_price - expected) < Decimal("0.01")
                         break
+
+
+# ── TestEquityCurve ──────────────────────────────────────
+
+
+class TestEquityCurve:
+    @pytest.mark.asyncio
+    async def test_equity_curve_populated(self, engine: BacktestEngine):
+        """Equity curve should be populated when trades are taken."""
+        candles = _make_uptrend_candles(200)
+        reports = await engine.run("BTCUSDT", candles, "job-equity")
+        for r in reports:
+            if r.trade_taken:
+                assert len(r.equity_curve) > 0, "Equity curve should have entries"
+
+    @pytest.mark.asyncio
+    async def test_equity_curve_no_trade_empty(self, engine: BacktestEngine):
+        """No trades taken — equity curve should be empty."""
+        candles = _make_flat_candles(200)
+        reports = await engine.run("BTCUSDT", candles, "job-no-equity")
+        for r in reports:
+            assert len(r.equity_curve) == 0, "No trades = empty equity curve"
+
+    @pytest.mark.asyncio
+    async def test_equity_tracks_pnl(self, engine: BacktestEngine):
+        """Equity should increase/decrease with trade PnL."""
+        candles = _make_uptrend_candles(200)
+        reports = await engine.run("BTCUSDT", candles, "job-pnl-track")
+        for r in reports:
+            if r.trade_taken and r.equity_curve:
+                last_eq = r.equity_curve[-1].equity
+                # Equity = initial (10000) + cumulative PnL
+                assert last_eq != Decimal("10000"), "Equity should change after trade"
+
+    @pytest.mark.asyncio
+    async def test_drawdown_pct_non_negative(self, engine: BacktestEngine):
+        """Drawdown percentage should never be negative."""
+        candles = _make_uptrend_candles(200)
+        reports = await engine.run("BTCUSDT", candles, "job-dd")
+        for r in reports:
+            for point in r.equity_curve:
+                assert point.drawdown_pct >= 0.0, f"Drawdown {point.drawdown_pct} is negative"
+
+
+# ── TestRollingMetrics ──────────────────────────────────
+
+
+class TestRollingMetrics:
+    def test_rolling_metrics_basic(self):
+        """Rolling metrics should compute Sharpe and drawdown."""
+        from app.backtest.formatter import compute_rolling_metrics
+        import time
+
+        now = int(time.time() * 1000)
+        # Simulate equity curve: 10000 -> 10100 -> 10050 -> 10200 -> 10150
+        curve = [
+            (now - 86400000 * 4, 10000.0),
+            (now - 86400000 * 3, 10100.0),
+            (now - 86400000 * 2, 10050.0),
+            (now - 86400000, 10200.0),
+            (now, 10150.0),
+        ]
+        metrics = compute_rolling_metrics(curve, window_days=7)
+        assert metrics.window_days == 7
+        assert metrics.trade_count == 4
+        assert metrics.max_drawdown_pct >= 0.0
+
+    def test_rolling_metrics_empty(self):
+        """Empty equity curve should return zero metrics."""
+        from app.backtest.formatter import compute_rolling_metrics
+        metrics = compute_rolling_metrics([], window_days=30)
+        assert metrics.sharpe_ratio == 0.0
+        assert metrics.max_drawdown_pct == 0.0
+
+    def test_rolling_metrics_single_point(self):
+        """Single point equity curve should return zero metrics."""
+        from app.backtest.formatter import compute_rolling_metrics
+        import time
+        now = int(time.time() * 1000)
+        metrics = compute_rolling_metrics([(now, 10000.0)], window_days=30)
+        assert metrics.sharpe_ratio == 0.0
+
+
+# ── TestBenchmarkComparison ──────────────────────────────
+
+
+class TestBenchmarkComparison:
+    @pytest.mark.asyncio
+    async def test_benchmark_return_populated(self, engine: BacktestEngine):
+        """Benchmark return should be populated when benchmark provided."""
+        candles = _make_uptrend_candles(200)
+        benchmark = [100.0 + i * 0.5 for i in range(200)]
+        reports = await engine.run("BTCUSDT", candles, "job-bench", benchmark_closes=benchmark)
+        for r in reports:
+            if r.trade_taken:
+                assert r.benchmark_return_pct != 0.0, "Benchmark return should be populated"
+
+    @pytest.mark.asyncio
+    async def test_no_benchmark_zero_values(self, engine: BacktestEngine):
+        """No benchmark provided — alpha/beta should be zero."""
+        candles = _make_uptrend_candles(200)
+        reports = await engine.run("BTCUSDT", candles, "job-no-bench")
+        for r in reports:
+            assert r.alpha == 0.0, "Alpha should be 0 without benchmark"
+            assert r.beta == 0.0, "Beta should be 0 without benchmark"

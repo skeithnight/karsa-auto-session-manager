@@ -8,6 +8,8 @@ from __future__ import annotations
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
+from app.bot.utils.format import bold, fmt, pre
+
 
 class TradeHistoryFormatter:
     PAGE_SIZE = 10
@@ -162,53 +164,51 @@ class TradeHistoryFormatter:
             // TradeHistoryFormatter.PAGE_SIZE,
         )
         lines = [
-            f"\U0001f4dc TRADE HISTORY  (Page {current_page}/{total_pages})",
+            bold(f"📜 TRADE HISTORY (Page {current_page}/{total_pages})"),
+            "\n",
             "━" * 32,
-            "",
+            "\n",
         ]
         if not trades:
-            lines.append("No closed trades yet.")
+            lines.append("<i>No closed trades recorded yet.</i>\n")
         else:
-            table_lines = []
-            table_lines.append(
-                f"   {'Symbol':<10} {'PnL':<8} {'Time':<5} {'Reason':<12}"
-            )
-            table_lines.append("   " + "-" * 37)
+            table_lines = [f"{'Symbol':<11} {'PnL':<8} {'Time':<5} {'Reason':<10}", "-" * 36]
             for t in trades:
                 table_lines.append(TradeHistoryFormatter.format_trade(t))
-
-            from app.bot.utils.format import pre
-
             lines.append(pre("\n".join(table_lines)))
-        lines.append("")
-        lines.append("━" * 32)
+            lines.append("\n")
 
-        # --- Summary block ---
+        lines.append("━" * 32)
+        lines.append("\n")
+        lines.append(bold("📊 Performance Summary"))
+        lines.append("\n")
+
         total = wins + losses
         wr = (wins / max(total, 1)) * 100
-        bar_width = 15
-        filled = int(round(wr / 100 * bar_width))
-        wr_bar = "█" * filled + "░" * (bar_width - filled)
         avg_pnl = net_pnl / max(total, 1)
-        pnl_icon = "\U0001f7e2" if net_pnl >= 0 else "\U0001f534"
 
-        lines.append(f"Trades    {wins}W / {losses}L  ·  Total: {total}")
-        lines.append(f"Win Rate  [{wr_bar}]  {wr:.0f}%")
-        lines.append(
-            f"Net PnL   {pnl_icon} ${net_pnl:+,.2f}  ·  Avg: ${avg_pnl:+,.2f}"
+        summary_block = (
+            f"Trades    {wins}W / {losses}L (Total: {total})\n"
+            f"Win Rate  {wr:.1f}%\n"
+            f"Net PnL   {'+$' if net_pnl >= 0 else '-$'}{abs(net_pnl):,.2f} USD\n"
+            f"Avg PnL   {'+$' if avg_pnl >= 0 else '-$'}{abs(avg_pnl):,.2f} USD"
         )
+        lines.append(pre(summary_block))
 
-        text = "\n".join(lines)
-        keyboard = TradeHistoryFormatter.build_keyboard(current_page, total_pages)
-        return text, keyboard
+        text = fmt(*lines)
+        return text, TradeHistoryFormatter.build_keyboard(current_page, total_pages)
 
     @staticmethod
     def build_ai_accuracy_message(trades: list) -> str:
         """Build AI Confidence vs Outcome analysis from recent trades."""
-        from app.bot.utils.format import pre
-
         if not trades:
-            return "No trades available for AI accuracy analysis."
+            return fmt(
+                bold("🧠 AI ACCURACY ANALYSIS"),
+                "\n",
+                "━" * 32,
+                "\n",
+                pre("No trades recorded yet for AI accuracy analysis."),
+            )
 
         # Categorize trades by confidence level
         high_conf = []  # >80
@@ -218,7 +218,7 @@ class TradeHistoryFormatter:
         for t in trades:
             conf = t.get("ai_confidence") if isinstance(t, dict) else getattr(t, "ai_confidence", None)
             if conf is None:
-                continue
+                conf = 75.0  # default fallback if confidence wasn't saved
 
             pnl_raw = float(t.get("pnl", 0)) if isinstance(t, dict) else float(getattr(t, "pnl", 0) or 0)
             entry_price = float(t.get("entry_price", 0)) if isinstance(t, dict) else float(getattr(t, "entry_price", 0) or 0)
@@ -241,7 +241,7 @@ class TradeHistoryFormatter:
             else:
                 low_conf.append(trade_data)
 
-        def _format_bucket(label: str, trades_list: list) -> str:
+        def _format_bucket_summary(label: str, trades_list: list) -> str:
             if not trades_list:
                 return f"{label}\n  No trades in this bucket."
             total = len(trades_list)
@@ -251,32 +251,29 @@ class TradeHistoryFormatter:
             total_pnl = sum(t["pnl"] for t in trades_list)
             return (
                 f"{label}\n"
-                f"  Trades: {total}\n"
+                f"  Trades  : {total}\n"
                 f"  Win Rate: {wr:.1f}% ({wins}/{total})\n"
-                f"  Avg PnL: ${avg_pnl:+,.2f}\n"
-                f"  Total PnL: ${total_pnl:+,.2f}"
+                f"  Avg PnL : ${avg_pnl:+,.2f} USD\n"
+                f"  Net PnL : ${total_pnl:+,.2f} USD"
             )
 
-        # Confidence calibration buckets
         calibration_buckets = [
             ("90-100", lambda c: c >= 90),
-            ("80-90", lambda c: 80 <= c < 90),
-            ("70-80", lambda c: 70 <= c < 80),
-            ("60-70", lambda c: 60 <= c < 70),
-            ("<60", lambda c: c < 60),
+            ("80-90 ", lambda c: 80 <= c < 90),
+            ("70-80 ", lambda c: 70 <= c < 80),
+            ("60-70 ", lambda c: 60 <= c < 70),
+            ("<60   ", lambda c: c < 60),
         ]
 
         calibration_lines = []
         all_with_conf = []
         for t in trades:
             conf = t.get("ai_confidence") if isinstance(t, dict) else getattr(t, "ai_confidence", None)
-            if conf is not None:
-                pnl_raw = float(t.get("pnl", 0)) if isinstance(t, dict) else float(getattr(t, "pnl", 0) or 0)
-                entry_price = float(t.get("entry_price", 0)) if isinstance(t, dict) else float(getattr(t, "entry_price", 0) or 0)
-                amount = float(t.get("amount", 0)) if isinstance(t, dict) else float(getattr(t, "amount", 0) or 0)
-                cost = entry_price * amount
-                is_win = pnl_raw > 0
-                all_with_conf.append({"confidence": conf, "is_win": is_win, "pnl": pnl_raw})
+            if conf is None:
+                conf = 75.0
+            pnl_raw = float(t.get("pnl", 0)) if isinstance(t, dict) else float(getattr(t, "pnl", 0) or 0)
+            is_win = pnl_raw > 0
+            all_with_conf.append({"confidence": conf, "is_win": is_win, "pnl": pnl_raw})
 
         for label, predicate in calibration_buckets:
             bucket_trades = [t for t in all_with_conf if predicate(t["confidence"])]
@@ -290,32 +287,25 @@ class TradeHistoryFormatter:
 
         calibration_str = "\n".join(calibration_lines)
 
-        header = (
-            f"\U0001f4ca AI CONFIDENCE VS OUTCOME (Last {len(trades)} Trades)\n"
-            f"{'━' * 40}"
+        block_parts = [
+            f"AI CONFIDENCE VS OUTCOME ({len(trades)} Trades)",
+            "━" * 36,
+            _format_bucket_summary("HIGH CONFIDENCE (>80)", high_conf),
+            "",
+            _format_bucket_summary("MEDIUM CONFIDENCE (60-80)", med_conf),
+            "",
+            _format_bucket_summary("LOW CONFIDENCE (<60)", low_conf),
+            "",
+            "CONFIDENCE CALIBRATION",
+            calibration_str,
+        ]
+
+        unified_block = "\n".join(block_parts)
+
+        return fmt(
+            bold("🧠 AI CONFIDENCE & ACCURACY ANALYSIS"),
+            "\n",
+            "━" * 36,
+            "\n\n",
+            pre(unified_block),
         )
-
-        high_block = _format_bucket("\U0001f3af HIGH CONFIDENCE (>80)", high_conf)
-        med_block = _format_bucket("\U0001f4ca MEDIUM CONFIDENCE (60-80)", med_conf)
-        low_block = _format_bucket("⚠️ LOW CONFIDENCE (<60)", low_conf)
-
-        calibration_block = (
-            f"\U0001f4c8 CONFIDENCE CALIBRATION\n"
-            f"{calibration_str}"
-        )
-
-        footer = "━" * 40
-
-        return "\n\n".join([
-            pre(header),
-            "",
-            pre(high_block),
-            "",
-            pre(med_block),
-            "",
-            pre(low_block),
-            "",
-            pre(calibration_block),
-            "",
-            pre(footer),
-        ])

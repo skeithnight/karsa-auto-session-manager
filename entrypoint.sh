@@ -33,6 +33,9 @@ case "$KARSA_ROLE" in
   shadow)
     exec python -m app.consumer.shadow_loop "$@"
     ;;
+  9router)
+    exec python scripts/nine_router_proxy.py "$@"
+    ;;
   backtest)
     exec python -m app.backtest.worker "$@"
     ;;

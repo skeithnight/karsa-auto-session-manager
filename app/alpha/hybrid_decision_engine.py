@@ -12,6 +12,7 @@ Architecture:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from loguru import logger
@@ -22,6 +23,7 @@ if TYPE_CHECKING:
 from app.ai.dto import AIDecisionDTO
 from app.ai.nine_router_service import NineRouterService
 from app.alpha.regime_classifier import MarketRegime
+from app.alpha.rejected_signal_tracker import RejectedSignalTracker
 from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.core.decision_context import DecisionContext
 from app.core.feature_extractor import FeatureVector
@@ -49,6 +51,13 @@ VOLUME_SPIKE_SOFT_LOW = 1.2
 VOLUME_SPIKE_SOFT_HIGH = 1.5
 EMA50_SOFT_LOW_PCT = 5.0
 EMA50_SOFT_HIGH_PCT = 10.0
+
+# Kill Zone: hard block Asia dead hours (02:00-06:00 UTC)
+# Unless funding edge > 5% annualized or score > 85
+KILL_ZONE_START = 2  # 02:00 UTC
+KILL_ZONE_END = 6    # 06:00 UTC
+KILL_ZONE_FUNDING_EDGE_MIN = 5.0  # 5% annualized
+KILL_ZONE_SCORE_MIN = 85
 
 # Position size numeric values
 SIZE_MAP: dict[str, float] = {
@@ -141,9 +150,11 @@ class HybridDecisionEngine:
         self,
         statistical_engine: StatisticalFeatureEngine,
         ai_service: NineRouterService,
+        rejected_tracker: RejectedSignalTracker | None = None,
     ) -> None:
         self._stat_engine = statistical_engine
         self._ai_service = ai_service
+        self._rejected_tracker = rejected_tracker
         logger.debug("HybridDecisionEngine initialized")
 
     # ------------------------------------------------------------------
@@ -202,6 +213,7 @@ class HybridDecisionEngine:
         if hard_triggered:
             reason = f"Hard guardrails blocked: {', '.join(hard_triggered)}"
             logger.info(f"HybridDecisionEngine: {symbol} BLOCKED — {reason}")
+            await self._track_rejected(symbol, direction, reason, 0.0, regime)
             return HybridDecision(
                 action="BLOCK",
                 size="BLOCK",
@@ -214,6 +226,29 @@ class HybridDecisionEngine:
                 guardrails_triggered=hard_triggered,
                 features_snapshot=features,
             )
+
+        # 2b. Kill Zone check — hard block Asia dead hours (02:00-06:00 UTC)
+        # Allow only extreme funding edge or very high score
+        hour_utc = datetime.now(timezone.utc).hour
+        if KILL_ZONE_START <= hour_utc < KILL_ZONE_END:
+            funding_annualized = features.get("annualized_funding_cost_pct", 0.0)
+            ev_score = features.get("ev_score", 0.0)
+            if funding_annualized < KILL_ZONE_FUNDING_EDGE_MIN and ev_score < KILL_ZONE_SCORE_MIN:
+                reason = f"Kill zone active ({KILL_ZONE_START:02d}:00-{KILL_ZONE_END:02d}:00 UTC) — funding {funding_annualized:.1f}% < {KILL_ZONE_FUNDING_EDGE_MIN}% and score {ev_score:.0f} < {KILL_ZONE_SCORE_MIN}"
+                logger.info(f"HybridDecisionEngine: {symbol} BLOCKED — {reason}")
+                await self._track_rejected(symbol, direction, reason, ev_score, regime)
+                return HybridDecision(
+                    action="BLOCK",
+                    size="BLOCK",
+                    size_pct=SIZE_MAP["BLOCK"],
+                    confidence=0,
+                    risk_level="HIGH",
+                    entry_strategy="WAIT_PULLBACK",
+                    stop_loss_strategy="NORMAL",
+                    reasoning=reason,
+                    guardrails_triggered=["KILL_ZONE"],
+                    features_snapshot=features,
+                )
 
         # 3. AI evaluation — fall back to statistical-only on failure
         ai_decision, ai_source = await self._get_ai_decision(
@@ -244,6 +279,8 @@ class HybridDecisionEngine:
         if post_ai_triggered:
             reason = f"Post-AI guardrails blocked: {', '.join(post_ai_triggered)}"
             logger.info(f"HybridDecisionEngine: {symbol} BLOCKED — {reason}")
+            ev_score = features.get("ev_score", 0.0)
+            await self._track_rejected(symbol, direction, reason, ev_score, regime)
             return HybridDecision(
                 action="BLOCK",
                 size="BLOCK",
@@ -362,12 +399,10 @@ class HybridDecisionEngine:
         """Evaluate all hard guardrails. Returns list of triggered rule IDs."""
         triggered: list[str] = []
 
-        # GR-05: Distance from EMA50 > 10%
-        dist_ema50 = abs(features.get("distance_from_ema50_pct", 0.0))
-        if dist_ema50 > EMA50_OVEREXTENSION_HARD_PCT:
-            triggered.append("GR-05")
+        # GR-05: Distance from EMA50 > 10% (Converted to soft guardrail for high-volatility pumper setups)
+        # dist_ema50 handled in _apply_soft_guardrails (SG-05) to downgrade size, not hard block
 
-        # GR-06: Concurrent positions >= 3
+        # GR-06: Concurrent positions >= 5
         if concurrent_positions >= MAX_CONCURRENT_POSITIONS:
             triggered.append("GR-06")
 
@@ -376,9 +411,8 @@ class HybridDecisionEngine:
         if max_corr > CORRELATION_HARD_THRESHOLD:
             triggered.append("GR-07")
 
-        # GR-08: ATR > 8%
-        if features.get("atr_pct", 0.0) > ATR_EXTREME_PCT:
-            triggered.append("GR-08")
+        # GR-08: ATR > 8% (Converted to soft guardrail for high-volatility pumper setups)
+        # atr_pct handled in _apply_soft_guardrails (SG-08) to downgrade size, not hard block
 
         # GR-09: Market regime = CHOP — sizing reduction, not hard block
         # CHOP is 35-45% of market; blocking it kills half of trading hours
@@ -428,6 +462,35 @@ class HybridDecisionEngine:
         if confidence < AI_CONFIDENCE_MIN:
             return ["GR-01"]
         return []
+
+    # ------------------------------------------------------------------
+    # Rejected Signal Tracking
+    # ------------------------------------------------------------------
+
+    async def _track_rejected(
+        self,
+        symbol: str,
+        direction: str,
+        reason: str,
+        ev_score: float,
+        regime: str,
+    ) -> None:
+        """Log rejected signal for calibration analysis.
+
+        Fire-and-forget: failures are logged but never propagate.
+        """
+        if self._rejected_tracker is None:
+            return
+        try:
+            await self._rejected_tracker.track(
+                symbol=symbol,
+                direction=direction,
+                reject_reason=reason,
+                hypothetical_ev=ev_score,
+                regime=regime,
+            )
+        except Exception as exc:
+            logger.debug(f"HybridDecisionEngine: rejected tracker error (non-fatal): {exc}")
 
     # ------------------------------------------------------------------
     # AI Evaluation
@@ -501,9 +564,7 @@ class HybridDecisionEngine:
             return direction.upper()
 
         # No AI — use regime heuristic
-        # CHOP: allow trading with reduced sizing (soft guardrails handle this)
-        if regime_upper in ("RANGE",):
-            return "BLOCK"
+        # RANGE & CHOP: allow trading with reduced sizing (soft guardrails handle position sizing)
         return direction.upper()
 
     @staticmethod
@@ -533,8 +594,8 @@ class HybridDecisionEngine:
         if features.get("beta_30d", 0.0) > BETA_SOFT_THRESHOLD:
             triggered.append("SG-01")
 
-        # SG-02: Correlation > 0.8
-        if features.get("correlation_24h", 0.0) > CORRELATION_SOFT_THRESHOLD:
+        # SG-02: Extreme correlation > 0.95 (altcoins naturally correlate with BTC 0.8-0.9)
+        if features.get("correlation_24h", 0.0) > 0.95:
             triggered.append("SG-02")
 
         # SG-03: BTC sideways

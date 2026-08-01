@@ -169,7 +169,8 @@ async def _on_signal_shadow(
                 btc_regime = "RANGE"  # default fallback
                 if redis:
                     try:
-                        btc_regime_raw = await redis.get("system:regime:BTC/USDT")
+                        # Redis stores as system:regime:BTC:USDT (colon separator)
+                        btc_regime_raw = await redis.get("system:regime:BTC:USDT")
                         if btc_regime_raw:
                             btc_regime = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
                     except Exception:
@@ -201,6 +202,8 @@ async def _on_signal_shadow(
                             "stop_loss_strategy": hybrid_decision.stop_loss_strategy,
                             "reasoning": hybrid_decision.reasoning,
                             "guardrails_triggered": hybrid_decision.guardrails_triggered,
+                            "regime": regime_str,
+                            "btc_regime": btc_regime,
                         }
                         await redis.set(
                             f"shadow:hybrid_decision:{symbol}",
@@ -238,14 +241,32 @@ async def _on_signal_shadow(
         from app.core import metrics
         metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
         metrics.funnel_ai_calls.inc()
+        funding_rate = 0.0
+        oi_change = 0.0
+        spread_pct = 0.0005
+        if redis:
+            try:
+                import json as _json
+                st_raw = await redis.get(f"global:state:{symbol}")
+                if st_raw:
+                    st = _json.loads(st_raw)
+                    funding_rate = float(st.get("funding_rate", 0.0))
+                    oi_change = float(st.get("oi_change", 0.0))
+                    bid = float(st.get("best_bid", 0.0))
+                    ask = float(st.get("best_ask", 0.0))
+                    if bid > 0 and ask > 0:
+                        spread_pct = (ask - bid) / bid
+            except Exception:
+                pass
+
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
             direction=signal.direction,
             confidence=(signal.score / 100.0),
             regime=signal.regime.value,
-            spread_pct=0.0,
-            funding_rate=0.0,
-            oi_change=0.0,
+            spread_pct=spread_pct,
+            funding_rate=funding_rate,
+            oi_change=oi_change,
             price=signal.entry_price,
             recent_trades="",
         )
@@ -301,7 +322,8 @@ async def _on_signal_shadow(
                     )
                 # Signal continues through pipeline — gate check will reject if score too low
             else:
-                # AI unavailable — hard reject
+                # AI unavailable — mandatory AI rule per AGENTS.md §2: AI is required for Hybrid trades
+                logger.warning(f"AI GATE REJECT: {symbol} — AI Proxy unavailable or timed out (mandatory AI required)")
                 return
 
         metrics.ai_analyst_approvals.inc()
@@ -454,14 +476,22 @@ def _start_ingestor(
 
 
 async def _universe_refresh_loop(
-    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400
+    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400,
+    allowed_symbols: list[str] | None = None,
 ) -> None:
-    """Periodically refresh symbol list from DynamicUniverseScanner."""
+    """Periodically refresh symbol list from DynamicUniverseScanner.
+
+    If allowed_symbols is provided, only symbols in that list are kept.
+    """
     while True:
         await asyncio.sleep(interval_s)
         new_symbols = await _read_universe(redis)
         if new_symbols:
-            ingestor.update_symbols(new_symbols)
+            if allowed_symbols:
+                allowed_set = set(allowed_symbols)
+                new_symbols = [s for s in new_symbols if s in allowed_set]
+            if new_symbols:
+                ingestor.update_symbols(new_symbols)
 
 
 async def _orphan_cleanup_loop(
@@ -802,12 +832,19 @@ async def main() -> None:
     )
 
     # Read dynamic universe from Redis, fall back to static config
+    # .env SYMBOLS is source of truth; scanner only adds new discoveries
+    config_symbols = settings.watchlist.split(",") if settings.watchlist else settings.symbols
     universe_symbols = await _read_universe(redis)
-    initial_symbols = (
-        universe_symbols
-        if universe_symbols
-        else (settings.watchlist.split(",") if settings.watchlist else settings.symbols)
-    )
+    if config_symbols:
+        # Start with configured symbols, add any new discoveries from scanner
+        initial_symbols = list(config_symbols)
+        if universe_symbols:
+            config_set = set(config_symbols)
+            for s in universe_symbols:
+                if s not in config_set:
+                    initial_symbols.append(s)
+    else:
+        initial_symbols = universe_symbols or []
     logger.info(
         f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}"
     )
@@ -828,9 +865,39 @@ async def main() -> None:
     ingestor, ingestor_task = _start_ingestor(
         settings, redis, consumer, initial_symbols
     )
-    universe_task = asyncio.create_task(
-        _universe_refresh_loop(redis, ingestor), name="shadow-universe"
+
+    # ── Dynamic Symbol Rotation ────────────────────────────────
+    from app.data.symbol_rotator import SymbolRotator
+
+    rotator = SymbolRotator(
+        redis_client=redis,
+        initial_symbols=initial_symbols,
+        min_symbols=4,
+        max_symbols=12,
+        range_expiry_s=7200,  # 2 hours in RANGE before rotation
     )
+    await rotator.start()
+
+    async def _rotator_sync_loop() -> None:
+        """Sync rotator symbols to ingestor when rotation happens."""
+        last_count = len(rotator.symbols)
+        while True:
+            await asyncio.sleep(300)  # Check every 5 minutes
+            current = rotator.symbols
+            if len(current) != last_count:
+                logger.info(
+                    "SymbolRotator: universe changed %d → %d symbols",
+                    last_count, len(current),
+                )
+                ingestor.update_symbols(current)
+                last_count = len(current)
+
+    rotator_task = asyncio.create_task(
+        rotator.rotation_loop(interval_s=3600),  # Scan every hour
+        name="shadow-rotator",
+    )
+    rotator_sync_task = asyncio.create_task(_rotator_sync_loop(), name="shadow-rotator-sync")
+
     consumer_task = asyncio.create_task(consumer.start(), name="shadow-consumer")
     apm_task = asyncio.create_task(shadow_apm.run(), name="shadow-apm")
     orphan_task = asyncio.create_task(
@@ -941,6 +1008,8 @@ async def main() -> None:
         garch_task.cancel()
         ranking_task.cancel()
         regime_task.cancel()
+        rotator_task.cancel()
+        rotator_sync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):
@@ -953,6 +1022,11 @@ async def main() -> None:
             await apm_task
         with contextlib.suppress(asyncio.CancelledError):
             await orphan_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotator_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotator_sync_task
+        await rotator.stop()
         await ingestor.stop()
         await emitter.stop()
         await exchange.close()

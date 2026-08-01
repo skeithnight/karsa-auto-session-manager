@@ -66,7 +66,10 @@ class UniverseScorer:
     async def score_symbol(self, symbol: str) -> dict | None:
         """Score a single symbol. Returns dict or None if data unavailable."""
         # ─── PROFITABILITY FIX: TOXIC TICKER BLACKLIST ───
-        toxic_tickers = {"HEMI/USDT", "BANK/USDT", "ZEST/USDT", "SOL/USDT", "ACE/USDT"}
+        toxic_tickers = {
+            "HEMI/USDT", "BANK/USDT", "ZEST/USDT", "ACE/USDT",
+            "CAP/USDT", "M/USDT", "1000TAG/USDT"
+        }
         if symbol in toxic_tickers:
             return None
 

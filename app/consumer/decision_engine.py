@@ -322,8 +322,18 @@ class DecisionEngine:
             from app.core.config import get_settings
             _s = get_settings()
             if _s.session_block_enabled and _s.session_block_start_hour <= current_hour < _s.session_block_end_hour:
-                # Allow BTC/ETH if configured
-                if not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT"):
+                # Allow BTC/ETH and screened dynamic universe candidates (ACCUMULATION / MOMENTUM_SQUEEZE)
+                is_screened_candidate = False
+                if self._redis:
+                    try:
+                        raw_univ = await self._redis.get("system:universe:symbols")
+                        if raw_univ:
+                            u_data = _json.loads(raw_univ)
+                            is_screened_candidate = symbol in u_data.get("symbols", [])
+                    except Exception:
+                        pass
+
+                if not is_screened_candidate and (not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT")):
                     logger.warning(
                         "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d timezone.utc). Altcoin entries blocked.",
                         symbol, current_hour, _s.session_block_start_hour, _s.session_block_end_hour,
@@ -495,15 +505,17 @@ class DecisionEngine:
 
             # Multi-Timeframe Trend Alignment Block
             if self._multi_tf:
-                mtf_res = await self._multi_tf.check(symbol, direction)
-                if mtf_res.get("blocked"):
-                    logger.info(
-                        "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
-                        symbol,
-                        direction,
-                    )
-                    ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
-                    continue
+                ev_sc, ev_th = ev_scores.get(direction, (0.0, 0.55))
+                if ev_sc < ev_th:
+                    mtf_res = await self._multi_tf.check(symbol, direction)
+                    if mtf_res.get("blocked"):
+                        logger.info(
+                            "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
+                            symbol,
+                            direction,
+                        )
+                        ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
+                        continue
 
                 # Momentum Exemption: if the token is up/down > 8% in 24h, it has detached from the macro trend.
                 if len(arr) >= 24:
@@ -575,19 +587,7 @@ class DecisionEngine:
                 except Exception:
                     logger.debug("evaluate: symbol performance multiplier failed for %s", symbol)
 
-            # ELO-based strategy confidence: boost/penalize based on strategy's historical ELO
-            # ELO > 1550 = winning strategy (+5% boost), ELO < 1450 = losing strategy (-5% penalty)
-            strategy_key = f"{regime.value}:{direction}"
-            elo = await self._get_strategy_elo(strategy_key)
-            if elo != 1500.0:
-                elo_factor = 1.0 + (elo - 1500.0) / 2000.0  # ±5% at ±100 ELO
-                elo_factor = max(0.85, min(1.15, elo_factor))  # Clamp to ±15%
-                if elo_factor != 1.0:
-                    logger.info(
-                        "evaluate: %s %s ELO %.0f → factor %.3fx (score %.1f -> %.1f)",
-                        symbol, direction, elo, elo_factor, score, score * elo_factor,
-                    )
-                    score *= elo_factor
+
 
             # Correlation-Based Sizing: read correlation data from PRM's rolling correlation check
             # and adjust score based on how many open positions are correlated

@@ -73,8 +73,16 @@ class AISignalRanker:
 
     BATCH_SIZE = 5  # Rank top 5 signals per cycle
 
+    # Cost per 1K tokens (USD) — adjust per model
+    COST_PER_1K_INPUT = 0.00015  # ~$0.15/1M input tokens
+    COST_PER_1K_OUTPUT = 0.0006  # ~$0.60/1M output tokens
+
     def __init__(self, ai_client: AIClient | None = None) -> None:
         self._ai = ai_client
+        self._total_input_tokens = 0
+        self._total_output_tokens = 0
+        self._total_cost_usd = 0.0
+        self._call_count = 0
 
     async def rank(
         self,
@@ -167,8 +175,31 @@ class AISignalRanker:
             logger.debug("AI rank call failed: %s", e)
             return None
 
+        # Track cost (estimate tokens from prompt + response)
+        input_tokens = len(prompt) // 4  # rough estimate: 1 token ≈ 4 chars
+        output_tokens = len(response) // 4 if response else 0
+        self._total_input_tokens += input_tokens
+        self._total_output_tokens += output_tokens
+        self._total_cost_usd += (
+            (input_tokens / 1000) * self.COST_PER_1K_INPUT
+            + (output_tokens / 1000) * self.COST_PER_1K_OUTPUT
+        )
+        self._call_count += 1
+
         # Parse response
         return self._parse_ranking(response, signals)
+
+    def get_cost_summary(self) -> dict[str, Any]:
+        """Get AI cost tracking summary."""
+        return {
+            "total_input_tokens": self._total_input_tokens,
+            "total_output_tokens": self._total_output_tokens,
+            "total_cost_usd": round(self._total_cost_usd, 6),
+            "call_count": self._call_count,
+            "avg_cost_per_call": round(
+                self._total_cost_usd / self._call_count, 6
+            ) if self._call_count > 0 else 0.0,
+        }
 
     def _parse_ranking(
         self, response: str, signals: list[dict[str, Any]]

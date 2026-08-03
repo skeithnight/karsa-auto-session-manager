@@ -51,6 +51,13 @@ class BybitClient:
             api_secret=self.settings.bybit_api_secret,
             testnet=self.settings.bybit_testnet,
         )
+        # Disable SSL verification when going through VPN/proxy (gluetun).
+        # The WireGuard tunnel intercepts SSL and presents a cert that doesn't
+        # match api.bybit.com, causing hostname mismatch errors.
+        # pybit uses requests.Session internally — patch it directly.
+        if hasattr(self.session, "client"):
+            self.session.client.verify = False
+            logger.debug("SSL verification disabled for pybit (VPN/proxy mode)")
         self.connected = True
 
     async def connect(self) -> None:

@@ -48,8 +48,13 @@ class DailySummaryService:
 
         Returns formatted HTML string ready for Telegram.
         """
+        now = datetime.now(timezone.utc)
         if target_date is None:
-            target_date = datetime.now(timezone.utc)
+            # If called during 00:00-01:00 UTC (first hour of new day), summarize completed yesterday
+            if now.hour == 0:
+                target_date = now - timedelta(days=1)
+            else:
+                target_date = now
 
         date_str = target_date.strftime("%Y-%m-%d")
         day_start = target_date.replace(hour=0, minute=0, second=0, microsecond=0)

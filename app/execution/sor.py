@@ -96,8 +96,9 @@ class SmartOrderRouter:
         3. Market/IOC fallback
         4. Place exchange-side Stop-Loss immediately on fill (CLAUDE.md Rule 5)
         """
-        # Normalize side: accept "LONG"/"SHORT" from signal, convert to "buy"/"sell"
-        side = "buy" if side in ("buy", "LONG") else "sell"
+        # Normalize side: accept "LONG"/"BUY" from signal, convert to "buy"/"sell"
+        side_upper = str(side).upper()
+        side = "buy" if side_upper in ("BUY", "LONG") else "sell"
         logger.debug(f"execute: entering symbol={symbol} side={side}")
         if price_tick is None:
             price_tick = self.client._price_ticks.get(symbol, Decimal("0.01"))
@@ -171,12 +172,21 @@ class SmartOrderRouter:
 
         order = None
         # Step 1: Post-Only Limit
-        logger.info(f"SOR Step 1: Post-Only Limit {side} {amount} @ {price}")
+        logger.info(
+            "⚡ [STAGE 5: SMART ORDER ROUTER] Executing Post-Only Maker Limit %s %s Amount: %s @ Price: %s",
+            symbol,
+            side,
+            amount,
+            price,
+        )
         metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") in ("open", "closed"):
-                logger.info(f"Post-Only filled: {order['orderId']}")
+                logger.info(
+                    "⚡ [STAGE 5: SMART ORDER ROUTER] Post-Only Maker Order Filled! OrderID: %s",
+                    order.get("orderId"),
+                )
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
                 fill_price = Decimal(
                     str(order.get("average", order.get("avgPrice", price)))
@@ -207,22 +217,18 @@ class SmartOrderRouter:
 
         # Step 2: Reprice attempts
         current_price = price
-        # Derive tick from price (0.02% of price, min 0.01) — prevents negative prices on low-value tokens
-        effective_tick = max(price * Decimal("0.0002"), Decimal("0.01"))
+        # Derive effective_tick from actual exchange price_tick (or symbol precision)
+        effective_tick = price_tick if (price_tick and price_tick > Decimal("0")) else self.client._price_ticks.get(symbol, Decimal("0.0001"))
+
+        def _quantize_to_tick(p: Decimal, tick: Decimal) -> Decimal:
+            if tick <= Decimal("0"):
+                return p
+            return (p / tick).quantize(Decimal("1")) * tick
 
         # Adaptive Maker-Fee Routing: Determine dynamic reprice attempts
         max_reprices = self.max_reprice_attempts
         try:
-            tickers = await self.client.fetch_tickers()
-            # fetch_tickers returns a list; find our symbol's ticker
-            ticker = None
-            if isinstance(tickers, list):
-                for t in tickers:
-                    if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
-                        ticker = t
-                        break
-            elif isinstance(tickers, dict):
-                ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+            ticker = await self.client.fetch_ticker(symbol)
             if ticker:
                 bid_vol = Decimal(str(ticker.get("bidVolume", "0") or "0"))
                 ask_vol = Decimal(str(ticker.get("askVolume", "0") or "0"))
@@ -277,10 +283,12 @@ class SmartOrderRouter:
             slippage_cap_pct = Decimal("0.0003")  # 3 bps cap
             if side == "buy":
                 max_price = price * (Decimal("1.0") + slippage_cap_pct)
-                current_price = min(current_price + effective_tick, max_price)
+                raw_next_price = min(current_price + effective_tick, max_price)
+                current_price = _quantize_to_tick(raw_next_price, effective_tick)
             else:
                 min_price = price * (Decimal("1.0") - slippage_cap_pct)
-                current_price = max(current_price - effective_tick, min_price)
+                raw_next_price = max(current_price - effective_tick, min_price)
+                current_price = _quantize_to_tick(raw_next_price, effective_tick)
                 # Guard: never go negative or zero
                 if current_price <= 0:
                     logger.warning(
@@ -329,27 +337,18 @@ class SmartOrderRouter:
         try:
             # Hard Slippage Limit Check
             try:
-                tickers = await self.client.fetch_tickers()
-                # fetch_tickers returns a list; find our symbol's ticker
-                ticker = None
-                if isinstance(tickers, list):
-                    for t in tickers:
-                        if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
-                            ticker = t
-                            break
-                elif isinstance(tickers, dict):
-                    ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                ticker = await self.client.fetch_ticker(symbol)
                 if ticker:
-                        bid = Decimal(str(ticker.get("bid", "0") or "0"))
-                        ask = Decimal(str(ticker.get("ask", "0") or "0"))
-                        market_price = ask if side == "buy" else bid
-                        if market_price > 0 and price > 0:
-                            expected_slippage = abs(market_price - price) / price
-                            if expected_slippage > Decimal("0.005"):
-                                logger.error(f"SOR Reject: Market fallback would incur {expected_slippage:.2%} slippage (> 0.5% limit). Aborting entry.")
-                                if self.alert_service:
-                                    await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
-                                return None
+                    bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                    ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                    market_price = ask if side == "buy" else bid
+                    if market_price > 0 and price > 0:
+                        expected_slippage = abs(market_price - price) / price
+                        if expected_slippage > Decimal("0.005"):
+                            logger.error(f"SOR Reject: Market fallback would incur {expected_slippage:.2%} slippage (> 0.5% limit). Aborting entry.")
+                            if self.alert_service:
+                                await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
+                            return None
             except Exception as e:
                 logger.warning(f"SOR slippage check failed, aborting market fallback: {e}")
                 if self.alert_service:
@@ -810,7 +809,7 @@ class SmartOrderRouter:
                 stop_orders = [o for o in open_orders
                                if o.get("type") in ("stop", "StopOrder", "Stop")
                                or o.get("stopOrderType")]
-                if len(stop_orders) >= 8:  # Pre-emptive cleanup at 8 (before hitting 10 limit)
+                if len(stop_orders) >= 5:  # Pre-emptive cleanup at 5 (well before hitting 10 limit)
                     logger.warning(f"SL cleanup: cancelling {len(stop_orders)} stale stop orders for {symbol}")
                     for so in stop_orders:
                         try:
@@ -876,9 +875,11 @@ class SmartOrderRouter:
                 await self.alert_service.send(
                     format_entry_alert(symbol, side, fill_price, amount, sl_price)
                 )
+                return "atomic_position_sl"
             except Exception as ae:
                 logger.error(f"Entry alert failed: {ae}")
-        return None  # atomic SL has no order ID — lives on the position
+                return "atomic_position_sl"
+        return None
 
     async def cancel_all(self, symbol: str) -> None:
         """Cancel all open orders for a symbol."""

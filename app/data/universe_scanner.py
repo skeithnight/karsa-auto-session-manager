@@ -15,6 +15,7 @@ import asyncio
 import contextlib
 import json
 import math
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -216,22 +217,22 @@ class DynamicUniverseScanner:
 
             # Categorize candidate & apply targeted boost
             category = "VOLUME_LEADER"
-            accumulation_boost = 0.0
-            momentum_boost = 0.0
+            boost_mult = 1.0
 
             if -3.0 <= pct <= 6.0 and norm_vol > 0.6:
                 # Pre-Pump Accumulation candidate: High volume rank + price compression at bottom
                 category = "ACCUMULATION"
-                accumulation_boost = 0.8  # Strong boost to capture early accumulation before pump
+                boost_mult = 1.30  # 30% multiplicative boost for early accumulation
             elif pct > 15.0:
                 category = "MOMENTUM_SQUEEZE"
-                momentum_boost = 1.0  # Top gainers actively squeezing
+                boost_mult = 1.40  # 40% multiplicative boost for momentum squeeze
             elif pct > 8.0:
                 category = "MOMENTUM_BREAKOUT"
-                momentum_boost = 0.5
+                boost_mult = 1.20  # 20% multiplicative boost for breakout
 
             cand["category"] = category
-            cand["score"] = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3 + accumulation_boost + momentum_boost
+            base_score = norm_vol * 0.4 + norm_atr * 0.3 + norm_pct * 0.3
+            cand["score"] = min(1.0, base_score * boost_mult)
 
         # 5. Sort by composite score, take top N
         candidates.sort(key=lambda c: c["score"], reverse=True)
@@ -245,11 +246,13 @@ class DynamicUniverseScanner:
         await self._write_redis()
 
         logger.info(
-            "UniverseScanner: refreshed — %d symbols, top=%s (score=%.3f, cat=%s)",
+            "🌐 [STAGE 1: DYNAMIC UNIVERSE SCANNER] Refreshed active universe — Selected Top %d / %d perpetuals. Top: %s (score=%.3f, cat=%s). Universe breakdown: %s",
             len(self.symbols),
+            len(candidates),
             self.symbols[0] if self.symbols else "none",
             self.scores.get(self.symbols[0], 0) if self.symbols else 0,
             self.categories.get(self.symbols[0], "none") if self.symbols else "none",
+            dict(Counter(c.get("category", "VOLUME_LEADER") for c in selected)) if selected else {},
         )
         return self.symbols
 

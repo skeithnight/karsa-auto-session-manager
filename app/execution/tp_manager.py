@@ -140,12 +140,11 @@ class TakeProfitManager:
         api_side = "buy" if side == "LONG" else "sell"
         try:
             if side == "LONG":
-                # LONG: SL moves to just above entry to cover fees (price must rise to profit)
-                new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
+                # LONG: SL moves to above entry price to lock profit after fees
+                new_sl = entry_price + (entry_price * APM_BREAKEVEN_FEE_PCT)
             else:
-                # SHORT: SL must be ABOVE entry (stop out if price rises back through entry)
-                # Entry at 100 -> SL at 100.25 (fee buffer above entry)
-                new_sl = entry_price + entry_price * APM_BREAKEVEN_FEE_PCT
+                # SHORT: SL moves to below entry price to lock profit after fees
+                new_sl = entry_price - (entry_price * APM_BREAKEVEN_FEE_PCT)
 
             new_sl_str = str(new_sl)
             try:
@@ -153,7 +152,8 @@ class TakeProfitManager:
                     sl_order_id, symbol, api_side, new_sl, amount
                 )  # type: ignore[attr-defined]
             except Exception:
-                self._log.warning(f"APM: breakeven amend failed for {symbol}, retrying")
+                self._log.warning(f"APM: breakeven amend failed for {symbol}, retrying in 0.5s")
+                await asyncio.sleep(0.5)
                 await self._client.amend_stop_loss(
                     sl_order_id, symbol, api_side, new_sl, amount
                 )  # type: ignore[attr-defined]

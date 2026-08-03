@@ -128,8 +128,10 @@ class PortfolioRiskManager(RiskChecksMixin):
             c = await self._check_drawdown_velocity()
             checks.append(c)
             if not c.passed:
+                logger.warning("🛡️ [STAGE 3: PORTFOLIO RISK MANAGER] REJECTED %s — Reason: %s", getattr(signal, 'symbol', 'UNKNOWN'), c.reason)
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
 
+            logger.info("🛡️ [STAGE 3: PORTFOLIO RISK MANAGER] APPROVED %s — Passed all 6 pre-trade risk gates (Sector, Exposure, CB, Velocity, Macro)", getattr(signal, 'symbol', 'UNKNOWN'))
             return PRMResult(approved=True, checks=checks)
 
         except Exception:

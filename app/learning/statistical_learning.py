@@ -51,7 +51,14 @@ class StatisticalLearning:
             # but we can record it as informational evidence or adjust total directly.
             context.total_confidence = calibrated
 
-        logger.info(f"StatisticalLearning: {context.symbol} Raw={raw_conf:.1f} Calibrated={calibrated:.1f}")
+        logger.info(
+            "📊 [STAGE 8: STATISTICAL LEARNING ENGINE] Calibrated %s ──► Raw Confidence: %.1f, Final Calibrated: %.1f (Fatigue Penalty: -%.1f, Calibration Multiplier: %.2fx)",
+            context.symbol,
+            raw_conf,
+            calibrated,
+            fatigue_penalty,
+            calibration_multiplier,
+        )
 
         return CalibrationResult(
             calibrated_confidence=calibrated,

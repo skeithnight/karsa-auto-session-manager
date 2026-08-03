@@ -85,6 +85,7 @@ class RegimeClassifier:
     def __init__(self, redis_client: object | None = None) -> None:
         self._redis = redis_client
         self._prev_adx: dict[str, float] = {}  # Phase 2: track ADX for transition detection
+        self._adx_history: dict[str, list[float]] = {}  # Rolling window of up to 5 ADX entries per symbol
 
     # ------------------------------------------------------------------
     # Public API
@@ -115,16 +116,24 @@ class RegimeClassifier:
             logger.info("RegimeClassifier: all-flat prices, returning RANGE")
             return MarketRegime.RANGE
 
-        adx = features.adx_14 or 0.0
-        hurst = features.hurst or 0.5
-        atr_pct = features.atr_pct or 50.0
+        adx = features.adx_14 if features.adx_14 is not None else 0.0
+        hurst = features.hurst if features.hurst is not None else 0.5
+        atr_pct = features.atr_pct if features.atr_pct is not None else 50.0
         sma20 = features.sma_20 or float(closes[-1])
         last_close = float(closes[-1])
 
-        # Phase 2: Get previous ADX for transition detection
+        # Phase 2: Get previous ADX for transition detection via 5-period rolling history
         symbol = snapshot.symbol
-        adx_prev = self._prev_adx.get(symbol, adx)  # default to current if no history
-        self._prev_adx[symbol] = adx  # store for next call
+        if symbol not in self._adx_history:
+            self._adx_history[symbol] = []
+
+        adx_history = self._adx_history[symbol]
+        adx_prev = adx_history[-1] if adx_history else adx
+        adx_history.append(adx)
+        if len(adx_history) > 5:
+            adx_history.pop(0)
+
+        self._prev_adx[symbol] = adx_prev
 
         regime = self._decision_tree(adx, hurst, atr_pct, last_close, sma20, adx_prev)
 
@@ -198,18 +207,26 @@ class RegimeClassifier:
             symbol_key = f"system:regime:{symbol.replace('/', ':')}"
             raw = await self._redis.get(symbol_key)  # type: ignore[attr-defined]
             if raw is not None:
-                return MarketRegime(raw)
+                raw_s = raw.decode() if isinstance(raw, bytes) else str(raw)
+                try:
+                    data = json.loads(raw_s)
+                    reg_str = data.get("regime", raw_s) if isinstance(data, dict) else raw_s
+                    return MarketRegime(reg_str)
+                except Exception:
+                    return MarketRegime(raw_s)
 
             # Fallback to global BTC regime
             raw = await self._redis.get("system:config:regime")  # type: ignore[attr-defined]
             if raw is None:
-                logger.warning("RegimeClassifier: no regime in Redis, returning CHOP")
-                return MarketRegime.CHOP
-            data = json.loads(raw)
-            return MarketRegime(data["regime"])
+                logger.warning("RegimeClassifier: no regime in Redis, returning RANGE")
+                return MarketRegime.RANGE
+            raw_s = raw.decode() if isinstance(raw, bytes) else str(raw)
+            data = json.loads(raw_s)
+            reg_str = data.get("regime", "RANGE") if isinstance(data, dict) else raw_s
+            return MarketRegime(reg_str)
         except Exception:
-            logger.exception("RegimeClassifier: Redis read failed, returning CHOP")
-            return MarketRegime.CHOP
+            logger.exception("RegimeClassifier: Redis read failed, returning RANGE")
+            return MarketRegime.RANGE
 
     async def run_classification_loop(
         self,
@@ -268,6 +285,17 @@ class RegimeClassifier:
 
                     if self._redis is not None:
                         await self._redis.set("system:config:regime", payload)  # type: ignore[attr-defined]
+                        symbol_key = f"system:regime:{symbol.replace('/', ':')}"
+                        await self._redis.set(symbol_key, regime.value)
+                        logger.info(
+                            "🧠 [STAGE 2: REGIME CLASSIFIER] Classified %s ──► %s (Conviction: %.2f, ADX: %.1f, Hurst: %.3f, ATR%%: %.1f)",
+                            symbol,
+                            regime.value,
+                            conviction,
+                            adx,
+                            hurst,
+                            atr_pct,
+                        )
 
                 await asyncio.sleep(interval_seconds)
             except asyncio.CancelledError:

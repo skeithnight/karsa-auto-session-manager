@@ -80,11 +80,11 @@ class DynamicThreshold:
         # Regime adjustment (Higher selective threshold for CHOP and RANGE)
         reg_upper = regime.upper()
         if "CHOP" in reg_upper or "VOLATILITY" in reg_upper:
-            threshold += 0.10
-            logger.info("Threshold: CHOP regime (%s) → +0.10", regime)
+            threshold += 0.20
+            logger.info("Threshold: CHOP regime (%s) → +0.20", regime)
         elif "RANGE" in reg_upper:
-            threshold += 0.08
-            logger.info("Threshold: RANGE regime (%s) → +0.08", regime)
+            threshold += 0.15
+            logger.info("Threshold: RANGE regime (%s) → +0.15", regime)
 
         # Drawdown adjustment
         if drawdown_pct > _DD_SEVERE_PCT:

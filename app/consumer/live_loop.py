@@ -357,9 +357,16 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
                 btc_regime = "RANGE"  # default fallback
                 if engine._redis:
                     try:
-                        btc_regime_raw = await engine._redis.get("system:regime:BTC/USDT")
+                        btc_regime_raw = await engine._redis.get("system:regime:BTC:USDT")
+                        if not btc_regime_raw:
+                            btc_regime_raw = await engine._redis.get("system:config:regime")
                         if btc_regime_raw:
-                            btc_regime = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                            raw_s = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                            try:
+                                data = json.loads(raw_s)
+                                btc_regime = data.get("regime", raw_s) if isinstance(data, dict) else raw_s
+                            except Exception:
+                                btc_regime = raw_s
                     except Exception:
                         pass
 
@@ -1417,11 +1424,12 @@ async def _daily_summary_loop(
                 logger.info("daily_summary: disabled by user settings, skipping")
                 continue
 
-            # Generate and send
-            message = await service.generate_summary()
+            # Generate and send summary for the completed day (yesterday)
+            completed_date = datetime.now(timezone.utc) - timedelta(days=1)
+            message = await service.generate_summary(completed_date)
             if alert_service:
                 await alert_service.send(message)
-                logger.info("daily_summary: sent successfully")
+                logger.info("daily_summary: sent successfully for %s", completed_date.strftime("%Y-%m-%d"))
             else:
                 logger.warning("daily_summary: no alert_service, cannot send")
 

@@ -153,10 +153,11 @@ class ExitManager:
 
         # --- Profit Lock at 3R: move SL to breakeven ---
         if r_multiple >= PROFIT_LOCK_R:
+            fee_buffer = entry_price * APM_BREAKEVEN_FEE_PCT
             if side == "LONG":
-                breakeven_sl = entry_price
+                breakeven_sl = entry_price + fee_buffer
             else:
-                breakeven_sl = entry_price
+                breakeven_sl = entry_price - fee_buffer
 
             if side == "LONG" and current_sl < breakeven_sl:
                 await self._amend_sl(pos, symbol, side, breakeven_sl)
@@ -346,8 +347,8 @@ class ExitManager:
         symbol = pos.get("symbol", "")
 
         if r_mult < Decimal("0"):
-            # -- LOSING: Kill in 3 minutes (fail-closed) --
-            losing_max_mins = 3
+            # -- LOSING: Allow 25 minutes of normal candle pullback before time exit --
+            losing_max_mins = 25
             if held_mins >= losing_max_mins:
                 self._log.warning(
                     f"APM: ASYMMETRIC LOSING EXIT {symbol} {side} -- "
@@ -357,8 +358,8 @@ class ExitManager:
                 return True
 
         elif r_mult == Decimal("0"):
-            # -- BREAKEVEN: Kill in 15 minutes --
-            be_max_mins = 15
+            # -- BREAKEVEN: Kill in 25 minutes --
+            be_max_mins = 25
             if held_mins >= be_max_mins:
                 self._log.warning(
                     f"APM: ASYMMETRIC BREAKEVEN EXIT {symbol} {side} -- "
@@ -379,7 +380,7 @@ class ExitManager:
                 await self._force_close_position(pos, f"quick_profit_exit_R{r_mult:.1f}")
                 return True
 
-            # Momentum decay exit: if winning but R hasn't moved in 10 min, exit
+            # Momentum decay exit: if winning but R hasn't moved in 15 min and dropped > 30% from peak
             peak_r = Decimal(str(pos.get("peak_r_multiple", str(r_mult))))
             if r_mult > peak_r:
                 pos["peak_r_multiple"] = str(r_mult)
@@ -388,7 +389,7 @@ class ExitManager:
             elif r_mult > Decimal("0"):
                 peak_r_ts = float(pos.get("peak_r_ts", "0") or "0")
                 stale_mins = (datetime.now(timezone.utc).timestamp() - peak_r_ts) / 60.0
-                if stale_mins >= 10 and r_mult < peak_r * Decimal("0.8"):
+                if stale_mins >= 15 and r_mult < peak_r * Decimal("0.7"):
                     self._log.warning(
                         f"APM: MOMENTUM DECAY EXIT {symbol} -- R stalled at {r_mult:.2f} "
                         f"(peak {peak_r:.2f}) for {stale_mins:.0f}min"
@@ -468,7 +469,7 @@ class ExitManager:
             # Market close with reduceOnly -- capture fill price from response
             fill_price = Decimal("0")
             if qty > 0:
-                close_side = "SELL" if side == "LONG" else "BUY"
+                close_side = "sell" if str(side).upper() in ("LONG", "BUY") else "buy"
                 close_result = await self._client.create_market_order(
                     symbol, close_side, qty, {"reduceOnly": True}
                 )  # type: ignore[attr-defined]

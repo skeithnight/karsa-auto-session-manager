@@ -100,7 +100,7 @@ class ShadowAPM:
         is_hyper = str(pos.get("regime", "")).startswith("HYPER")
         quick_profit_mins = 3 if is_hyper else 5
         quick_profit_r = Decimal("1.0") if is_hyper else Decimal("2.0")
-        stag_mins = 5 if is_hyper else 15  # Adjusted to 15 minutes per trader instruction
+        stag_mins = 10 if is_hyper else 25  # Adjusted to 25 minutes to allow altcoin accumulation base completion
         stag_r = Decimal("0.5") if is_hyper else Decimal("0.2")
 
         # Quick Profit Exit
@@ -113,12 +113,14 @@ class ShadowAPM:
         # Stagnation Exit
         if held_mins >= stag_mins and r_mult < stag_r:
             symbol = pos.get("symbol", "")
-            self._log.warning(f"ShadowAPM: STAGNATION exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
+            self._log.warning(
+                f"🛡️ [STAGE 6: ACTIVE POSITION MANAGER] STAGNATION CUT {symbol} — Held: {held_mins:.0f}m >= {stag_mins}m cutoff (R={r_mult:.2f} < {stag_r}R)"
+            )
             await self._close_shadow_position(pos, live_price, f"stagnation_exit_{held_mins:.0f}min")
             return True
 
-        # Underwater Stale Exit (15 mins)
-        if held_mins >= 15:
+        # Underwater Stale Exit (25 mins)
+        if held_mins >= 25:
             is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
             if is_underwater:
                 symbol = pos.get("symbol", "")
@@ -277,8 +279,8 @@ class ShadowAPM:
         r_multiple = self._calculate_r_multiple(side, entry_price, mid, initial_risk)
 
         is_hyper = str(entry_regime).startswith("HYPER")
-        wick_long = Decimal("-0.015") if is_hyper else Decimal("-0.03")
-        wick_short = Decimal("0.015") if is_hyper else Decimal("0.03")
+        wick_long = Decimal("-0.015") if is_hyper else Decimal("-0.04")
+        wick_short = Decimal("0.015") if is_hyper else Decimal("0.04")
         be_lock_r = Decimal("0.3") if is_hyper else APM_BREAKEVEN_LOCK_R
         step_r = Decimal("0.1") if is_hyper else Decimal("0.2")
         step_activate_r = Decimal("0.5") if is_hyper else Decimal("1.2")
@@ -483,7 +485,7 @@ class ShadowAPM:
 
         # Fetch current funding rate from Redis
         funding_rate = await self._get_funding_rate(symbol)
-        if funding_rate <= 0:
+        if funding_rate == Decimal("0"):
             pos["last_funding_ts"] = now.isoformat()
             return
 
@@ -492,7 +494,7 @@ class ShadowAPM:
         entry_price = Decimal(pos.get("entry_price", "0"))
         notional = entry_price * amount
 
-        if side == "LONG":
+        if side in ("LONG", "buy"):
             funding_fee = notional * funding_rate
         else:
             funding_fee = notional * funding_rate * Decimal("-1")

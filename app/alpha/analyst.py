@@ -181,7 +181,7 @@ class CryptoAnalyst:
             price_vs_ema = f"{pct:+.2f}% from EMA200"
 
         # Context Enrichment: Session Context
-        utc_hour = datetime.utcnow().hour
+        utc_hour = datetime.now(timezone.utc).hour
         if 0 <= utc_hour < 8:
             session_context = "Asia Session"
         elif 8 <= utc_hour < 16:
@@ -289,8 +289,23 @@ class CryptoAnalyst:
             logger.warning(f"Analyst: parse failed for {symbol}, raw={response[:200]}")
             return None
 
+        logger.info(
+            "🤖 [STAGE 4: PRE-ENTRY AI ANALYST] Evaluated %s %s ──► AI Recommendation: %s (Confidence: %d%%, Actionable: %s, Reasoning: %s)",
+            symbol,
+            direction,
+            result.direction,
+            result.ai_confidence,
+            result.decision_recommendation != "NO_TRADE",
+            result.reasoning,
+        )
+
         # Short Squeeze Confluence Boost (+20% AI confidence)
-        if direction in ("LONG", "buy") and usdt_inflow_m >= 10.0 and liq_volume_m >= 20.0:
+        if (
+            result.decision_recommendation != "NO_TRADE"
+            and direction in ("LONG", "buy")
+            and usdt_inflow_m >= 10.0
+            and liq_volume_m >= 20.0
+        ):
             boosted = min(100, result.ai_confidence + 20)
             logger.info(
                 f"Analyst Short Squeeze Confluence for {symbol}: AI confidence boosted {result.ai_confidence} -> {boosted} "

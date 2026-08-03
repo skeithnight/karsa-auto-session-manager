@@ -90,7 +90,8 @@ services:
     environment:
       - KARSA_ROLE=commander
       - PROMETHEUS_PORT=8004
-    network_mode: "container:karsa-gluetun"
+    networks:
+      - karsa-backend
 
 # -- Networks -------------------------------------------------------
 # Declared external: this file attaches to the network created by

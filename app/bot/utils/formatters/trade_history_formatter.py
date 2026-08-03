@@ -20,28 +20,24 @@ class TradeHistoryFormatter:
         # Support both dict (from TradeStore.get_history) and object access
         if isinstance(trade, dict):
             pnl_raw = float(trade.get("pnl") or 0)
-            entry_price = float(trade.get("entry_price") or 0)
-            amount = float(trade.get("amount") or 0)
-            cost = entry_price * amount
-            pnl_pct = (pnl_raw / cost * 100) if cost > 0 else 0.0
             symbol = trade.get("symbol", "?")
             exit_time = trade.get("exit_time")
             reason = str(trade.get("exit_reason") or "N/A")
             ai_confidence = trade.get("ai_confidence")
         else:
-            pnl_pct = float(getattr(trade, "realized_pnl_pct", 0) or 0)
+            pnl_raw = float(getattr(trade, "realized_pnl", 0) or getattr(trade, "pnl", 0) or 0)
             symbol = getattr(trade, "ticker", "?")
             exit_time = getattr(trade, "exit_date", None)
-            _reason = str(getattr(trade, "exit_reason", None) or "N/A")
+            reason = str(getattr(trade, "exit_reason", None) or "N/A")
             _ai_confidence = getattr(trade, "ai_confidence", None)
-        icon = "\U0001f7e2" if pnl_pct >= 0 else "\U0001f534"
-        pnl_str = f"+{pnl_pct:.2f}%" if pnl_pct >= 0 else f"{pnl_pct:.2f}%"
+        icon = "\U0001f7e2" if pnl_raw >= 0 else "\U0001f534"
+        pnl_str = f"+${pnl_raw:.2f}" if pnl_raw >= 0 else f"-${abs(pnl_raw):.2f}"
         ts = exit_time.strftime("%m-%d") if exit_time else "?"
         if len(reason) > 12:
             reason = reason[:9] + "..."
 
-        # Format as row inside a full pre block
-        return f"{icon} {symbol:<10} {pnl_str:<8} {ts:<5} {reason:<12}"
+        # Format as row inside a full pre block (Symbol PnL_USD Time Reason)
+        return f"{icon} {symbol:<10} {pnl_str:<9} {ts:<5} {reason:<12}"
 
     @staticmethod
     def format_trade_detail(trade) -> str:

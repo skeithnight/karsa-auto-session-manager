@@ -153,7 +153,7 @@ class TradeStore:
                 if trade_id is not None:
                     result = await conn.execute(
                         text(f"""UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
-                            exit_reason = :exit_reason, exit_time = :exit_time{extra_clauses}
+                            exit_reason = COALESCE(NULLIF(trades.exit_reason, ''), :exit_reason), exit_time = :exit_time{extra_clauses}
                             WHERE id = :trade_id AND exit_time IS NULL"""),
                         {
                             "trade_id": trade_id,
@@ -170,7 +170,7 @@ class TradeStore:
                 else:
                     result = await conn.execute(
                         text(f"""UPDATE trades SET exit_price = :exit_price, pnl = :pnl,
-                            exit_reason = :exit_reason, exit_time = :exit_time{extra_clauses}
+                            exit_reason = COALESCE(NULLIF(trades.exit_reason, ''), :exit_reason), exit_time = :exit_time{extra_clauses}
                             WHERE id = (
                                 SELECT id FROM trades
                                 WHERE symbol = :symbol AND exit_time IS NULL

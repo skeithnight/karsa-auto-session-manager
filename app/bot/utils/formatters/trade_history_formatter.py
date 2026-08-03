@@ -111,13 +111,22 @@ class TradeHistoryFormatter:
         return "\n".join(lines)
 
     @staticmethod
-    def build_keyboard(current_page: int, total_pages: int) -> InlineKeyboardMarkup:
-        """Build Prev/Page/Next inline keyboard."""
+    def build_keyboard(
+        current_page: int,
+        total_pages: int,
+        selected_date: str | None = None,
+        available_dates: list[str] | None = None,
+    ) -> InlineKeyboardMarkup:
+        """Build Prev/Page/Next inline keyboard + Date Filter Buttons."""
+        from datetime import datetime
+
+        date_suffix = f":{selected_date}" if selected_date and selected_date != "all" else ":all"
+
         prev_cb = (
-            f"karsa:history:page:{current_page - 1}" if current_page > 1 else "noop"
+            f"karsa:history:page:{current_page - 1}{date_suffix}" if current_page > 1 else "noop"
         )
         next_cb = (
-            f"karsa:history:page:{current_page + 1}"
+            f"karsa:history:page:{current_page + 1}{date_suffix}"
             if current_page < total_pages
             else "noop"
         )
@@ -133,6 +142,33 @@ class TradeHistoryFormatter:
                 ),
                 InlineKeyboardButton(next_label, callback_data=next_cb),
             ],
+        ]
+
+        # Date Filter Buttons Rows (e.g. up to 4 per row: [ 3 Aug ] [ 2 Aug ] [ 1 Aug ] [ 31 Jul ])
+        if available_dates:
+            all_date_btns = []
+            for d_str in available_dates:
+                try:
+                    dt = datetime.strptime(d_str, "%Y-%m-%d")
+                    label = dt.strftime("%-d %b")
+                except Exception:
+                    label = d_str
+
+                is_active = (selected_date == d_str)
+                btn_text = f"🔘 {label}" if is_active else label
+                cb = f"karsa:history:date:{d_str}"
+                all_date_btns.append(InlineKeyboardButton(btn_text, callback_data=cb))
+
+            all_active = (selected_date is None or selected_date == "all")
+            all_text = "🔘 All" if all_active else "All"
+            all_date_btns.append(InlineKeyboardButton(all_text, callback_data="karsa:history:date:all"))
+
+            # Chunk into rows of max 4 buttons
+            chunk_size = 4
+            for i in range(0, len(all_date_btns), chunk_size):
+                keyboard.append(all_date_btns[i : i + chunk_size])
+
+        keyboard.extend([
             [
                 InlineKeyboardButton(
                     "\U0001f4ca AI Accuracy", callback_data="cmd_ai_accuracy"
@@ -148,25 +184,45 @@ class TradeHistoryFormatter:
                     "\U0001f3e0 Back to Dashboard", callback_data="cmd_dashboard"
                 )
             ],
-        ]
+        ])
         return InlineKeyboardMarkup(keyboard)
 
     @staticmethod
-    def build_message(trades, current_page, total_trades, wins, losses, net_pnl):
+    def build_message(
+        trades,
+        current_page,
+        total_trades,
+        wins,
+        losses,
+        net_pnl,
+        selected_date: str | None = None,
+        available_dates: list[str] | None = None,
+    ):
         """Build full message text and keyboard. Returns (text, reply_markup)."""
+        from datetime import datetime
+
         total_pages = max(
             1,
             (total_trades + TradeHistoryFormatter.PAGE_SIZE - 1)
             // TradeHistoryFormatter.PAGE_SIZE,
         )
+
+        date_header = ""
+        if selected_date and selected_date != "all":
+            try:
+                dt = datetime.strptime(selected_date, "%Y-%m-%d")
+                date_header = f" [{dt.strftime('%d %b')}]"
+            except Exception:
+                date_header = f" [{selected_date}]"
+
         lines = [
-            bold(f"📜 TRADE HISTORY (Page {current_page}/{total_pages})"),
+            bold(f"📜 TRADE HISTORY{date_header} (Page {current_page}/{total_pages})"),
             "\n",
             "━" * 32,
             "\n",
         ]
         if not trades:
-            lines.append("<i>No closed trades recorded yet.</i>\n")
+            lines.append("<i>No closed trades recorded for this period.</i>\n")
         else:
             table_lines = [f"{'Symbol':<11} {'PnL':<8} {'Time':<5} {'Reason':<10}", "-" * 36]
             for t in trades:
@@ -192,7 +248,7 @@ class TradeHistoryFormatter:
         lines.append(pre(summary_block))
 
         text = fmt(*lines)
-        return text, TradeHistoryFormatter.build_keyboard(current_page, total_pages)
+        return text, TradeHistoryFormatter.build_keyboard(current_page, total_pages, selected_date, available_dates)
 
     @staticmethod
     def build_ai_accuracy_message(trades: list) -> str:

@@ -83,6 +83,15 @@ async def _wallet_metrics_loop(
                 available = float(wallet.get("available", 0))
                 balance = float(wallet.get("balance", 0))
                 metrics.wallet_balance.set(available)
+                try:
+                    import json
+                    await redis.set(
+                        "karsa:wallet:latest",
+                        json.dumps({"balance": balance, "available": available, "ok": not wallet.get("error")}),
+                        ex=120,
+                    )
+                except Exception as cache_exc:
+                    logger.debug("failed_to_cache_wallet_in_redis: %s", cache_exc)
 
             open_positions = await position_store.list_all()
 

@@ -55,6 +55,16 @@ _orig_getaddrinfo = _socket.getaddrinfo
 
 def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """Override socket.getaddrinfo — try gluetun DNS (external) then Docker DNS (internal)."""
+    # Exclude internal Docker service names & local IP/localhost
+    if (
+        not isinstance(host, str)
+        or host in {"postgres", "redis", "gluetun", "localhost", "127.0.0.1", "0.0.0.0", "9router", "prometheus", "grafana", "karsa-postgres", "karsa-redis"}
+        or host.endswith(".internal")
+        or host.startswith("172.")
+        or host.startswith("127.")
+    ):
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
     # 1. Try gluetun DNS (127.0.0.1) — forwards to Cloudflare 1.1.1.1 via VPN tunnel (not poisoned)
     try:
         ips = _dns_query("127.0.0.1", host)

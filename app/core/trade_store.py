@@ -257,22 +257,33 @@ class TradeStore:
             raise
 
     async def get_history(
-        self, page: int = 1, per_page: int = 20
+        self, page: int = 1, per_page: int = 10, date_str: str | None = None
     ) -> tuple[list[dict[str, Any]], int, int, int, Decimal]:
-        """Get paginated trade history. Returns (trades, total, wins, losses, net_pnl)."""
+        """Get paginated trade history, optionally filtered by date_str (YYYY-MM-DD). Returns (trades, total, wins, losses, net_pnl)."""
         offset = (page - 1) * per_page
+        date_filter = ""
+        params: dict[str, Any] = {"limit": per_page, "offset": offset}
+        if date_str and date_str != "all":
+            date_filter = " AND DATE(exit_time AT TIME ZONE 'UTC') = :date_val"
+            try:
+                dt_val = datetime.strptime(date_str, "%Y-%m-%d").date()
+                params["date_val"] = dt_val
+            except Exception:
+                params["date_val"] = date_str
+
         async with self.db.engine.connect() as conn:
             count_result = await conn.execute(
-                text("SELECT COUNT(*) FROM trades WHERE exit_time IS NOT NULL")
+                text(f"SELECT COUNT(*) FROM trades WHERE exit_time IS NOT NULL{date_filter}"),
+                params,
             )
             total = count_result.scalar() or 0
 
             rows = await conn.execute(
-                text("""SELECT symbol, side, amount, entry_price, exit_price, pnl,
+                text(f"""SELECT symbol, side, amount, entry_price, exit_price, pnl,
                     regime, entry_time, exit_time, exit_reason, ai_confidence
-                    FROM trades WHERE exit_time IS NOT NULL
+                    FROM trades WHERE exit_time IS NOT NULL{date_filter}
                     ORDER BY exit_time DESC LIMIT :limit OFFSET :offset"""),
-                {"limit": per_page, "offset": offset},
+                params,
             )
             trades = [
                 {
@@ -293,10 +304,11 @@ class TradeStore:
 
             stats = await conn.execute(
                 text(
-                    "SELECT COUNT(*) FILTER (WHERE pnl > 0), "
-                    "COUNT(*) FILTER (WHERE pnl <= 0), "
-                    "COALESCE(SUM(pnl), 0) FROM trades WHERE exit_time IS NOT NULL"
-                )
+                    f"SELECT COUNT(*) FILTER (WHERE pnl > 0), "
+                    f"COUNT(*) FILTER (WHERE pnl <= 0), "
+                    f"COALESCE(SUM(pnl), 0) FROM trades WHERE exit_time IS NOT NULL{date_filter}"
+                ),
+                params,
             )
             row = stats.fetchone()
             wins = row[0] or 0
@@ -304,6 +316,22 @@ class TradeStore:
             net_pnl = Decimal(str(row[2])) if row[2] else Decimal("0")
 
         return trades, total, wins, losses, net_pnl
+
+    async def get_recent_trade_dates(self, limit: int = 4) -> list[str]:
+        """Get list of recent distinct trade dates as YYYY-MM-DD strings (UTC)."""
+        async with self.db.engine.connect() as conn:
+            rows = await conn.execute(
+                text("""SELECT DISTINCT DATE(exit_time AT TIME ZONE 'UTC') as tdate
+                    FROM trades WHERE exit_time IS NOT NULL
+                    ORDER BY tdate DESC LIMIT :limit"""),
+                {"limit": limit},
+            )
+            dates = []
+            for r in rows.fetchall():
+                if r[0]:
+                    d = r[0].strftime("%Y-%m-%d") if hasattr(r[0], "strftime") else str(r[0])
+                    dates.append(d)
+            return dates
 
     async def get_trades_since(self, since: datetime) -> list[dict[str, Any]]:
         """Get all trades (open or closed) with entry_time >= since."""

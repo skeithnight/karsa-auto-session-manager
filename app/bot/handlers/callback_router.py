@@ -210,17 +210,44 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     elif data.startswith("karsa:history:page:"):
         try:
-            page = int(data.split(":")[-1])
+            parts = data.split(":")
+            page = int(parts[3])
+            date_str = parts[4] if len(parts) > 4 and parts[4] != "all" else None
+
             from app.bot.utils.formatters.trade_history_formatter import (
                 TradeHistoryFormatter,
             )
 
-            trades, total, wins, losses, net_pnl = await _fetch_trade_history_page(page, context)
-            text, keyboard = TradeHistoryFormatter.build_message(trades, page, total, wins, losses, net_pnl)
+            trades, total, wins, losses, net_pnl, recent_dates = await _fetch_trade_history_page(
+                page=page, date_str=date_str, context=context
+            )
+            text, keyboard = TradeHistoryFormatter.build_message(
+                trades, page, total, wins, losses, net_pnl, selected_date=date_str, available_dates=recent_dates
+            )
             await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
         except Exception as exc:
             logger.error("history_pagination_failed", extra={"error": str(exc)})
             await query.answer("Failed to load page", show_alert=True)
+    elif data.startswith("karsa:history:date:"):
+        try:
+            date_str = data.split(":")[-1]
+            if date_str == "all":
+                date_str = None
+
+            from app.bot.utils.formatters.trade_history_formatter import (
+                TradeHistoryFormatter,
+            )
+
+            trades, total, wins, losses, net_pnl, recent_dates = await _fetch_trade_history_page(
+                page=1, date_str=date_str, context=context
+            )
+            text, keyboard = TradeHistoryFormatter.build_message(
+                trades, 1, total, wins, losses, net_pnl, selected_date=date_str, available_dates=recent_dates
+            )
+            await query.edit_message_text(text, reply_markup=keyboard, parse_mode="HTML")
+        except Exception as exc:
+            logger.error("history_date_filter_failed", extra={"error": str(exc)})
+            await query.answer("Failed to filter by date", show_alert=True)
     elif data == "cmd_reconcile":
         await reconcile_cmd(update, context)
 

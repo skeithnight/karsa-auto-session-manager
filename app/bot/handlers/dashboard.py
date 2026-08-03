@@ -135,7 +135,16 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async def _fetch_wallet():
         t = time.monotonic()
         try:
-            wallet = await bybit.get_wallet_balance()
+            cached_raw = await r.get("karsa:wallet:latest")
+            if cached_raw:
+                cached = json.loads(cached_raw)
+                logger.info("fetch_wallet_done (from redis) ms=%d", int((time.monotonic() - t) * 1000))
+                return {"wallet": cached, "ok": cached.get("ok", True)}
+        except Exception as cache_exc:
+            logger.debug("redis_wallet_cache_read_failed: %s", cache_exc)
+
+        try:
+            wallet = await asyncio.wait_for(bybit.get_wallet_balance(), timeout=2.5)
             logger.info("fetch_wallet_done ms=%d", int((time.monotonic() - t) * 1000))
             return {"wallet": wallet, "ok": not wallet.get("error")}
         except Exception as exc:
@@ -143,27 +152,30 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return {"wallet": {}, "ok": False}
 
     async def _fetch_vpn():
-        """Probe the AI proxy (9router) — only reachable when VPN is up."""
+        """Probe Gluetun VPN container health or AI proxy."""
         t = time.monotonic()
-        vpn_url = (
-            getattr(settings, "nine_router_base_url", None)
-            or getattr(settings, "ai_proxy_url", None)
-            or getattr(settings, "llm_proxy_url", None)
-            or getattr(settings, "ai_base_url", None)
-        )
-        if not vpn_url:
-            return None  # Not configured — show as ⚪
         try:
             import httpx
 
             async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-                resp = await client.get(f"{vpn_url}/v1/models")
-                logger.info(
-                    "fetch_vpn_done ms=%d status=%d",
-                    int((time.monotonic() - t) * 1000),
-                    resp.status_code,
+                try:
+                    resp = await client.get("http://gluetun:8000/v1/publicip/ip")
+                    if resp.status_code in {200, 401, 404}:
+                        logger.info("fetch_vpn_done via gluetun ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
+                        return True
+                except Exception:
+                    pass
+
+                vpn_url = (
+                    getattr(settings, "nine_router_base_url", None)
+                    or getattr(settings, "ai_proxy_url", None)
+                    or getattr(settings, "llm_proxy_url", None)
+                    or getattr(settings, "ai_base_url", None)
                 )
-                return resp.status_code < 500
+                if vpn_url and "127.0.0.1" not in vpn_url:
+                    resp = await client.get(f"{vpn_url}/v1/models")
+                    return resp.status_code < 500
+                return True
         except Exception as exc:
             logger.warning("fetch_vpn_failed", extra={"error": str(exc)})
             return False

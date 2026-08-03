@@ -176,9 +176,18 @@ async def send_or_edit_message(
                     text, parse_mode=parse_mode, reply_markup=reply_markup
                 )
         elif update.message:
-            return await update.message.reply_text(
-                text, parse_mode=parse_mode, reply_markup=reply_markup
-            )
+            try:
+                return await update.message.reply_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+            except Exception as html_exc:
+                logger.warning(f"send_or_edit_message HTML parse failed: {html_exc}, falling back to plain text")
+                import re
+
+                plain_text = re.sub(r"<[^>]+>", "", text)
+                return await update.message.reply_text(
+                    plain_text, reply_markup=reply_markup
+                )
     except Exception as exc:
         logger.error("send_or_edit_message_failed", extra={"error": str(exc)})
     return None

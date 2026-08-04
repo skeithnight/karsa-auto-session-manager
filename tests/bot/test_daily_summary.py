@@ -431,3 +431,41 @@ async def test_count_signals_exception(service, mock_db_engine):
         datetime(2025, 1, 16, tzinfo=timezone.utc),
     )
     assert result == 0
+
+
+@pytest.mark.asyncio
+async def test_count_signals_uses_timestamp_column(service, mock_db_engine):
+    """Verify signals query uses timestamp column, not created_at."""
+    _, conn = mock_db_engine
+    mock_result = MagicMock()
+    mock_result.fetchone.return_value = [5]
+    conn.execute.return_value = mock_result
+
+    result = await service._count_signals(
+        datetime(2026, 8, 3, tzinfo=timezone.utc),
+        datetime(2026, 8, 4, tzinfo=timezone.utc),
+    )
+    assert result == 5
+    assert "WHERE timestamp >=" in str(conn.execute.call_args[0][0])
+
+
+@pytest.mark.asyncio
+async def test_fetch_trades_shadow_fallback(service, mock_db_engine):
+    """Fallback to shadow_trades if trades table returns empty."""
+    _, conn = mock_db_engine
+    res_trades = MagicMock()
+    res_trades.fetchall.return_value = []
+    res_shadow = MagicMock()
+    res_shadow.fetchall.return_value = [
+        ("BTCUSDT", "BUY", 1.0, 50000.0, 51000.0, 1000.0, "TREND_BULL", datetime.now(timezone.utc), datetime.now(timezone.utc), "TP", 85)
+    ]
+    conn.execute.side_effect = [res_trades, res_shadow]
+
+    trades = await service._fetch_trades_between(
+        datetime(2026, 8, 3, tzinfo=timezone.utc),
+        datetime(2026, 8, 4, tzinfo=timezone.utc),
+    )
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "BTCUSDT"
+    assert trades[0]["pnl"] == 1000.0
+

@@ -66,7 +66,7 @@ class DailySummaryService:
         # Fetch week and month PnL
         week_start = day_start - timedelta(days=day_start.weekday())  # Monday
         month_start = day_start.replace(day=1)
-        total_start = datetime(2024, 1, 1, tzinfo=timezone.utc)  # all-time
+        total_start = datetime(2000, 1, 1, tzinfo=timezone.utc)  # all-time
 
         week_pnl, week_pct = await self._fetch_pnl_summary(week_start, day_end)
         month_pnl, month_pct = await self._fetch_pnl_summary(month_start, day_end)
@@ -74,7 +74,7 @@ class DailySummaryService:
 
         # Today's stats
         today_pnl = sum(Decimal(str(t.get("pnl", 0) or 0)) for t in today_trades)
-        today_pct = await self._compute_pnl_pct(today_pnl, day_start)
+        today_pct = await self._compute_pnl_pct(today_pnl, day_start, day_end)
 
         wins = [t for t in today_trades if Decimal(str(t.get("pnl", 0) or 0)) > 0]
         total_trades = len(today_trades)
@@ -127,97 +127,106 @@ class DailySummaryService:
     async def _fetch_trades_between(
         self, start: datetime, end: datetime
     ) -> list[dict[str, Any]]:
-        """Fetch closed trades within a time range."""
-        try:
-            async with self.db.engine.connect() as conn:
-                rows = await conn.execute(
-                    text(
-                        """SELECT symbol, side, amount, entry_price, exit_price,
-                        pnl, regime, entry_time, exit_time, exit_reason, ai_confidence
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND entry_time >= :start AND entry_time < :end
-                        ORDER BY exit_time DESC"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                return [
-                    {
-                        "symbol": r[0],
-                        "side": r[1],
-                        "amount": r[2],
-                        "entry_price": r[3],
-                        "exit_price": r[4],
-                        "pnl": r[5],
-                        "regime": r[6],
-                        "entry_time": r[7],
-                        "exit_time": r[8],
-                        "exit_reason": r[9],
-                        "ai_confidence": r[10],
-                    }
-                    for r in rows.fetchall()
-                ]
-        except Exception as exc:
-            logger.error("daily_summary_fetch_trades_failed: {}", exc)
-            return []
+        """Fetch closed trades within a time range (filtered by exit_time)."""
+        for table in ("trades", "shadow_trades"):
+            try:
+                async with self.db.engine.connect() as conn:
+                    rows = await conn.execute(
+                        text(
+                            f"""SELECT symbol, side, amount, entry_price, exit_price,
+                            pnl, regime, entry_time, exit_time, exit_reason, ai_confidence
+                            FROM {table}
+                            WHERE exit_time IS NOT NULL
+                            AND exit_time >= :start AND exit_time < :end
+                            ORDER BY exit_time DESC"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    trades = [
+                        {
+                            "symbol": r[0],
+                            "side": r[1],
+                            "amount": r[2],
+                            "entry_price": r[3],
+                            "exit_price": r[4],
+                            "pnl": r[5],
+                            "regime": r[6],
+                            "entry_time": r[7],
+                            "exit_time": r[8],
+                            "exit_reason": r[9],
+                            "ai_confidence": r[10],
+                        }
+                        for r in rows.fetchall()
+                    ]
+                    if trades:
+                        return trades
+            except Exception as exc:
+                logger.error(f"daily_summary_fetch_trades_failed_{table}: {exc}")
+        return []
 
     async def _fetch_pnl_summary(
         self, start: datetime, end: datetime
     ) -> tuple[Decimal, float]:
-        """Fetch aggregate PnL and percentage for a time range."""
-        try:
-            async with self.db.engine.connect() as conn:
-                result = await conn.execute(
-                    text(
-                        """SELECT COALESCE(SUM(pnl), 0)
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND entry_time >= :start AND entry_time < :end"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                row = result.fetchone()
-                total_pnl = Decimal(str(row[0])) if row and row[0] else Decimal("0")
+        """Fetch aggregate PnL and percentage for a time range (filtered by exit_time)."""
+        for table in ("trades", "shadow_trades"):
+            try:
+                async with self.db.engine.connect() as conn:
+                    result = await conn.execute(
+                        text(
+                            f"""SELECT COALESCE(SUM(pnl), 0)
+                            FROM {table}
+                            WHERE exit_time IS NOT NULL
+                            AND exit_time >= :start AND exit_time < :end"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    row = result.fetchone()
+                    total_pnl = Decimal(str(row[0])) if row and row[0] else Decimal("0")
 
-                # Compute percentage from entry values
-                pct_result = await conn.execute(
-                    text(
-                        """SELECT COALESCE(SUM(entry_price * amount), 0)
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND entry_time >= :start AND entry_time < :end"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                pct_row = pct_result.fetchone()
-                total_exposure = Decimal(str(pct_row[0])) if pct_row and pct_row[0] else Decimal("0")
-                pct = float(total_pnl / total_exposure * 100) if total_exposure > 0 else 0.0
+                    # Compute percentage from entry values
+                    pct_result = await conn.execute(
+                        text(
+                            f"""SELECT COALESCE(SUM(entry_price * amount), 0)
+                            FROM {table}
+                            WHERE exit_time IS NOT NULL
+                            AND exit_time >= :start AND exit_time < :end"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    pct_row = pct_result.fetchone()
+                    total_exposure = Decimal(str(pct_row[0])) if pct_row and pct_row[0] else Decimal("0")
+                    pct = float(total_pnl / total_exposure * 100) if total_exposure > 0 else 0.0
 
-                return total_pnl, pct
-        except Exception as exc:
-            logger.error("daily_summary_fetch_pnl_failed: {}", exc)
-            return Decimal("0"), 0.0
+                    if total_pnl != Decimal("0") or total_exposure != Decimal("0"):
+                        return total_pnl, pct
+            except Exception as exc:
+                logger.error(f"daily_summary_fetch_pnl_failed_{table}: {exc}")
+        return Decimal("0"), 0.0
 
     async def _compute_pnl_pct(
-        self, pnl: Decimal, start: datetime
+        self, pnl: Decimal, start: datetime, end: datetime | None = None
     ) -> float:
         """Compute PnL percentage relative to exposure in the period."""
-        try:
-            async with self.db.engine.connect() as conn:
-                result = await conn.execute(
-                    text(
-                        """SELECT COALESCE(SUM(entry_price * amount), 0)
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND entry_time >= :start"""
-                    ),
-                    {"start": start},
-                )
-                row = result.fetchone()
-                exposure = Decimal(str(row[0])) if row and row[0] else Decimal("0")
-                return float(pnl / exposure * 100) if exposure > 0 else 0.0
-        except Exception:
-            return 0.0
+        end_dt = end or (start + timedelta(days=1))
+        for table in ("trades", "shadow_trades"):
+            try:
+                async with self.db.engine.connect() as conn:
+                    result = await conn.execute(
+                        text(
+                            f"""SELECT COALESCE(SUM(entry_price * amount), 0)
+                            FROM {table}
+                            WHERE exit_time IS NOT NULL
+                            AND exit_time >= :start AND exit_time < :end_dt"""
+                        ),
+                        {"start": start, "end_dt": end_dt},
+                    )
+                    row = result.fetchone()
+                    exposure = Decimal(str(row[0])) if row and row[0] else Decimal("0")
+                    if exposure > 0:
+                        return float(pnl / exposure * 100)
+            except Exception:
+                pass
+        return 0.0
 
     async def _count_signals(self, start: datetime, end: datetime) -> int:
         """Count signals generated in the time range."""
@@ -226,13 +235,14 @@ class DailySummaryService:
                 result = await conn.execute(
                     text(
                         """SELECT COUNT(*) FROM signals
-                        WHERE created_at >= :start AND created_at < :end"""
+                        WHERE timestamp >= :start AND timestamp < :end"""
                     ),
                     {"start": start, "end": end},
                 )
                 row = result.fetchone()
                 return row[0] if row else 0
-        except Exception:
+        except Exception as exc:
+            logger.error("daily_summary_count_signals_failed: {}", exc)
             return 0
 
     async def _fetch_ai_stats(
@@ -247,54 +257,107 @@ class DailySummaryService:
             "cost": 0.0,
         }
         try:
-            # AI evaluations from trades with ai_confidence
             async with self.db.engine.connect() as conn:
-                result = await conn.execute(
-                    text(
-                        """SELECT COUNT(*), COALESCE(AVG(ai_confidence), 0)
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND ai_confidence IS NOT NULL
-                        AND entry_time >= :start AND entry_time < :end"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                row = result.fetchone()
-                if row:
-                    stats["evaluations"] = row[0] or 0
-                    stats["avg_confidence"] = int(row[1]) if row[1] else 0
+                # 1. AI evaluations count from ai_decisions table
+                try:
+                    res = await conn.execute(
+                        text(
+                            """SELECT COUNT(*) FROM ai_decisions
+                            WHERE created_at >= :start AND created_at < :end"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    row = res.fetchone()
+                    if row and row[0]:
+                        stats["evaluations"] = row[0]
+                except Exception:
+                    pass
 
-                # High confidence win rate (ai_confidence > 80)
-                hc_result = await conn.execute(
-                    text(
-                        """SELECT
-                            COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                            COUNT(*) as total
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND ai_confidence > 80
-                        AND entry_time >= :start AND entry_time < :end"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                hc_row = hc_result.fetchone()
-                if hc_row and hc_row[1] and hc_row[1] > 0:
-                    stats["high_conf_wr"] = (hc_row[0] / hc_row[1]) * 100
+                # If ai_decisions was empty, check signals table
+                if stats["evaluations"] == 0:
+                    try:
+                        sig_res = await conn.execute(
+                            text(
+                                """SELECT COUNT(*) FROM signals
+                                WHERE ai_confidence_score IS NOT NULL
+                                AND timestamp >= :start AND timestamp < :end"""
+                            ),
+                            {"start": start, "end": end},
+                        )
+                        sig_row = sig_res.fetchone()
+                        if sig_row and sig_row[0]:
+                            stats["evaluations"] = sig_row[0]
+                    except Exception:
+                        pass
 
-                # AI contribution: PnL from AI-assisted trades
-                contrib_result = await conn.execute(
-                    text(
-                        """SELECT COALESCE(SUM(pnl), 0)
-                        FROM trades
-                        WHERE exit_time IS NOT NULL
-                        AND ai_confidence IS NOT NULL AND ai_confidence > 50
-                        AND entry_time >= :start AND entry_time < :end"""
-                    ),
-                    {"start": start, "end": end},
-                )
-                contrib_row = contrib_result.fetchone()
-                if contrib_row and contrib_row[0]:
-                    stats["contribution"] = Decimal(str(contrib_row[0]))
+                # 2. Confidence / Win Rate / Contribution from closed trades (trades or shadow_trades)
+                for table in ("trades", "shadow_trades"):
+                    t_res = await conn.execute(
+                        text(
+                            f"""SELECT COUNT(*), COALESCE(AVG(ai_confidence), 0)
+                            FROM {table}
+                            WHERE exit_time IS NOT NULL
+                            AND ai_confidence IS NOT NULL
+                            AND exit_time >= :start AND exit_time < :end"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    t_row = t_res.fetchone()
+                    if t_row and t_row[0] and t_row[0] > 0:
+                        if stats["evaluations"] == 0:
+                            stats["evaluations"] = t_row[0]
+                        stats["avg_confidence"] = int(t_row[1])
+
+                        # High confidence win rate (ai_confidence > 80)
+                        hc_result = await conn.execute(
+                            text(
+                                f"""SELECT
+                                    COUNT(*) FILTER (WHERE pnl > 0) as wins,
+                                    COUNT(*) as total
+                                FROM {table}
+                                WHERE exit_time IS NOT NULL
+                                AND ai_confidence > 80
+                                AND exit_time >= :start AND exit_time < :end"""
+                            ),
+                            {"start": start, "end": end},
+                        )
+                        hc_row = hc_result.fetchone()
+                        if hc_row and hc_row[1] and hc_row[1] > 0:
+                            stats["high_conf_wr"] = (hc_row[0] / hc_row[1]) * 100
+
+                        # AI contribution: PnL from AI-assisted trades
+                        contrib_result = await conn.execute(
+                            text(
+                                f"""SELECT COALESCE(SUM(pnl), 0)
+                                FROM {table}
+                                WHERE exit_time IS NOT NULL
+                                AND ai_confidence IS NOT NULL AND ai_confidence > 50
+                                AND exit_time >= :start AND exit_time < :end"""
+                            ),
+                            {"start": start, "end": end},
+                        )
+                        contrib_row = contrib_result.fetchone()
+                        if contrib_row and contrib_row[0]:
+                            stats["contribution"] = Decimal(str(contrib_row[0]))
+                        break
+
+                # If avg_confidence is still 0, check signals table
+                if stats["avg_confidence"] == 0:
+                    try:
+                        sig_avg_res = await conn.execute(
+                            text(
+                                """SELECT COALESCE(AVG(ai_confidence_score), 0)
+                                FROM signals
+                                WHERE ai_confidence_score IS NOT NULL
+                                AND timestamp >= :start AND timestamp < :end"""
+                            ),
+                            {"start": start, "end": end},
+                        )
+                        sig_avg_row = sig_avg_res.fetchone()
+                        if sig_avg_row and sig_avg_row[0]:
+                            stats["avg_confidence"] = int(sig_avg_row[0])
+                    except Exception:
+                        pass
 
             # API cost from Redis
             date_str = start.strftime("%Y-%m-%d")
@@ -335,6 +398,25 @@ class DailySummaryService:
             savings_raw = await self.redis.get(f"{prefix}:estimated_savings")
             if savings_raw:
                 stats["estimated_savings"] = Decimal(str(savings_raw))
+
+            # Supplement from signals table (signals blocked by risk gate)
+            async with self.db.engine.connect() as conn:
+                try:
+                    res = await conn.execute(
+                        text(
+                            """SELECT COUNT(*) FROM signals
+                            WHERE risk_passed = FALSE
+                            AND timestamp >= :start AND timestamp < :end"""
+                        ),
+                        {"start": start, "end": end},
+                    )
+                    row = res.fetchone()
+                    if row and row[0]:
+                        db_blocked = row[0]
+                        stats["trades_blocked"] = max(stats["trades_blocked"], db_blocked)
+                        stats["hard_triggered"] = max(stats["hard_triggered"], db_blocked)
+                except Exception:
+                    pass
 
         except Exception as exc:
             logger.debug("daily_summary_guardrail_stats_partial: {}", exc)
@@ -394,9 +476,9 @@ class DailySummaryService:
 
         top = [
             {"symbol": s, "pnl": p, "pct": symbol_pct.get(s, 0.0)}
-            for s, p in sorted_symbols[:3]
+            for s, p in sorted_symbols
             if p > 0
-        ]
+        ][:3]
         worst = [
             {"symbol": s, "pnl": p, "pct": symbol_pct.get(s, 0.0)}
             for s, p in reversed(sorted_symbols)

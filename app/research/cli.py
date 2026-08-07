@@ -19,7 +19,6 @@ Commands:
 import argparse
 import asyncio
 import json
-import sys
 from loguru import logger
 
 

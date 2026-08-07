@@ -3,7 +3,7 @@
 # Sets DNS to gluetun's resolver (bypasses ISP DNS poisoning).
 # Dispatches to the correct Python module based on KARSA_ROLE.
 
-if [ "$KARSA_ROLE" != "backtest" ]; then
+if [ "$KARSA_ROLE" != "backtest" ] && [ "$KARSA_ROLE" != "commander" ]; then
   echo "nameserver 127.0.0.1" > /etc/resolv.conf
   echo "ENTRYPOINT: resolv.conf set to:" >&2
   cat /etc/resolv.conf >&2
@@ -32,6 +32,9 @@ case "$KARSA_ROLE" in
     ;;
   shadow)
     exec python -m app.consumer.shadow_loop "$@"
+    ;;
+  9router)
+    exec python scripts/nine_router_proxy.py "$@"
     ;;
   backtest)
     exec python -m app.backtest.worker "$@"

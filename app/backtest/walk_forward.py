@@ -18,14 +18,182 @@ import json
 import math
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Any
-
 from loguru import logger
 
 from app.alpha.regime_classifier import RegimeClassifier
 from app.alpha.strategy_router import StrategyRouter
-from app.backtest.engine import BacktestEngine, BacktestReport
+from app.backtest.engine import BacktestEngine
 from app.risk.dynamic_risk_gate import DynamicRiskGate
+
+
+# ---------------------------------------------------------------------------
+# Walk-Forward Validator (Audit Fix 5)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ValidationFold:
+    """One train/test fold for walk-forward validation."""
+    fold_id: int
+    train_sharpe: float = 0.0
+    test_sharpe: float = 0.0
+    train_pnl: float = 0.0
+    test_pnl: float = 0.0
+    overfitting_ratio: float = 0.0  # test_sharpe / train_sharpe
+
+
+@dataclass
+class ValidationResult:
+    """Aggregated walk-forward validation results."""
+    symbol: str
+    folds: list[ValidationFold] = field(default_factory=list)
+    avg_train_sharpe: float = 0.0
+    avg_test_sharpe: float = 0.0
+    avg_overfitting_ratio: float = 0.0
+    is_overfit: bool = False
+    recommendation: str = ""
+
+
+class WalkForwardValidator:
+    """Validates strategy robustness via walk-forward analysis.
+
+    Red flag: if avg overfitting ratio < 0.5, model is overfit.
+    """
+
+    def __init__(self, train_months: int = 3, test_months: int = 1):
+        self.train_months = train_months
+        self.test_months = test_months
+
+    def generate_folds(
+        self, n_candles: int, candles_per_month: int = 720
+    ) -> list[tuple[int, int]]:
+        """Generate (train_end, test_end) index pairs for walk-forward.
+
+        Args:
+            n_candles: Total number of candles available.
+            candles_per_month: Approximate candles per month (720 for 1H candles).
+
+        Returns:
+            List of (train_end_idx, test_end_idx) tuples.
+        """
+        train_size = self.train_months * candles_per_month
+        test_size = self.test_months * candles_per_month
+        folds = []
+
+        start = 0
+        while start + train_size + test_size <= n_candles:
+            train_end = start + train_size
+            test_end = train_end + test_size
+            folds.append((train_end, test_end))
+            # Slide forward by test_size (overlapping windows)
+            start += test_size
+
+        return folds
+
+    def validate(
+        self,
+        engine: BacktestEngine,
+        candles: list[list],
+        folds: list[tuple[int, int]],
+    ) -> ValidationResult:
+        """Run walk-forward validation and return metrics.
+
+        Args:
+            engine: BacktestEngine instance.
+            candles: Full candle data.
+            folds: List of (train_end, test_end) index pairs.
+
+        Returns:
+            ValidationResult with overfitting analysis.
+        """
+        result = ValidationResult(symbol="")
+
+        for fold_id, (train_end, test_end) in enumerate(folds):
+            train_candles = candles[:train_end]
+            test_candles = candles[train_end:test_end]
+
+            # Evaluate on train
+            train_metrics = self._evaluate_sync(engine, train_candles)
+            # Evaluate on test
+            test_metrics = self._evaluate_sync(engine, test_candles)
+
+            # Overfitting check
+            overfit_ratio = 0.0
+            if train_metrics["sharpe"] > 0:
+                overfit_ratio = test_metrics["sharpe"] / train_metrics["sharpe"]
+
+            fold = ValidationFold(
+                fold_id=fold_id,
+                train_sharpe=train_metrics["sharpe"],
+                test_sharpe=test_metrics["sharpe"],
+                train_pnl=train_metrics["pnl"],
+                test_pnl=test_metrics["pnl"],
+                overfitting_ratio=overfit_ratio,
+            )
+            result.folds.append(fold)
+
+            logger.info(
+                f"Fold {fold_id}: train Sharpe={train_metrics['sharpe']:.2f} "
+                f"→ test Sharpe={test_metrics['sharpe']:.2f} "
+                f"(ratio={overfit_ratio:.2f})"
+            )
+
+        # Aggregate
+        if result.folds:
+            result.avg_train_sharpe = sum(f.train_sharpe for f in result.folds) / len(result.folds)
+            result.avg_test_sharpe = sum(f.test_sharpe for f in result.folds) / len(result.folds)
+            ratios = [f.overfitting_ratio for f in result.folds if f.overfitting_ratio > 0]
+            result.avg_overfitting_ratio = sum(ratios) / len(ratios) if ratios else 0.0
+
+            # Red flag: if avg overfitting ratio < 0.5, model is overfit
+            result.is_overfit = result.avg_overfitting_ratio < 0.5
+
+            if result.is_overfit:
+                result.recommendation = (
+                    f"OVERFITTING DETECTED (ratio={result.avg_overfitting_ratio:.2f} < 0.5). "
+                    "Reduce parameter complexity or increase training data."
+                )
+                logger.warning(result.recommendation)
+            else:
+                result.recommendation = (
+                    f"Strategy appears robust (ratio={result.avg_overfitting_ratio:.2f}). "
+                    "Continue monitoring on live data."
+                )
+
+        return result
+
+    @staticmethod
+    def _evaluate_sync(engine: BacktestEngine, candles: list[list]) -> dict:
+        """Synchronously evaluate candles. Returns {sharpe, pnl, win_rate, trades}."""
+        import asyncio
+
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Already in async context — use create_task workaround
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    future = pool.submit(asyncio.run, engine.run("BTC/USDT", candles))
+                    reports = future.result(timeout=30)
+            else:
+                reports = loop.run_until_complete(engine.run("BTC/USDT", candles))
+        except RuntimeError:
+            reports = asyncio.run(engine.run("BTC/USDT", candles))
+
+        taken = [r for r in reports if r.trade_taken]
+        if not taken:
+            return {"sharpe": 0.0, "pnl": 0.0, "win_rate": 0.0, "trades": 0}
+
+        pnl = sum(float(r.pnl_net) for r in taken)
+        wins = sum(1 for r in taken if r.pnl_net > 0)
+        win_rate = (wins / len(taken)) * 100
+
+        # Sharpe approximation from trade PnLs
+        pnls = [float(r.pnl_net) for r in taken]
+        mean_pnl = sum(pnls) / len(pnls)
+        std_pnl = math.sqrt(sum((p - mean_pnl) ** 2 for p in pnls) / len(pnls)) if len(pnls) > 1 else 1.0
+        sharpe = mean_pnl / std_pnl if std_pnl > 0 else 0.0
+
+        return {"sharpe": sharpe, "pnl": pnl, "win_rate": win_rate, "trades": len(taken)}
 
 
 @dataclass

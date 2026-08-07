@@ -38,6 +38,7 @@ async def run_bot(  # noqa: PLR0913
     logger.debug("run_bot: entering")
     from app.bot.handlers import (
         activity_cmd,
+        ai_status_cmd,
         backtest_cmd,
         button_callback,
         control_cmd,
@@ -48,6 +49,7 @@ async def run_bot(  # noqa: PLR0913
         report_shadow_cmd,
         settings_cmd,
         start_cmd,
+        summary_cmd,
         trade_history_cmd,
         view_positions_detail_cmd,
         health_cmd,
@@ -91,6 +93,8 @@ async def run_bot(  # noqa: PLR0913
     application.add_handler(CommandHandler("backtest", backtest_cmd))
     application.add_handler(CommandHandler("health", health_cmd))
     application.add_handler(CommandHandler("analytics", analytics_cmd))
+    application.add_handler(CommandHandler("ai_status", ai_status_cmd))
+    application.add_handler(CommandHandler("summary", summary_cmd))
 
     # ── Register central callback dispatcher ────────────────────────────
     application.add_handler(CallbackQueryHandler(button_callback))

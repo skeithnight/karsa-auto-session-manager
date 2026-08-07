@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from loguru import logger
@@ -66,7 +66,10 @@ class UniverseScorer:
     async def score_symbol(self, symbol: str) -> dict | None:
         """Score a single symbol. Returns dict or None if data unavailable."""
         # ─── PROFITABILITY FIX: TOXIC TICKER BLACKLIST ───
-        toxic_tickers = {"HEMI/USDT", "BANK/USDT", "ZEST/USDT", "SOL/USDT", "ACE/USDT"}
+        toxic_tickers = {
+            "HEMI/USDT", "BANK/USDT", "ZEST/USDT", "ACE/USDT",
+            "CAP/USDT", "M/USDT", "1000TAG/USDT"
+        }
         if symbol in toxic_tickers:
             return None
 
@@ -259,7 +262,7 @@ class UniverseScorer:
         payload = {
             "symbols": symbols,
             "scores": {s["symbol"]: s["total_score"] for s in selected},
-            "updated_at": datetime.now(UTC).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         try:
             await self.redis.set(

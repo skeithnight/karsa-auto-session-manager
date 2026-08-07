@@ -7,12 +7,7 @@ updating an atomic reference to MarketState without blocking the main event loop
 from __future__ import annotations
 
 import asyncio
-try:
-    from datetime import UTC
-except ImportError:
-    from datetime import timezone
-    UTC = timezone.utc  # type: ignore[misc]
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -104,12 +99,11 @@ class MarketAnalyzer:
             closes_list = [float(c[4]) for c in candles]
             highs_list = [float(c[2]) for c in candles]
             lows_list = [float(c[3]) for c in candles]
-            last_close = closes_list[-1]
             last_high = highs_list[-1]
             last_low = lows_list[-1]
             tr = max(last_high - last_low, 1.0)
             return MarketState(
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
                 regime="RANGE",
                 hmm_prediction="NEUTRAL",
                 hurst=0.5,
@@ -202,7 +196,7 @@ class MarketAnalyzer:
             regime = "RANGE"
 
         return MarketState(
-            timestamp=datetime.now(UTC),
+            timestamp=datetime.now(timezone.utc),
             regime=regime,
             hmm_prediction=hmm_pred,
             hurst=hurst_val,

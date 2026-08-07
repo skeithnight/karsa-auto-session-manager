@@ -11,7 +11,7 @@ Silent except clauses replaced with explicit logger.warning() per DEFINITION_OF_
 import logging
 import re
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import Update
 
 logger = logging.getLogger(__name__)
 
@@ -51,16 +51,6 @@ def format_pre_table(
         table_lines.append("  ".join(cells))
 
     return "\n".join(table_lines)
-
-
-def escape_html(text: str) -> str:
-    """Escape HTML special characters for Telegram.
-
-    Delegates to format._safe() for consistency with composable formatters.
-    """
-    from app.bot.utils.format import _safe
-
-    return _safe(text)
 
 
 def _split_html_safe(text: str, limit: int) -> list[str]:
@@ -163,16 +153,6 @@ async def send_long_message(
                 await update.message.reply_text(plain, reply_markup=markup)
 
 
-def build_nav_keyboard(buttons: list[list[tuple[str, str]]]) -> InlineKeyboardMarkup:
-    """Builds inline keyboard from a list of rows of (text, callback_data) tuples."""
-    keyboard = []
-    for row in buttons:
-        keyboard.append(
-            [InlineKeyboardButton(text, callback_data=data) for text, data in row]
-        )
-    return InlineKeyboardMarkup(keyboard)
-
-
 async def send_or_edit_message(
     update: Update, text: str, parse_mode: str = "HTML", reply_markup=None
 ):
@@ -196,9 +176,18 @@ async def send_or_edit_message(
                     text, parse_mode=parse_mode, reply_markup=reply_markup
                 )
         elif update.message:
-            return await update.message.reply_text(
-                text, parse_mode=parse_mode, reply_markup=reply_markup
-            )
+            try:
+                return await update.message.reply_text(
+                    text, parse_mode=parse_mode, reply_markup=reply_markup
+                )
+            except Exception as html_exc:
+                logger.warning(f"send_or_edit_message HTML parse failed: {html_exc}, falling back to plain text")
+                import re
+
+                plain_text = re.sub(r"<[^>]+>", "", text)
+                return await update.message.reply_text(
+                    plain_text, reply_markup=reply_markup
+                )
     except Exception as exc:
         logger.error("send_or_edit_message_failed", extra={"error": str(exc)})
     return None

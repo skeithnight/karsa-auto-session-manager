@@ -6,7 +6,8 @@ ALL   = docker compose -f docker-compose.infra.yml -f docker-compose.apps.yml
 .PHONY: up down rebuild restart-apps logs logs-infra cleanup disk-check db-maintenance db-backup
 
 up:  ## Start infra + apps (first time / cold start)
-	$(ALL) up -d
+	$(INFRA) up -d
+	$(APPS) up -d
 
 down:  ## Stop everything (preserves volumes)
 	$(ALL) down

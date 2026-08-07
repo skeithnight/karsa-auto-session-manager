@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import ccxt.pro as ccxt_pro
 from loguru import logger
@@ -149,7 +149,7 @@ class CCXTManager:
             logger.error(f"fetch_bybit_perps: fetch_tickers failed: {e}")
             return []
 
-        candidates: list[tuple[str, float]] = []
+        candidates: list[dict[str, Any]] = []
         for symbol, ticker in tickers.items():
             # Only USDT perpetuals (BTC/USDT:USDT format)
             if not symbol.endswith(":USDT"):
@@ -162,13 +162,52 @@ class CCXTManager:
                 continue
             # Normalize to config format: BTC/USDT:USDT -> BTC/USDT
             base = symbol.split(":")[0]
-            candidates.append((base, vol_usd))
+            pct_change = float(ticker.get("percentage") or 0)
+            candidates.append({
+                "symbol": base,
+                "vol_usd": vol_usd,
+                "percentage": pct_change,
+            })
 
-        candidates.sort(key=lambda x: x[1], reverse=True)
-        result = [s for s, _ in candidates[:top_n]]
+        if not candidates:
+            return []
+
+        # Sort by volume (70% quota) and by absolute 24h percentage gain (30% quota)
+        # This guarantees top gainers (+20%, +50%, +100% movers) are included even if volume rank is lower
+        vol_quota = max(1, int(top_n * 0.7))
+        gain_quota = top_n - vol_quota
+
+        by_vol = sorted(candidates, key=lambda x: x["vol_usd"], reverse=True)
+        by_gain = sorted(candidates, key=lambda x: abs(x["percentage"]), reverse=True)
+
+        selected_set: set[str] = set()
+        result: list[str] = []
+
+        # 1. Add top volume leaders
+        for c in by_vol[:vol_quota]:
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
+        # 2. Add top 24h gainers/movers
+        for c in by_gain:
+            if len(result) >= top_n:
+                break
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
+        # 3. Fill remaining slots if any from volume list
+        for c in by_vol:
+            if len(result) >= top_n:
+                break
+            if c["symbol"] not in selected_set:
+                selected_set.add(c["symbol"])
+                result.append(c["symbol"])
+
         logger.info(
             f"fetch_bybit_perps: {len(candidates)} above ${min_volume_usd:,.0f} volume, "
-            f"selected top {len(result)}"
+            f"selected top {len(result)} (volume + top gainers)"
         )
         return result
 
@@ -199,7 +238,7 @@ class CCXTManager:
         try:
             target = self._resolve_symbol(symbol, exchange_id)
             orderbook = await exchange.watch_order_book(target)
-            self.last_update[exchange_id] = datetime.now(UTC)
+            self.last_update[exchange_id] = datetime.now(timezone.utc)
             logger.debug("watch_orderbook: returning dict")
             return orderbook
         except Exception as e:
@@ -226,7 +265,7 @@ class CCXTManager:
         try:
             target = self._resolve_symbol(symbol, exchange_id)
             trades = await exchange.watch_trades(target)
-            self.last_update[exchange_id] = datetime.now(UTC)
+            self.last_update[exchange_id] = datetime.now(timezone.utc)
             logger.debug("watch_trades: returning list")
             return trades
         except Exception as e:
@@ -250,7 +289,7 @@ class CCXTManager:
             logger.debug("is_stale: returning True (no last update)")
             return True
 
-        elapsed = (datetime.now(UTC) - last).total_seconds()
+        elapsed = (datetime.now(timezone.utc) - last).total_seconds()
         result = elapsed > self.stale_threshold_seconds
         metrics.exchange_status.labels(exchange=exchange_id).set(1 if result else 0)
         logger.debug(f"is_stale: returning {result}")

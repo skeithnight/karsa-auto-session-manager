@@ -19,7 +19,8 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from app.alpha.regime_classifier import RegimeClassifier
+from app.alpha.hybrid_decision_engine import HybridDecisionEngine
+from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.alpha.strategy_router import StrategyRouter
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
 from app.consumer.market_consumer import MarketConsumer
@@ -57,6 +58,7 @@ async def _on_signal_shadow(
     risk_manager: Any | None = None,
     engine: Any | None = None,
     redis: Any | None = None,
+    hybrid_engine: HybridDecisionEngine | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a virtual shadow trade.
 
@@ -114,20 +116,157 @@ async def _on_signal_shadow(
         logger.info("shadow skip %s — all slots full (%d/%d)", symbol, total_open, max_positions)
         return
 
+    # Hybrid Decision Engine evaluation (statistical guardrails + AI)
+    if hybrid_engine is not None:
+        try:
+            import pandas as _pd
+
+            candles_list = signal.candles if hasattr(signal, 'candles') and signal.candles else []
+            if not candles_list or len(candles_list) < 50:
+                logger.debug(
+                    "shadow HybridDecisionEngine skip %s — insufficient candles (%d < 50)",
+                    symbol, len(candles_list) if candles_list else 0,
+                )
+            else:
+                ohlcv_df = _pd.DataFrame(
+                    candles_list,
+                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                )
+
+                # Fetch actual BTC OHLCV for beta/correlation (not same-symbol fallback)
+                btc_ohlcv_df = ohlcv_df  # default fallback
+                if redis and symbol != "BTC/USDT":
+                    try:
+                        import json as _json
+                        btc_candles_raw = await redis.get("karsa:candles:BTC:USDT:1h")
+                        if btc_candles_raw:
+                            btc_candles = _json.loads(btc_candles_raw)
+                            if btc_candles and len(btc_candles) >= 50:
+                                btc_ohlcv_df = _pd.DataFrame(
+                                    btc_candles,
+                                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                                )
+                                logger.debug(
+                                    "shadow HybridDecisionEngine: using BTC/USDT candles for %s beta/correlation",
+                                    symbol,
+                                )
+                    except Exception as e:
+                        logger.debug("shadow: failed to fetch BTC candles for %s: %s", symbol, e)
+
+                regime_str = signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime)
+                funding = 0.0
+                if redis:
+                    try:
+                        fr_raw = await redis.get(f"karsa:funding:{symbol}")
+                        if fr_raw:
+                            funding = float(fr_raw)
+                    except Exception:
+                        pass
+
+                concurrent = total_open
+
+                # Fetch actual BTC regime from Redis (not hardcoded RANGE)
+                btc_regime = "RANGE"  # default fallback
+                if redis:
+                    try:
+                        # Redis stores as system:regime:BTC:USDT (colon separator)
+                        btc_regime_raw = await redis.get("system:regime:BTC:USDT")
+                        if btc_regime_raw:
+                            btc_regime = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                    except Exception:
+                        pass
+
+                hybrid_decision = await hybrid_engine.evaluate(
+                    symbol=symbol,
+                    regime=regime_str,
+                    btc_regime=btc_regime,
+                    ohlcv=ohlcv_df,
+                    btc_ohlcv=btc_ohlcv_df,
+                    direction=signal.direction,
+                    funding_rate=funding,
+                    concurrent_positions=concurrent,
+                    current_price=float(signal.entry_price),
+                )
+
+                # Store shadow hybrid decision in Redis
+                if redis:
+                    try:
+                        import json as _json
+                        decision_dict = {
+                            "action": hybrid_decision.action,
+                            "size": hybrid_decision.size,
+                            "size_pct": hybrid_decision.size_pct,
+                            "confidence": hybrid_decision.confidence,
+                            "risk_level": hybrid_decision.risk_level,
+                            "entry_strategy": hybrid_decision.entry_strategy,
+                            "stop_loss_strategy": hybrid_decision.stop_loss_strategy,
+                            "reasoning": hybrid_decision.reasoning,
+                            "guardrails_triggered": hybrid_decision.guardrails_triggered,
+                            "regime": regime_str,
+                            "btc_regime": btc_regime,
+                        }
+                        await redis.set(
+                            f"shadow:hybrid_decision:{symbol}",
+                            _json.dumps(decision_dict),
+                        )
+                    except Exception:
+                        logger.debug("Failed to store shadow hybrid decision for %s", symbol)
+
+                if hybrid_decision.action == "BLOCK":
+                    logger.info(
+                        "shadow HybridDecisionEngine BLOCKED %s: %s",
+                        symbol,
+                        hybrid_decision.reasoning,
+                    )
+                    return
+
+                if hybrid_decision.size_pct > 0 and hybrid_decision.size_pct < 1.0:
+                    original_amount = signal.amount
+                    adjusted_amount = original_amount * Decimal(str(hybrid_decision.size_pct))
+                    object.__setattr__(signal, "amount", adjusted_amount)
+                    logger.info(
+                        "shadow HybridDecisionEngine sizing %s: %s -> %s (size=%s)",
+                        symbol,
+                        original_amount,
+                        adjusted_amount,
+                        hybrid_decision.size,
+                    )
+
+        except Exception as e:
+            logger.warning("shadow HybridDecisionEngine evaluation failed for %s: %s", symbol, e)
+
     # AI Analyst gate (mandatory, mirroring live loop)
     if crypto_analyst:
         logger.info(f"shadow AI Analyst validating {symbol} signal")
         from app.core import metrics
         metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
         metrics.funnel_ai_calls.inc()
+        funding_rate = 0.0
+        oi_change = 0.0
+        spread_pct = 0.0005
+        if redis:
+            try:
+                import json as _json
+                st_raw = await redis.get(f"global:state:{symbol}")
+                if st_raw:
+                    st = _json.loads(st_raw)
+                    funding_rate = float(st.get("funding_rate", 0.0))
+                    oi_change = float(st.get("oi_change", 0.0))
+                    bid = float(st.get("best_bid", 0.0))
+                    ask = float(st.get("best_ask", 0.0))
+                    if bid > 0 and ask > 0:
+                        spread_pct = (ask - bid) / bid
+            except Exception:
+                pass
+
         analyst_result = await crypto_analyst.analyze(
             symbol=symbol,
             direction=signal.direction,
             confidence=(signal.score / 100.0),
             regime=signal.regime.value,
-            spread_pct=0.0,
-            funding_rate=0.0,
-            oi_change=0.0,
+            spread_pct=spread_pct,
+            funding_rate=funding_rate,
+            oi_change=oi_change,
             price=signal.entry_price,
             recent_trades="",
         )
@@ -183,7 +322,8 @@ async def _on_signal_shadow(
                     )
                 # Signal continues through pipeline — gate check will reject if score too low
             else:
-                # AI unavailable — hard reject
+                # AI unavailable — mandatory AI rule per AGENTS.md §2: AI is required for Hybrid trades
+                logger.warning(f"AI GATE REJECT: {symbol} — AI Proxy unavailable or timed out (mandatory AI required)")
                 return
 
         metrics.ai_analyst_approvals.inc()
@@ -250,12 +390,18 @@ async def _on_signal_shadow(
 
     # Record trade
     if shadow_trade_store is not None:
+        # Capture AI confidence from analyst result (if available)
+        ai_conf = None
+        if 'analyst_result' in dir() and analyst_result is not None:
+            ai_conf = analyst_result.ai_confidence
+
         await shadow_trade_store.record_entry(
             symbol=symbol,
             side=signal.direction,
             amount=signal.amount,
             entry_price=fill_price,
             regime=signal.regime.value,
+            ai_confidence=ai_conf,
             risk_profile_json=signal.risk_profile.to_json(),
             trace_id=signal.trace_id,
             cvd_slope=signal.cvd_slope,
@@ -330,14 +476,22 @@ def _start_ingestor(
 
 
 async def _universe_refresh_loop(
-    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400
+    redis: Any, ingestor: MarketDataIngestor, interval_s: int = 14400,
+    allowed_symbols: list[str] | None = None,
 ) -> None:
-    """Periodically refresh symbol list from DynamicUniverseScanner."""
+    """Periodically refresh symbol list from DynamicUniverseScanner.
+
+    If allowed_symbols is provided, only symbols in that list are kept.
+    """
     while True:
         await asyncio.sleep(interval_s)
         new_symbols = await _read_universe(redis)
         if new_symbols:
-            ingestor.update_symbols(new_symbols)
+            if allowed_symbols:
+                allowed_set = set(allowed_symbols)
+                new_symbols = [s for s in new_symbols if s in allowed_set]
+            if new_symbols:
+                ingestor.update_symbols(new_symbols)
 
 
 async def _orphan_cleanup_loop(
@@ -417,7 +571,6 @@ async def main() -> None:
     from app.data.ohlcv_fetcher import OHLCVFetcher
     from app.alpha.market_analyzer import MarketAnalyzer
 
-    classifier = RegimeClassifier(redis_client=redis)
     analyzer = MarketAnalyzer(redis_client=redis)
     router = StrategyRouter()
     risk_gate = DynamicRiskGate()
@@ -506,6 +659,22 @@ async def main() -> None:
         await shutdown()
         return
 
+    # Hybrid Intelligence System — statistical guardrails + AI evaluation
+    hybrid_engine: HybridDecisionEngine | None = None
+    try:
+        from app.ai.nine_router_service import NineRouterService
+
+        stat_engine = StatisticalFeatureEngine(redis_client=redis)
+        nine_router = NineRouterService()
+        hybrid_engine = HybridDecisionEngine(
+            statistical_engine=stat_engine,
+            ai_service=nine_router,
+        )
+        logger.info("shadow HybridDecisionEngine initialized")
+    except Exception as e:
+        logger.warning(f"shadow HybridDecisionEngine init failed: {e}")
+        hybrid_engine = None
+
     # Wire signal handler
     WORKER_COUNT = int(__import__("os").getenv("KARSA_WORKER_COUNT", "10"))
     signal_queues = [asyncio.Queue(maxsize=100) for _ in range(WORKER_COUNT)]
@@ -535,6 +704,7 @@ async def main() -> None:
                         risk_manager,
                         engine,
                         redis,
+                        hybrid_engine,
                     )
                 except Exception as e:
                     logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
@@ -609,6 +779,49 @@ async def main() -> None:
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
 
+            # Statistical Feature Engine: compute features on each candle close
+            if hybrid_engine is not None and len(history) >= 50:
+                async def _compute_features(sym: str, candles: list) -> None:
+                    try:
+                        import pandas as _pd
+
+                        ohlcv_df = _pd.DataFrame(
+                            candles,
+                            columns=["timestamp", "open", "high", "low", "close", "volume"],
+                        )
+                        btc_ohlcv_df = ohlcv_df  # fallback
+                        try:
+                            btc_raw = await ohlcv_fetcher.fetch("BTC/USDT", "1h", limit=len(candles))
+                            if btc_raw and len(btc_raw) >= 50:
+                                btc_ohlcv_df = _pd.DataFrame(
+                                    btc_raw,
+                                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                                )
+                        except Exception:
+                            pass
+
+                        funding = 0.0
+                        try:
+                            fr_raw = await redis.get(f"karsa:funding:{sym}")
+                            if fr_raw:
+                                funding = float(fr_raw)
+                        except Exception:
+                            pass
+
+                        stat_engine = hybrid_engine._stat_engine
+                        await stat_engine.calculate_features(
+                            symbol=sym,
+                            ohlcv=ohlcv_df,
+                            btc_ohlcv=btc_ohlcv_df,
+                            funding_rate=funding,
+                        )
+                    except Exception as e:
+                        logger.debug(f"shadow feature calculation failed for {sym}: {e}")
+
+                feature_task = asyncio.create_task(_compute_features(symbol, history))
+                background_tasks.add(feature_task)
+                feature_task.add_done_callback(background_tasks.discard)
+
     consumer = MarketConsumer(
         redis_client=redis, 
         decision_engine=engine, 
@@ -619,35 +832,77 @@ async def main() -> None:
     )
 
     # Read dynamic universe from Redis, fall back to static config
+    # .env SYMBOLS is source of truth; scanner only adds new discoveries
+    config_symbols = settings.watchlist.split(",") if settings.watchlist else settings.symbols
     universe_symbols = await _read_universe(redis)
-    initial_symbols = (
-        universe_symbols
-        if universe_symbols
-        else (settings.watchlist.split(",") if settings.watchlist else settings.symbols)
-    )
+    if config_symbols:
+        # Start with configured symbols, add any new discoveries from scanner
+        initial_symbols = list(config_symbols)
+        if universe_symbols:
+            config_set = set(config_symbols)
+            for s in universe_symbols:
+                if s not in config_set:
+                    initial_symbols.append(s)
+    else:
+        initial_symbols = universe_symbols or []
     logger.info(
         f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}"
     )
 
-    # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
-    for sym in initial_symbols:
-        try:
-            candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
-            if candles:
-                for c in candles:
-                    consumer._buffer.append(sym, c)
-            logger.info(
-                f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles"
-            )
-        except Exception as e:
-            logger.warning(f"failed to pre-fill {sym}: {e}")
+    # Pre-fill CandleBuffer concurrently with historical candles (max 5 concurrent requests)
+    prefill_sem = asyncio.Semaphore(5)
+
+    async def _prefill_symbol(sym: str) -> None:
+        async with prefill_sem:
+            try:
+                candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
+                if candles:
+                    for c in candles:
+                        consumer._buffer.append(sym, c)
+                logger.info(
+                    f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles"
+                )
+            except Exception as e:
+                logger.warning(f"failed to pre-fill {sym}: {e}")
+
+    await asyncio.gather(*[_prefill_symbol(sym) for sym in initial_symbols])
 
     ingestor, ingestor_task = _start_ingestor(
         settings, redis, consumer, initial_symbols
     )
-    universe_task = asyncio.create_task(
-        _universe_refresh_loop(redis, ingestor), name="shadow-universe"
+
+    # ── Dynamic Symbol Rotation ────────────────────────────────
+    from app.data.symbol_rotator import SymbolRotator
+
+    rotator = SymbolRotator(
+        redis_client=redis,
+        initial_symbols=initial_symbols,
+        min_symbols=4,
+        max_symbols=12,
+        range_expiry_s=7200,  # 2 hours in RANGE before rotation
     )
+    await rotator.start()
+
+    async def _rotator_sync_loop() -> None:
+        """Sync rotator symbols to ingestor when rotation happens."""
+        last_count = len(rotator.symbols)
+        while True:
+            await asyncio.sleep(300)  # Check every 5 minutes
+            current = rotator.symbols
+            if len(current) != last_count:
+                logger.info(
+                    "SymbolRotator: universe changed %d → %d symbols",
+                    last_count, len(current),
+                )
+                ingestor.update_symbols(current)
+                last_count = len(current)
+
+    rotator_task = asyncio.create_task(
+        rotator.rotation_loop(interval_s=3600),  # Scan every hour
+        name="shadow-rotator",
+    )
+    rotator_sync_task = asyncio.create_task(_rotator_sync_loop(), name="shadow-rotator-sync")
+
     consumer_task = asyncio.create_task(consumer.start(), name="shadow-consumer")
     apm_task = asyncio.create_task(shadow_apm.run(), name="shadow-apm")
     orphan_task = asyncio.create_task(
@@ -681,7 +936,65 @@ async def main() -> None:
         name="shadow-garch",
     )
 
-    logger.info("karsa-shadow started (with Sprint 3 HMM + GARCH loops)")
+    # ── Regime Classification Loop (with conviction) ─────────────────
+    from app.alpha.regime_classifier import RegimeClassifier
+    regime_classifier = RegimeClassifier(redis_client=redis)
+
+    async def _regime_classification_loop():
+        """Classify regime for all universe symbols every hour, write conviction to Redis."""
+        while True:
+            try:
+                symbols_raw = await redis.get("system:universe:symbols")
+                if symbols_raw:
+                    import json as _json
+                    parsed = _json.loads(symbols_raw) if isinstance(symbols_raw, str) else symbols_raw
+                    # Handle both {"symbols": [...]} and plain list formats
+                    if isinstance(parsed, dict):
+                        symbols = parsed.get("symbols", [])
+                    elif isinstance(parsed, list):
+                        symbols = parsed
+                    else:
+                        symbols = []
+                else:
+                    symbols = []
+
+                # Always include BTC
+                if "BTC/USDT" not in symbols:
+                    symbols.append("BTC/USDT")
+
+                import asyncio as _aio
+                import numpy as _np
+
+                sem = _aio.Semaphore(5)  # max 5 concurrent fetches
+
+                async def _classify_one(sym: str) -> None:
+                    async with sem:
+                        try:
+                            candles_raw = await ohlcv_fetcher.fetch(sym, "1h", 200, ttl_seconds=900)
+                            if not candles_raw or len(candles_raw) < 50:
+                                return
+                            candles = _np.array(candles_raw, dtype=float)
+                            regime, conviction = await _aio.to_thread(
+                                regime_classifier.classify_with_conviction, candles
+                            )
+                            await redis.set_symbol_regime(sym, regime.value, conviction)
+                            logger.debug("Regime %s: %s conviction=%.3f", sym, regime.value, conviction)
+                        except Exception as e:
+                            logger.debug("Regime classification failed for %s: %s", sym, e)
+
+                await _aio.gather(*[_classify_one(s) for s in symbols])
+                logger.info("Regime classification loop complete: %d symbols", len(symbols))
+            except Exception as e:
+                logger.warning("Regime classification loop error: %s", e)
+
+            await _aio.sleep(3600)  # run every hour
+
+    regime_task = asyncio.create_task(
+        _regime_classification_loop(),
+        name="shadow-regime-classification",
+    )
+
+    logger.info("karsa-shadow started (with HMM + GARCH + regime classification loops)")
 
     try:
         await shutdown_event.wait()
@@ -699,6 +1012,9 @@ async def main() -> None:
         hmm_task.cancel()
         garch_task.cancel()
         ranking_task.cancel()
+        regime_task.cancel()
+        rotator_task.cancel()
+        rotator_sync_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):
@@ -711,6 +1027,11 @@ async def main() -> None:
             await apm_task
         with contextlib.suppress(asyncio.CancelledError):
             await orphan_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotator_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotator_sync_task
+        await rotator.stop()
         await ingestor.stop()
         await emitter.stop()
         await exchange.close()

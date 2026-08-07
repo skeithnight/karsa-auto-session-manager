@@ -308,27 +308,38 @@ def format_breakeven_alert(
 def format_entry_alert(
     symbol: str, side: str, price: float, amount: float, sl_price: float,
     max_loss_usd: float | None = None,
+    ev_score: float | None = None,
+    ai_verdict: str | None = None,
 ) -> str:
-    """Format a trade entry + SL placed alert message."""
-    _dash = "\u2500"
+    """Format an institutional-grade trade entry + SL placed alert message."""
+    _dash = "─"
     _sep = _dash * 12 + _dash + _dash * 20
-    # Compute real max loss from SL distance if not explicitly passed
     if max_loss_usd is None:
         sl_distance = abs(price - sl_price)
         max_loss_usd = sl_distance * amount
-    block = (
-        f"{'Metric':<12} Value\n"
-        f"{_sep}\n"
-        f"{'Symbol':<12} {symbol} ({side})\n"
-        f"{'Fill Price':<12} ${format_price(price)}\n"
-        f"{'Size':<12} {amount}\n"
-        f"{'Stop Loss':<12} ${format_price(sl_price)}\n"
-        f"{'Max Loss':<12} ${max_loss_usd:.2f}"
-    )
+    notional_usd = price * amount
+    sl_pct = (abs(price - sl_price) / price * 100) if price > 0 else 0.0
+
+    block_lines = [
+        f"{'Metric':<12} Value",
+        _sep,
+        f"{'Symbol':<12} {symbol} ({side})",
+        f"{'Fill Price':<12} ${format_price(price)}",
+        f"{'Notional':<12} ${notional_usd:,.2f} USD",
+        f"{'Stop Loss':<12} ${format_price(sl_price)} (-{sl_pct:.1f}%)",
+        f"{'Max Loss':<12} ${max_loss_usd:.2f}",
+    ]
+    if ev_score is not None:
+        block_lines.append(f"{'EV Score':<12} {ev_score:.2f}")
+    if ai_verdict:
+        block_lines.append(f"{'AI Verdict':<12} {ai_verdict}")
+
+    block = "\n".join(block_lines)
+    side_emoji = "🟢" if side in ("LONG", "buy") else "🔴"
     return fmt(
-        bold("\u2705 ENTRY FILLED"),
+        bold(f"🚀 ENTRY FILLED {side_emoji} {symbol}"),
         "\n",
-        "\u2501" * 32,
+        "━" * 32,
         "\n\n",
         pre(block),
     )

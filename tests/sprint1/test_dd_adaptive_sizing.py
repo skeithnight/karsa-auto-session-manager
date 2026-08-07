@@ -173,9 +173,9 @@ class TestVelocityBreakerMath:
 
     def test_rolling_1h_pnl_calculation(self):
         """Verify rolling 1h PnL sums correctly."""
-        from datetime import UTC, datetime, timedelta
+        from datetime import datetime, timezone, timedelta
 
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         one_hour_ago = now - timedelta(hours=1)
 
         # Simulate trades: 3 losses in last hour
@@ -190,7 +190,7 @@ class TestVelocityBreakerMath:
         for t in trades:
             exit_time = datetime.fromisoformat(t["exit_time"])
             if exit_time.tzinfo is None:
-                exit_time = exit_time.replace(tzinfo=UTC)
+                exit_time = exit_time.replace(tzinfo=timezone.utc)
             if exit_time >= one_hour_ago:
                 rolling_1h_pnl += Decimal(t["realized_pnl"])
 

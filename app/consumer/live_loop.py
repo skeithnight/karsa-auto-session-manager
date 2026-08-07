@@ -14,11 +14,14 @@ import logging
 import signal
 import sys
 import time
-from datetime import UTC
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
+from app.alpha.hybrid_decision_engine import HybridDecisionEngine
+from app.alpha.ai_ranker import AISignalRanker
 from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
+from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.alpha.strategy_router import StrategyRouter
 from app.bot.alert_service import AlertService
 from app.consumer.decision_engine import DecisionEngine, TradeSignal
@@ -80,6 +83,15 @@ async def _wallet_metrics_loop(
                 available = float(wallet.get("available", 0))
                 balance = float(wallet.get("balance", 0))
                 metrics.wallet_balance.set(available)
+                try:
+                    import json
+                    await redis.set(
+                        "karsa:wallet:latest",
+                        json.dumps({"balance": balance, "available": available, "ok": not wallet.get("error")}),
+                        ex=120,
+                    )
+                except Exception as cache_exc:
+                    logger.debug("failed_to_cache_wallet_in_redis: %s", cache_exc)
 
             open_positions = await position_store.list_all()
 
@@ -108,11 +120,11 @@ async def _wallet_metrics_loop(
                 # Duration from entered_at
                 entered_at = pos.get("entered_at", "")
                 if entered_at:
-                    from datetime import UTC, datetime
+                    from datetime import timezone, datetime
 
                     try:
                         entered = datetime.fromisoformat(entered_at)
-                        elapsed = (datetime.now(UTC) - entered).total_seconds()
+                        elapsed = (datetime.now(timezone.utc) - entered).total_seconds()
                         metrics.position_duration.labels(symbol=sym).set(elapsed)
                     except Exception:
                         pass
@@ -141,7 +153,8 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     risk_manager: Any,
     trade_store: TradeStore,
     engine: Any | None = None,
-    crypto_analyst: Any | None = None,
+    hybrid_engine: HybridDecisionEngine | None = None,
+    ai_ranker: AISignalRanker | None = None,
 ) -> None:
     """Handle a TradeSignal by executing a real order on Bybit.
 
@@ -279,11 +292,6 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         )
         return
 
-            # Consecutive loss block
-    if engine and await engine.check_consecutive_losses(symbol, signal.regime):
-        logger.info("skip %s — consecutive loss block", symbol)
-        return
-
     # ML Prefilter Gate
     signal_features = {
         'cvd_slope': signal.cvd_slope,
@@ -305,79 +313,156 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
     logger.info("🤖 ML Prefilter PASSED %s (prob: %.2f%%). Sending to AI Analyst...", symbol, ml_prob * 100)
 
-    # AI Analyst Gate (mandatory, fail-closed)
-    if crypto_analyst:
-        from app.core import metrics
-        metrics.ai_signals_evaluated.labels(symbol=symbol).inc()
-        metrics.funnel_ai_calls.inc()
-        analyst_result = await crypto_analyst.analyze(
-            symbol=symbol,
-            direction=signal.direction,
-            confidence=signal.confidence,
-            regime=signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime),
-            spread_pct=0.0,
-            funding_rate=0.0,
-            oi_change=0.0,
-            price=signal.entry_price,
-            recent_trades="",
-        )
-        # --- Debug logging for AI rejection diagnosis ---
-        if not analyst_result or analyst_result.direction != signal.direction or analyst_result.direction == "FLAT":
-            reason = "unavailable" if not analyst_result else f"rejected_{analyst_result.direction}"
-            from app.core import metrics
-            metrics.ai_analyst_rejections.labels(reason=reason).inc()
+    # Hybrid Decision Engine evaluation (statistical guardrails + AI)
+    if hybrid_engine is not None:
+        try:
+            import pandas as _pd
 
-            # Detailed debug log showing AI reasoning
-            if analyst_result:
-                logger.warning(
-                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
-                    f"AI: {analyst_result.direction} (confidence={analyst_result.ai_confidence}) | "
-                    f"AI Reason: {analyst_result.reasoning} | "
-                    f"AI Recommendation: {analyst_result.decision_recommendation} | "
-                    f"Regime: {signal.regime.value if hasattr(signal.regime, 'value') else signal.regime}"
+            # Build OHLCV DataFrame from candle buffer
+            candles_list = signal.candles if hasattr(signal, 'candles') and signal.candles else []
+            if candles_list and len(candles_list) >= 50:
+                ohlcv_df = _pd.DataFrame(
+                    candles_list,
+                    columns=["timestamp", "open", "high", "low", "close", "volume"],
                 )
-            else:
-                logger.warning(
-                    f"AI GATE REJECT: {symbol} | Signal: {signal.direction} (score={signal.score:.1f}) | "
-                    f"AI: NONE (unavailable)"
+                # Fetch BTC OHLCV for beta/correlation
+                btc_ohlcv_df = _pd.DataFrame(
+                    candles_list,  # placeholder — real BTC data fetched below
+                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                )
+                # Try to get real BTC data from consumer buffer via engine redis
+                if engine and hasattr(engine, '_redis') and engine._redis:
+                    try:
+                        from app.data.ohlcv_fetcher import OHLCVFetcher as _Fetch
+                        import ccxt.async_support as _ccxt
+                        _ex = _ccxt.bybit({"enableRateLimit": True})
+                        _fetcher = _Fetch(_ex)
+                        btc_raw = await _fetcher.fetch("BTC/USDT", "1h", limit=len(candles_list))
+                        if btc_raw and len(btc_raw) >= 50:
+                            btc_ohlcv_df = _pd.DataFrame(
+                                btc_raw,
+                                columns=["timestamp", "open", "high", "low", "close", "volume"],
+                            )
+                        await _ex.close()
+                    except Exception:
+                        pass  # fallback to signal candles
+
+                # Get regime and funding rate from signal context
+                regime_str = signal.regime.value if hasattr(signal.regime, 'value') else str(signal.regime)
+                funding = 0.0
+                if engine and hasattr(engine, '_redis') and engine._redis:
+                    try:
+                        fr_raw = await engine._redis.get(f"karsa:funding:{symbol}")
+                        if fr_raw:
+                            funding = float(fr_raw)
+                    except Exception:
+                        pass
+
+                # Count concurrent positions
+                open_positions = await position_store.list_all()
+                concurrent = len(open_positions)
+
+                # Fetch actual BTC regime from Redis (not hardcoded RANGE)
+                btc_regime = "RANGE"  # default fallback
+                if engine._redis:
+                    try:
+                        btc_regime_raw = await engine._redis.get("system:regime:BTC:USDT")
+                        if not btc_regime_raw:
+                            btc_regime_raw = await engine._redis.get("system:config:regime")
+                        if btc_regime_raw:
+                            raw_s = btc_regime_raw if isinstance(btc_regime_raw, str) else btc_regime_raw.decode()
+                            try:
+                                data = json.loads(raw_s)
+                                btc_regime = data.get("regime", raw_s) if isinstance(data, dict) else raw_s
+                            except Exception:
+                                btc_regime = raw_s
+                    except Exception:
+                        pass
+
+                hybrid_decision = await hybrid_engine.evaluate(
+                    symbol=symbol,
+                    regime=regime_str,
+                    btc_regime=btc_regime,
+                    ohlcv=ohlcv_df,
+                    btc_ohlcv=btc_ohlcv_df,
+                    direction=signal.direction,
+                    funding_rate=funding,
+                    concurrent_positions=concurrent,
+                    current_price=float(signal.entry_price),
                 )
 
-            # --- Soft Gate (Step 4): Score penalty instead of hard veto ---
-            # FLAT = AI is unsure, light penalty (not hard reject)
-            # Direction mismatch = AI disagrees, heavier penalty
-            # Unavailable = hard reject
-            if analyst_result:
-                if analyst_result.direction == signal.direction:
-                    # AI agrees: Boost confidence
-                    new_score = signal.score + 10
-                    object.__setattr__(signal, "score", new_score)
-                    logger.info(f"AI CONFIRMED: {symbol} {signal.direction}. Score boosted +10 → {new_score:.1f}")
-                elif analyst_result.direction == "FLAT":
-                    # AI is unsure (FLAT): Light penalty — AI doesn't disagree, just lacks conviction
-                    penalty = max(2, int(analyst_result.ai_confidence * 0.10))  # e.g., 25% confidence = -2 points (minimum)
-                    new_score = signal.score - penalty
-                    object.__setattr__(signal, "score", new_score)
-                    logger.warning(
-                        f"AI FLAT: {symbol} (conf={analyst_result.ai_confidence}). "
-                        f"Light penalty -{penalty}. New score: {new_score:.1f}"
+                # Store hybrid decision in Redis
+                try:
+                    import json as _json
+                    decision_dict = {
+                        "action": hybrid_decision.action,
+                        "size": hybrid_decision.size,
+                        "size_pct": hybrid_decision.size_pct,
+                        "confidence": hybrid_decision.confidence,
+                        "risk_level": hybrid_decision.risk_level,
+                        "entry_strategy": hybrid_decision.entry_strategy,
+                        "stop_loss_strategy": hybrid_decision.stop_loss_strategy,
+                        "reasoning": hybrid_decision.reasoning,
+                        "guardrails_triggered": hybrid_decision.guardrails_triggered,
+                    }
+                    await engine._redis.set(
+                        f"karsa:hybrid_decision:{symbol}",
+                        _json.dumps(decision_dict),
                     )
-                else:
-                    # AI actively disagrees (different direction): Heavier penalty
-                    penalty = int(analyst_result.ai_confidence * 0.25)  # e.g., 60% confidence = -15 points
-                    new_score = signal.score - penalty
-                    object.__setattr__(signal, "score", new_score)
-                    logger.warning(
-                        f"AI DISAGREES: {symbol} (AI={analyst_result.direction}, conf={analyst_result.ai_confidence}). "
-                        f"Penalized score by {penalty}. New score: {new_score:.1f}"
-                    )
-                # Signal continues through pipeline — gate check will reject if score too low
-            else:
-                # AI unavailable — hard reject
-                return
+                except Exception:
+                    logger.debug("Failed to store hybrid decision for %s", symbol)
 
-        from app.core import metrics
-        metrics.ai_analyst_approvals.inc()
-        metrics.funnel_ai_approved.inc()
+                # BLOCK: skip trade entirely
+                if hybrid_decision.action == "BLOCK":
+                    logger.info(
+                        "HybridDecisionEngine BLOCKED %s: %s",
+                        symbol,
+                        hybrid_decision.reasoning,
+                    )
+                    from app.core import metrics
+                    if hasattr(metrics, "hybrid_blocks_total"):
+                        metrics.hybrid_blocks_total.labels(symbol=symbol).inc()
+                    return
+
+                # Size adjustment: apply hybrid size recommendation
+                if hybrid_decision.size_pct > 0 and hybrid_decision.size_pct < 1.0:
+                    original_amount = signal.amount
+                    adjusted_amount = original_amount * Decimal(str(hybrid_decision.size_pct))
+                    object.__setattr__(signal, "amount", adjusted_amount)
+                    logger.info(
+                        "HybridDecisionEngine sizing %s: %s -> %s (size=%s, confidence=%d)",
+                        symbol,
+                        original_amount,
+                        adjusted_amount,
+                        hybrid_decision.size,
+                        hybrid_decision.confidence,
+                    )
+
+        except Exception as e:
+            logger.warning("HybridDecisionEngine evaluation failed for %s: %s", symbol, e)
+
+    # AI Signal Ranker — adjust sizing based on signal quality ranking
+    if ai_ranker is not None:
+        try:
+            signal_dict = {
+                "symbol": symbol,
+                "direction": signal.direction,
+                "score": signal.score,
+                "ev_score": getattr(signal, "expected_value", 0.0),
+                "regime": signal.regime.value if hasattr(signal.regime, "value") else str(signal.regime),
+            }
+            ranked = await ai_ranker.rank([signal_dict])
+            if ranked and ranked[0].sizing_multiplier != 1.0:
+                original_amount = signal.amount
+                adjusted_amount = original_amount * Decimal(str(ranked[0].sizing_multiplier))
+                object.__setattr__(signal, "amount", adjusted_amount)
+                logger.info(
+                    "AI Ranker sizing %s: %s -> %s (multiplier=%.2f, thesis=%s)",
+                    symbol, original_amount, adjusted_amount,
+                    ranked[0].sizing_multiplier, ranked[0].edge_thesis,
+                )
+        except Exception as e:
+            logger.debug("AI Ranker failed for %s: %s", symbol, e)
 
     # PortfolioRiskManager gate (mandatory, no bypass)
     if risk_manager is None:
@@ -480,7 +565,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     # Phase 2: Shadow vs. Live Divergence Metrics
     try:
         import json
-        from datetime import UTC, datetime
+        from datetime import timezone, datetime
 
         shadow_key = f"shadow:position:{symbol}:{signal.direction}"
         shadow_raw = await position_store.redis.get(shadow_key)
@@ -491,7 +576,7 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
             if shadow_entry_time_str:
                 shadow_dt = datetime.fromisoformat(shadow_entry_time_str)
-                divergence_secs = (datetime.now(UTC) - shadow_dt).total_seconds()
+                divergence_secs = (datetime.now(timezone.utc) - shadow_dt).total_seconds()
                 from app.core import metrics
 
                 metrics.shadow_live_entry_divergence_seconds.labels(symbol=symbol).observe(divergence_secs)
@@ -510,12 +595,18 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
 
     # Record trade
     if trade_store:
+        # Capture AI confidence from analyst result (if available)
+        ai_conf = None
+        if 'analyst_result' in dir() and analyst_result is not None:
+            ai_conf = analyst_result.ai_confidence
+
         await trade_store.record_entry(
             symbol=symbol,
             side=signal.direction,
             amount=signal.amount,
             entry_price=fill_price,
             regime=signal.regime.value,
+            ai_confidence=ai_conf,
             risk_profile_json=signal.risk_profile.to_json(),
             trace_id=signal.trace_id,
             cvd_slope=signal.cvd_slope,
@@ -793,8 +884,8 @@ async def _position_exit_loop(
                                     from datetime import datetime
                                     et = datetime.fromisoformat(entry_time_str)
                                     if et.tzinfo is None:
-                                        et = et.replace(tzinfo=UTC)
-                                    now = datetime.now(UTC)
+                                        et = et.replace(tzinfo=timezone.utc)
+                                    now = datetime.now(timezone.utc)
                                     hold_min = int((now - et).total_seconds() / 60)
                             except Exception:
                                 pass
@@ -824,7 +915,6 @@ async def _position_exit_loop(
                 # Prometheus: count closed position
                 from app.core import metrics
 
-                from app.core import metrics
                 metrics.positions_closed.labels(symbol=symbol, side=side, exit_reason=exit_reason).inc()
                 metrics.funnel_positions_closed.inc()
 
@@ -1309,6 +1399,57 @@ async def _balance_refresh_loop(
             logger.debug("balance refresh failed")
 
 
+async def _daily_summary_loop(
+    redis: Any,
+    db_engine: Any,
+    alert_service: Any,
+    shutdown_event: asyncio.Event,
+) -> None:
+    """Send daily summary at midnight UTC.
+
+    Sleeps until next midnight, generates summary via DailySummaryService,
+    and sends via AlertService. Respects user's daily_summary preference.
+    """
+    from app.bot.daily_summary import DailySummaryService
+
+    while not shutdown_event.is_set():
+        try:
+            now = datetime.now(timezone.utc)
+            tomorrow = (now + timedelta(days=1)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+            wait_seconds = (tomorrow - now).total_seconds()
+            logger.info(
+                "daily_summary: sleeping %.0fs until midnight UTC", wait_seconds
+            )
+            await asyncio.sleep(wait_seconds)
+
+            if shutdown_event.is_set():
+                break
+
+            # Check if daily summary is enabled
+            service = DailySummaryService(redis_client=redis, db_engine=db_engine)
+            if not await service.is_enabled():
+                logger.info("daily_summary: disabled by user settings, skipping")
+                continue
+
+            # Generate and send summary for the completed day (yesterday)
+            completed_date = datetime.now(timezone.utc) - timedelta(days=1)
+            message = await service.generate_summary(completed_date)
+            if alert_service:
+                await alert_service.send(message)
+                logger.info("daily_summary: sent successfully for %s", completed_date.strftime("%Y-%m-%d"))
+            else:
+                logger.warning("daily_summary: no alert_service, cannot send")
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("daily_summary_loop error: %s", e)
+            # Sleep 60s before retrying to avoid tight error loops
+            await asyncio.sleep(60)
+
+
 async def main() -> None:  # noqa: PLR0915
     _configure_logging()
     settings = get_settings()
@@ -1355,22 +1496,6 @@ async def main() -> None:  # noqa: PLR0915
     ohlcv_fetcher = OHLCVFetcher(exchange)
     multi_tf = MultiTFFilter(ohlcv_fetcher)
 
-    # AI Integration
-    crypto_analyst = None
-    try:
-        from app.core.ai_client import AIClient
-        from app.alpha.analyst import CryptoAnalyst
-        
-        ai_client = AIClient(
-            router_url=settings.nine_router_base_url,
-            auth_token=settings.nine_router_auth_token,
-            model=settings.nine_router_model,
-        )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
-    except Exception as e:
-        logger.warning(f"AI Client init failed: {e}")
-        crypto_analyst = None
-
     engine = DecisionEngine(
         analyzer,
         router,
@@ -1378,8 +1503,21 @@ async def main() -> None:  # noqa: PLR0915
         trade_memory=trade_memory,
         redis_client=redis,
         multi_tf=multi_tf,
-        crypto_analyst=crypto_analyst,
     )
+
+    # AI Signal Ranker — batch ranks top signals instead of individual veto
+    ai_ranker = None
+    try:
+        from app.core.ai_client import AIClient
+        ai_client = AIClient(
+            router_url=settings.nine_router_base_url,
+            auth_token=settings.nine_router_auth_token,
+            model=settings.nine_router_model,
+        )
+        ai_ranker = AISignalRanker(ai_client)
+        logger.info("AISignalRanker initialized")
+    except Exception as e:
+        logger.warning(f"AISignalRanker init failed: {e}")
 
     position_store = PositionStore(redis)
 
@@ -1433,20 +1571,6 @@ async def main() -> None:  # noqa: PLR0915
 
     from app.risk.portfolio_risk_manager import PortfolioRiskManager
 
-    try:
-        from app.alpha.analyst import CryptoAnalyst
-        from app.core.ai_client import AIClient
-
-        ai_client = AIClient(
-            router_url=settings.nine_router_base_url,
-            auth_token=settings.nine_router_auth_token,
-            model=settings.nine_router_model,
-        )
-        crypto_analyst = CryptoAnalyst(ai_client, ohlcv_fetcher, redis, is_shadow=False)
-    except Exception as e:
-        crypto_analyst = None
-        logger.warning(f"Could not initialize CryptoAnalyst in live loop: {e}")
-
     trade_store = None
     try:
         from app.core.database import DatabaseEngine
@@ -1456,6 +1580,16 @@ async def main() -> None:  # noqa: PLR0915
         await db_engine.connect(settings.postgres_url)
         trade_store = _TradeStore(db_engine)
         engine._trade_store = trade_store
+
+        # Sync user settings from DB to Redis on startup (survives Redis restarts)
+        try:
+            from app.core.settings_store import SettingsStore
+
+            _settings_store = SettingsStore(db_engine)
+            # Use owner user_id=0 as default (single-user bot)
+            await _settings_store.sync_db_to_redis(redis, user_id=0)
+        except Exception as sync_exc:
+            logger.warning("settings_db_sync_failed: %s", sync_exc)
     except Exception:
         logger.warning("TradeStore unavailable — trades will not be recorded")
 
@@ -1474,6 +1608,22 @@ async def main() -> None:  # noqa: PLR0915
         sector_mapping=_SectorMapping(),
         bybit_client=bybit,
     )
+
+    # Hybrid Intelligence System — statistical guardrails + AI evaluation
+    hybrid_engine: HybridDecisionEngine | None = None
+    try:
+        from app.ai.nine_router_service import NineRouterService
+
+        stat_engine = StatisticalFeatureEngine(redis_client=redis)
+        nine_router = NineRouterService()
+        hybrid_engine = HybridDecisionEngine(
+            statistical_engine=stat_engine,
+            ai_service=nine_router,
+        )
+        logger.info("HybridDecisionEngine initialized")
+    except Exception as e:
+        logger.warning(f"HybridDecisionEngine init failed: {e}")
+        hybrid_engine = None
 
     # Actor Model: single execution worker to serialize trade execution.
     # Prevents max_positions race condition where multiple signals pass the
@@ -1498,7 +1648,7 @@ async def main() -> None:  # noqa: PLR0915
                 metrics.pipeline_queue_wait_seconds.labels(worker_id=str(worker_id)).observe(wait_time)
                 metrics.pipeline_worker_utilization.labels(worker_id=str(worker_id)).set(1.0)
                 try:
-                    await _on_signal_live(sym, sig, position_store, executor, risk_manager, trade_store, engine, crypto_analyst)
+                    await _on_signal_live(sym, sig, position_store, executor, risk_manager, trade_store, engine, hybrid_engine, ai_ranker)
                 except Exception as e:
                     logger.error(f"Worker {worker_id} failed on {sym}: {e}", exc_info=True)
                 finally:
@@ -1545,6 +1695,50 @@ async def main() -> None:  # noqa: PLR0915
             background_tasks.add(task)
             task.add_done_callback(background_tasks.discard)
 
+            # Statistical Feature Engine: compute features on each candle close
+            if hybrid_engine is not None and len(history) >= 50:
+                async def _compute_features(sym: str, candles: list) -> None:
+                    try:
+                        import pandas as _pd
+
+                        ohlcv_df = _pd.DataFrame(
+                            candles,
+                            columns=["timestamp", "open", "high", "low", "close", "volume"],
+                        )
+                        # Fetch BTC data for beta/correlation
+                        btc_ohlcv_df = ohlcv_df  # fallback
+                        try:
+                            btc_raw = await ohlcv_fetcher.fetch("BTC/USDT", "1h", limit=len(candles))
+                            if btc_raw and len(btc_raw) >= 50:
+                                btc_ohlcv_df = _pd.DataFrame(
+                                    btc_raw,
+                                    columns=["timestamp", "open", "high", "low", "close", "volume"],
+                                )
+                        except Exception:
+                            pass
+
+                        funding = 0.0
+                        try:
+                            fr_raw = await redis.get(f"karsa:funding:{sym}")
+                            if fr_raw:
+                                funding = float(fr_raw)
+                        except Exception:
+                            pass
+
+                        stat_engine = hybrid_engine._stat_engine
+                        await stat_engine.calculate_features(
+                            symbol=sym,
+                            ohlcv=ohlcv_df,
+                            btc_ohlcv=btc_ohlcv_df,
+                            funding_rate=funding,
+                        )
+                    except Exception as e:
+                        logger.debug(f"Feature calculation failed for {sym}: {e}")
+
+                feature_task = asyncio.create_task(_compute_features(symbol, history))
+                background_tasks.add(feature_task)
+                feature_task.add_done_callback(background_tasks.discard)
+
     consumer = MarketConsumer(redis, engine, on_signal, on_candle)
 
     # Read dynamic universe from Redis, fall back to static config
@@ -1556,18 +1750,23 @@ async def main() -> None:  # noqa: PLR0915
     )
     logger.info(f"live universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}")
 
-    # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
+    # Pre-fill CandleBuffer concurrently with historical candles (max 5 concurrent requests)
     try:
         # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
-        for sym in initial_symbols:
-            try:
-                candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
-                if candles:
-                    for c in candles:
-                        consumer._buffer.append(sym, c)
-                logger.info(f"live pre-filled buffer for {sym} with {len(candles or [])} candles")
-            except Exception as e:
-                logger.warning(f"failed to pre-fill {sym}: {e}")
+        prefill_sem = asyncio.Semaphore(5)
+
+        async def _prefill_symbol(sym: str) -> None:
+            async with prefill_sem:
+                try:
+                    candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
+                    if candles:
+                        for c in candles:
+                            consumer._buffer.append(sym, c)
+                    logger.info(f"live pre-filled buffer for {sym} with {len(candles or [])} candles")
+                except Exception as e:
+                    logger.warning(f"failed to pre-fill {sym}: {e}")
+
+        await asyncio.gather(*[_prefill_symbol(sym) for sym in initial_symbols])
     except Exception as e:
         logger.warning(f"OHLCVFetcher init failed — no candle pre-fill: {e}")
 
@@ -1831,6 +2030,12 @@ async def main() -> None:  # noqa: PLR0915
         name="live-vol-surface",
     )
 
+    # ── Daily Summary: Midnight UTC summary push ──────────────────────
+    daily_summary_task = asyncio.create_task(
+        _daily_summary_loop(redis, pool, alert_service, shutdown_event),
+        name="live-daily-summary",
+    )
+
     try:
         await shutdown_event.wait()
     finally:
@@ -1858,6 +2063,7 @@ async def main() -> None:  # noqa: PLR0915
         gate_calibration_task.cancel()
         elo_task.cancel()
         vol_surface_task.cancel()
+        daily_summary_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await asyncio.gather(*worker_tasks)
         with contextlib.suppress(asyncio.CancelledError):
@@ -1878,6 +2084,8 @@ async def main() -> None:  # noqa: PLR0915
                 await balance_task
         with contextlib.suppress(asyncio.CancelledError):
             await wallet_metrics_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await daily_summary_task
         await ingestor.stop()
         await emitter.stop()
         if "exchange" in locals() and exchange is not None:

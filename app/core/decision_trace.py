@@ -23,6 +23,3 @@ class DecisionTrace:
     nodes: list[TraceNode] = field(default_factory=list)
     duration_ms: int = 0
     metadata: dict[str, str] = field(default_factory=dict)
-
-    def add_node(self, name: str, input_data: str, output_data: str, reason: str, ts: float) -> None:
-        self.nodes.append(TraceNode(name, input_data, output_data, reason, ts))

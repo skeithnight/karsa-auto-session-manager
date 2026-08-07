@@ -15,7 +15,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import asyncpg
@@ -52,7 +52,7 @@ async def check_already_bootstrapped(pool: asyncpg.Pool) -> bool:
 async def _candle_to_row(symbol: str, timeframe: str, candle: list) -> tuple:
     """Convert raw ccxt candle to row tuple."""
     ts_ms, open_p, high_p, low_p, close_p, volume = candle
-    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=UTC)
+    ts = datetime.fromtimestamp(ts_ms / 1000.0, tz=timezone.utc)
     return (symbol, timeframe, ts, Decimal(str(open_p)), Decimal(str(high_p)),
             Decimal(str(low_p)), Decimal(str(close_p)), Decimal(str(volume)))
 

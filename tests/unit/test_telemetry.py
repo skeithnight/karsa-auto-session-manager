@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -165,7 +165,7 @@ class TestGetAllServicesHealth:
 
     @pytest.mark.asyncio
     async def test_fresh_service(self) -> None:
-        now = datetime.now(UTC).isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         payload = {
             "service_name": "data-engine",
             "last_heartbeat": now,
@@ -194,7 +194,7 @@ class TestGetAllServicesHealth:
 
     @pytest.mark.asyncio
     async def test_stale_service(self) -> None:
-        stale_dt = datetime.now(UTC) - timedelta(seconds=120)
+        stale_dt = datetime.now(timezone.utc) - timedelta(seconds=120)
         payload = {
             "service_name": "live",
             "last_heartbeat": stale_dt.isoformat(),
@@ -218,7 +218,7 @@ class TestGetAllServicesHealth:
 
     @pytest.mark.asyncio
     async def test_dead_service(self) -> None:
-        dead_dt = datetime.now(UTC) - timedelta(seconds=200)
+        dead_dt = datetime.now(timezone.utc) - timedelta(seconds=200)
         payload = {
             "service_name": "shadow",
             "last_heartbeat": dead_dt.isoformat(),

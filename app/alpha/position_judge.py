@@ -110,6 +110,17 @@ class PositionJudge:
         self._hold_counters: dict[str, int] = {}
         self.outcome_logger = outcome_logger
 
+    def should_evaluate_anomaly(
+        self,
+        oi_change_pct: float = 0.0,
+        funding_flip: bool = False,
+        is_checkpoint_review: bool = False,
+    ) -> bool:
+        """Event-Driven Trigger: returns True ONLY if an orderbook anomaly or checkpoint review is present."""
+        if is_checkpoint_review or funding_flip or abs(oi_change_pct) >= 5.0:
+            return True
+        return False
+
     async def judge(
         self,
         symbol: str,
@@ -124,8 +135,15 @@ class PositionJudge:
         prev_conf: int = 0,
         recent_trades: str = "",
         is_checkpoint_review: bool = False,
+        oi_change_pct: float = 0.0,
+        funding_flip: bool = False,
     ) -> JudgeVerdict | None:
-        """Judge an open position. Returns None if AI unavailable."""
+        """Judge an open position. Returns None if AI unavailable or no anomaly detected."""
+        # Event-driven check: skip routine AI calls if no market anomaly present
+        if not self.should_evaluate_anomaly(oi_change_pct, funding_flip, is_checkpoint_review):
+            logger.debug(f"PositionJudge: skipping routine evaluation for {symbol} (no OI/funding anomaly)")
+            return None
+
         pnl_pct = float((current_price - entry_price) / entry_price * 100)
         if side == "sell":
             pnl_pct = -pnl_pct

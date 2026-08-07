@@ -4,11 +4,17 @@ Regime-aware routing (Phase 12):
   CHOP/RANGE: force Post-Only (maker fee, no aggressive fills)
   TREND: allow Market fallback on reprice failure
   Spread gate: reject entries when bid-ask spread > threshold
+
+Entry Strategies (Phase 13):
+  MARKET:       Execute immediately. Volume spike > 2x AND strong breakout.
+  LIMIT_RETEST: Limit at EMA20 / breakout level × 0.995. TTL: 2 candles.
+  WAIT_PULLBACK: Limit at EMA50 / support level. TTL: 4 candles.
 """
 
 from __future__ import annotations
 
 import asyncio
+import random
 from decimal import Decimal
 from typing import Any
 
@@ -21,6 +27,13 @@ from app.execution.bybit_client import BybitClient
 CHOP_RANGE_MAX_REPRICE = 1  # fewer reprices for CHOP/RANGE — reject faster
 CHOP_RANGE_SPREAD_PCT = Decimal("0.002")  # 0.2% max spread for CHOP/RANGE
 TREND_SPREAD_PCT = Decimal("0.005")  # 0.5% max spread for TREND
+
+# Entry strategy constants
+SLIPPAGE_REDUCE_THRESHOLD_PCT = Decimal("0.5")  # > 0.5% slippage → split/reduce
+SLIPPAGE_SIZE_REDUCTION = Decimal("0.5")  # reduce by 50% when slippage detected
+TWAP_NUM_SPLITS = 3
+TWAP_INTERVAL_SECONDS = 300  # 5 minutes between splits
+CANDLE_SECONDS = 3600  # 1H candle = 3600s
 
 
 class SmartOrderRouter:
@@ -83,8 +96,9 @@ class SmartOrderRouter:
         3. Market/IOC fallback
         4. Place exchange-side Stop-Loss immediately on fill (CLAUDE.md Rule 5)
         """
-        # Normalize side: accept "LONG"/"SHORT" from signal, convert to "buy"/"sell"
-        side = "buy" if side in ("buy", "LONG") else "sell"
+        # Normalize side: accept "LONG"/"BUY" from signal, convert to "buy"/"sell"
+        side_upper = str(side).upper()
+        side = "buy" if side_upper in ("BUY", "LONG") else "sell"
         logger.debug(f"execute: entering symbol={symbol} side={side}")
         if price_tick is None:
             price_tick = self.client._price_ticks.get(symbol, Decimal("0.01"))
@@ -158,12 +172,21 @@ class SmartOrderRouter:
 
         order = None
         # Step 1: Post-Only Limit
-        logger.info(f"SOR Step 1: Post-Only Limit {side} {amount} @ {price}")
+        logger.info(
+            "⚡ [STAGE 5: SMART ORDER ROUTER] Executing Post-Only Maker Limit %s %s Amount: %s @ Price: %s",
+            symbol,
+            side,
+            amount,
+            price,
+        )
         metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
             order = await self.client.create_limit_order(symbol, side, amount, price)
             if order.get("status") in ("open", "closed"):
-                logger.info(f"Post-Only filled: {order['orderId']}")
+                logger.info(
+                    "⚡ [STAGE 5: SMART ORDER ROUTER] Post-Only Maker Order Filled! OrderID: %s",
+                    order.get("orderId"),
+                )
                 metrics.orders_placed.labels(symbol=symbol, side=side).inc()
                 fill_price = Decimal(
                     str(order.get("average", order.get("avgPrice", price)))
@@ -194,22 +217,18 @@ class SmartOrderRouter:
 
         # Step 2: Reprice attempts
         current_price = price
-        # Derive tick from price (0.02% of price, min 0.01) — prevents negative prices on low-value tokens
-        effective_tick = max(price * Decimal("0.0002"), Decimal("0.01"))
+        # Derive effective_tick from actual exchange price_tick (or symbol precision)
+        effective_tick = price_tick if (price_tick and price_tick > Decimal("0")) else self.client._price_ticks.get(symbol, Decimal("0.0001"))
+
+        def _quantize_to_tick(p: Decimal, tick: Decimal) -> Decimal:
+            if tick <= Decimal("0"):
+                return p
+            return (p / tick).quantize(Decimal("1")) * tick
 
         # Adaptive Maker-Fee Routing: Determine dynamic reprice attempts
         max_reprices = self.max_reprice_attempts
         try:
-            tickers = await self.client.fetch_tickers()
-            # fetch_tickers returns a list; find our symbol's ticker
-            ticker = None
-            if isinstance(tickers, list):
-                for t in tickers:
-                    if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
-                        ticker = t
-                        break
-            elif isinstance(tickers, dict):
-                ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+            ticker = await self.client.fetch_ticker(symbol)
             if ticker:
                 bid_vol = Decimal(str(ticker.get("bidVolume", "0") or "0"))
                 ask_vol = Decimal(str(ticker.get("askVolume", "0") or "0"))
@@ -260,11 +279,16 @@ class SmartOrderRouter:
 
             await asyncio.sleep(delay)
 
-            # Move price toward market (buy: higher, sell: lower)
+            # Move price toward market with strict 3 bps (0.03%) max slippage cap
+            slippage_cap_pct = Decimal("0.0003")  # 3 bps cap
             if side == "buy":
-                current_price += effective_tick
+                max_price = price * (Decimal("1.0") + slippage_cap_pct)
+                raw_next_price = min(current_price + effective_tick, max_price)
+                current_price = _quantize_to_tick(raw_next_price, effective_tick)
             else:
-                current_price -= effective_tick
+                min_price = price * (Decimal("1.0") - slippage_cap_pct)
+                raw_next_price = max(current_price - effective_tick, min_price)
+                current_price = _quantize_to_tick(raw_next_price, effective_tick)
                 # Guard: never go negative or zero
                 if current_price <= 0:
                     logger.warning(
@@ -313,27 +337,18 @@ class SmartOrderRouter:
         try:
             # Hard Slippage Limit Check
             try:
-                tickers = await self.client.fetch_tickers()
-                # fetch_tickers returns a list; find our symbol's ticker
-                ticker = None
-                if isinstance(tickers, list):
-                    for t in tickers:
-                        if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
-                            ticker = t
-                            break
-                elif isinstance(tickers, dict):
-                    ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
+                ticker = await self.client.fetch_ticker(symbol)
                 if ticker:
-                        bid = Decimal(str(ticker.get("bid", "0") or "0"))
-                        ask = Decimal(str(ticker.get("ask", "0") or "0"))
-                        market_price = ask if side == "buy" else bid
-                        if market_price > 0 and price > 0:
-                            expected_slippage = abs(market_price - price) / price
-                            if expected_slippage > Decimal("0.005"):
-                                logger.error(f"SOR Reject: Market fallback would incur {expected_slippage:.2%} slippage (> 0.5% limit). Aborting entry.")
-                                if self.alert_service:
-                                    await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
-                                return None
+                    bid = Decimal(str(ticker.get("bid", "0") or "0"))
+                    ask = Decimal(str(ticker.get("ask", "0") or "0"))
+                    market_price = ask if side == "buy" else bid
+                    if market_price > 0 and price > 0:
+                        expected_slippage = abs(market_price - price) / price
+                        if expected_slippage > Decimal("0.005"):
+                            logger.error(f"SOR Reject: Market fallback would incur {expected_slippage:.2%} slippage (> 0.5% limit). Aborting entry.")
+                            if self.alert_service:
+                                await self.alert_service.send(f"⚠️ SOR Rejected market fallback for {symbol} due to high slippage ({expected_slippage:.2%})")  # type: ignore[attr-defined]
+                            return None
             except Exception as e:
                 logger.warning(f"SOR slippage check failed, aborting market fallback: {e}")
                 if self.alert_service:
@@ -479,6 +494,290 @@ class SmartOrderRouter:
             )
             return order
 
+    # ------------------------------------------------------------------
+    # Entry Strategy Routing
+    # ------------------------------------------------------------------
+
+    async def execute_with_strategy(
+        self,
+        symbol: str,
+        side: str,  # "LONG" or "SHORT"
+        size: Decimal,
+        entry_strategy: str,  # "MARKET", "LIMIT_RETEST", "WAIT_PULLBACK"
+        limit_price: Decimal | None = None,
+        ttl_candles: int = 2,
+        price_tick: Decimal | None = None,
+        max_loss_usd: Decimal = Decimal("1.00"),
+    ) -> dict[str, Any] | None:
+        """Execute entry using the specified strategy.
+
+        MARKET:       Immediate market fill. Use when volume spike > 2x AND breakout strong.
+        LIMIT_RETEST: Limit order at limit_price (or mid × 0.995). TTL: ttl_candles.
+        WAIT_PULLBACK: Limit order at limit_price. TTL: ttl_candles (default 4).
+
+        Includes slippage protection: if order book depth is too thin,
+        either reduce size by 50% or split into TWAP.
+        """
+        if price_tick is None:
+            price_tick = self.client._price_ticks.get(symbol, Decimal("0.01"))
+
+        strategy = entry_strategy.upper()
+        logger.info(
+            f"SOR strategy={strategy} symbol={symbol} side={side} size={size}"
+        )
+
+        # --- Slippage protection: check order book depth ---
+        adjusted_size = await self._apply_slippage_guard(symbol, side, size, price_tick)
+        if adjusted_size is None:
+            logger.warning(f"SOR strategy {strategy}: slippage guard returned None for {symbol}")
+            return None
+
+        if strategy == "MARKET":
+            return await self._execute_strategy_market(
+                symbol, side, adjusted_size, price_tick, max_loss_usd,
+            )
+        elif strategy == "LIMIT_RETEST":
+            return await self._execute_strategy_limit(
+                symbol, side, adjusted_size, limit_price, ttl_candles, price_tick, max_loss_usd,
+            )
+        elif strategy == "WAIT_PULLBACK":
+            return await self._execute_strategy_limit(
+                symbol, side, adjusted_size, limit_price, ttl_candles, price_tick, max_loss_usd,
+            )
+        else:
+            logger.error(f"SOR unknown strategy '{strategy}', falling back to MARKET")
+            return await self._execute_strategy_market(
+                symbol, side, adjusted_size, price_tick, max_loss_usd,
+            )
+
+    async def _execute_strategy_market(
+        self,
+        symbol: str,
+        side: str,
+        size: Decimal,
+        price_tick: Decimal,
+        max_loss_usd: Decimal,
+    ) -> dict[str, Any] | None:
+        """MARKET strategy: execute immediately via existing 3-step pipeline."""
+        api_side = "buy" if side in ("buy", "LONG") else "sell"
+        # Use current mid price as reference
+        mid_price = await self._get_mid_price(symbol)
+        if mid_price is None:
+            logger.error(f"SOR MARKET: cannot get mid price for {symbol}")
+            return None
+
+        result = await self.execute(symbol, api_side, size, mid_price, price_tick, max_loss_usd)
+        if result:
+            logger.info(f"SOR MARKET filled: {symbol} {api_side} {size}")
+        return result
+
+    async def _execute_strategy_limit(
+        self,
+        symbol: str,
+        side: str,
+        size: Decimal,
+        limit_price: Decimal | None,
+        ttl_candles: int,
+        price_tick: Decimal,
+        max_loss_usd: Decimal,
+    ) -> dict[str, Any] | None:
+        """LIMIT_RETEST / WAIT_PULLBACK: place limit, wait TTL, cancel if unfilled."""
+        api_side = "buy" if side in ("buy", "LONG") else "sell"
+
+        if limit_price is None:
+            mid = await self._get_mid_price(symbol)
+            if mid is None:
+                logger.error(f"SOR LIMIT: cannot get mid price for {symbol}")
+                return None
+            # LIMIT_RETEST: 0.5% below mid; WAIT_PULLBACK: use mid as-is
+            limit_price = (mid * Decimal("0.995")).quantize(price_tick)
+
+        # Place the limit order
+        try:
+            order = await self.client.create_limit_order(symbol, api_side, size, limit_price)
+        except Exception as e:
+            if await self._handle_auth_block(symbol, e):
+                return None
+            logger.error(f"SOR LIMIT: order placement failed for {symbol}: {e}")
+            return None
+
+        order_id = order.get("id") or order.get("orderId", "")
+        logger.info(
+            f"SOR LIMIT placed: {symbol} {api_side} {size} @ {limit_price} "
+            f"order_id={order_id} ttl={ttl_candles} candles"
+        )
+
+        # Wait for TTL (2 candles default = 7200s for 1H, but we poll at shorter intervals)
+        ttl_seconds = ttl_candles * CANDLE_SECONDS
+        poll_interval = max(0.1, min(30.0, ttl_seconds / 4))  # poll 4 times or every 30s, min 0.1s
+        elapsed = 0.0
+        while elapsed < ttl_seconds:
+            await asyncio.sleep(poll_interval)
+            elapsed += poll_interval
+
+            # Check fill status
+            try:
+                status = await self.client.get_order_status(order_id, symbol)
+                if status.get("status") in ("filled", "closed"):
+                    fill_price = Decimal(
+                        str(status.get("average", status.get("avgPrice", limit_price)))
+                    )
+                    logger.info(f"SOR LIMIT filled: {symbol} @ {fill_price}")
+                    sl_id = await self._place_sl_after_fill(
+                        symbol, api_side, fill_price, size, max_loss_usd, price_tick,
+                    )
+                    order["sl_order_id"] = sl_id or ""
+                    order["status"] = "filled"
+                    return order
+            except Exception as e:
+                logger.debug(f"SOR LIMIT status check failed: {e}")
+
+        # TTL expired — cancel
+        logger.warning(
+            f"SOR LIMIT TTL expired: {symbol} {api_side} after {ttl_seconds}s, cancelling"
+        )
+        try:
+            await self.client.cancel_order(order_id, symbol)
+        except Exception as e:
+            logger.warning(f"SOR LIMIT cancel failed: {e}")
+        return None
+
+    async def _apply_slippage_guard(
+        self,
+        symbol: str,
+        side: str,
+        size: Decimal,
+        price_tick: Decimal,
+    ) -> Decimal | None:
+        """Check order book depth. If slippage > 0.5%, reduce size by 50%.
+
+        Returns adjusted size, or None if the order should be rejected entirely.
+        """
+        try:
+            depth_1pct = await self._get_orderbook_depth_1pct(symbol)
+            if depth_1pct is None or depth_1pct <= 0:
+                # Cannot assess depth — proceed with original size
+                return size
+
+            mid = await self._get_mid_price(symbol)
+            if mid is None or mid <= 0:
+                return size
+
+            slippage_pct = (size / depth_1pct) * Decimal("100")
+            if slippage_pct > SLIPPAGE_REDUCE_THRESHOLD_PCT:
+                reduced = (size * SLIPPAGE_SIZE_REDUCTION).quantize(price_tick)
+                logger.warning(
+                    f"SOR slippage guard: {symbol} slippage={slippage_pct:.2f}% "
+                    f"(>{SLIPPAGE_REDUCE_THRESHOLD_PCT}%), reducing size {size} → {reduced}"
+                )
+                metrics.execution_slippage_bps.labels(symbol=symbol).observe(
+                    float(slippage_pct * 100)
+                )
+                return reduced if reduced > 0 else None
+        except Exception as e:
+            logger.debug(f"SOR slippage guard check failed: {e}")
+        return size
+
+    async def _get_mid_price(self, symbol: str) -> Decimal | None:
+        """Get mid price from ticker."""
+        try:
+            tickers = await self.client.fetch_tickers(symbol)
+            if isinstance(tickers, list):
+                for t in tickers:
+                    if t.get("symbol") == symbol or t.get("symbol") == symbol.replace("/", ""):
+                        bid = Decimal(str(t.get("bid", "0") or "0"))
+                        ask = Decimal(str(t.get("ask", "0") or "0"))
+                        if bid > 0 and ask > 0:
+                            return (bid + ask) / Decimal("2")
+            elif isinstance(tickers, dict):
+                bid = Decimal(str(tickers.get("bid", "0") or "0"))
+                ask = Decimal(str(tickers.get("ask", "0") or "0"))
+                if bid > 0 and ask > 0:
+                    return (bid + ask) / Decimal("2")
+        except Exception as e:
+            logger.debug(f"SOR get_mid_price failed for {symbol}: {e}")
+        return None
+
+    async def _get_orderbook_depth_1pct(self, symbol: str) -> Decimal | None:
+        """Get total order book depth within 1% of mid price.
+
+        Uses Bybit's get_orderbook REST endpoint.
+        """
+        try:
+            from app.execution.bybit_client import BybitClient as _BC
+
+            if not self.client.session:
+                return None
+            bybit_sym = self.client._to_bybit_symbol(symbol) if hasattr(self.client, "_to_bybit_symbol") else symbol.replace("/", "").replace(":USDT", "")
+            raw = await self.client._execute(
+                self.client.session.get_orderbook,
+                category="linear",
+                symbol=bybit_sym,
+                limit=50,
+            )
+            if not raw or raw.get("retCode") != 0:
+                return None
+
+            mid = await self._get_mid_price(symbol)
+            if mid is None:
+                return None
+
+            lower_bound = mid * Decimal("0.99")
+            upper_bound = mid * Decimal("1.01")
+
+            total_depth = Decimal("0")
+            # bids
+            for entry in raw.get("result", {}).get("bids", []):
+                price = Decimal(str(entry[0]))
+                qty = Decimal(str(entry[1]))
+                if lower_bound <= price <= upper_bound:
+                    total_depth += qty
+            # asks
+            for entry in raw.get("result", {}).get("asks", []):
+                price = Decimal(str(entry[0]))
+                qty = Decimal(str(entry[1]))
+                if lower_bound <= price <= upper_bound:
+                    total_depth += qty
+
+            return total_depth
+        except Exception as e:
+            logger.debug(f"SOR orderbook depth check failed for {symbol}: {e}")
+            return None
+
+    async def _execute_twap(
+        self,
+        symbol: str,
+        side: str,
+        total_size: Decimal,
+        num_splits: int = 3,
+        interval_seconds: int = 300,
+    ) -> list[dict[str, Any]]:
+        """TWAP: split total_size into num_splits orders over interval_seconds.
+
+        Each split is a market order. Returns list of fill results.
+        """
+        api_side = "buy" if side in ("buy", "LONG") else "sell"
+        chunk = (total_size / Decimal(str(num_splits))).quantize(Decimal("0.001"))
+        results: list[dict[str, Any]] = []
+
+        for i in range(num_splits):
+            current_amount = chunk if i < num_splits - 1 else (total_size - chunk * Decimal(str(num_splits - 1)))
+            if current_amount <= 0:
+                continue
+
+            if i > 0:
+                await asyncio.sleep(random.uniform(interval_seconds * 0.8, interval_seconds * 1.2))
+
+            try:
+                order = await self.client.create_market_order(symbol, api_side, current_amount)
+                logger.info(f"SOR TWAP split {i + 1}/{num_splits}: {symbol} {api_side} {current_amount}")
+                results.append(order)
+            except Exception as e:
+                logger.error(f"SOR TWAP split {i + 1}/{num_splits} failed for {symbol}: {e}")
+                results.append({"error": str(e), "split": i + 1})
+
+        return results
+
     async def _place_sl_after_fill(
         self,
         symbol: str,
@@ -510,7 +809,7 @@ class SmartOrderRouter:
                 stop_orders = [o for o in open_orders
                                if o.get("type") in ("stop", "StopOrder", "Stop")
                                or o.get("stopOrderType")]
-                if len(stop_orders) >= 8:  # Pre-emptive cleanup at 8 (before hitting 10 limit)
+                if len(stop_orders) >= 5:  # Pre-emptive cleanup at 5 (well before hitting 10 limit)
                     logger.warning(f"SL cleanup: cancelling {len(stop_orders)} stale stop orders for {symbol}")
                     for so in stop_orders:
                         try:
@@ -576,9 +875,11 @@ class SmartOrderRouter:
                 await self.alert_service.send(
                     format_entry_alert(symbol, side, fill_price, amount, sl_price)
                 )
+                return "atomic_position_sl"
             except Exception as ae:
                 logger.error(f"Entry alert failed: {ae}")
-        return None  # atomic SL has no order ID — lives on the position
+                return "atomic_position_sl"
+        return None
 
     async def cancel_all(self, symbol: str) -> None:
         """Cancel all open orders for a symbol."""
@@ -647,408 +948,6 @@ class SmartOrderRouter:
             f"FLATTEN ALL: complete — {closed}/{len(positions)} positions closed"
         )
 
-    # ------------------------------------------------------------------
-    # Regime-aware execution (Phase 12)
-    # ------------------------------------------------------------------
 
-    async def execute_regime_aware(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        price: Decimal,
-        use_post_only: bool = False,
-        regime: str = "",
-        price_tick: Decimal = Decimal("0.01"),
-        max_loss_usd: Decimal = Decimal("1.00"),
-    ) -> dict[str, Any] | None:
-        """Regime-aware order execution.
 
-        CHOP/RANGE: force Post-Only only — reject if not filled, no market fallback.
-        TREND: allow full Post-Only → Reprice → Market pipeline.
-        Spread gate: reject if bid-ask spread exceeds regime threshold.
-        """
-        if price <= 0:
-            logger.warning("SOR: invalid price %s for %s, skipping", price, symbol)
-            return None
-
-        # Spread gate
-        spread_ok = await self._check_spread_gate(symbol, regime)
-        if not spread_ok:
-            metrics.orders_rejected.labels(symbol=symbol, reason="spread_gate").inc()
-            return None
-
-        # CHOP/RANGE: Post-Only only — no market fallback
-        if use_post_only:
-            order = await self._try_post_only(symbol, side, amount, price)
-            if order is not None:
-                sl_id = await self._place_sl_after_fill(
-                    symbol, side, price, amount, max_loss_usd, price_tick
-                )
-                order["sl_order_id"] = sl_id or ""
-                return order
-            logger.info(
-                "SOR: Post-Only rejected for %s (CHOP/RANGE) — no market fallback",
-                symbol,
-            )
-            metrics.orders_rejected.labels(
-                symbol=symbol, reason="chop_range_post_only"
-            ).inc()
-            return None
-
-        # TREND: full pipeline with regime-adjusted reprices
-        max_reprices = (
-            self.max_reprice_attempts
-            if regime not in ("CHOP", "RANGE")
-            else CHOP_RANGE_MAX_REPRICE
-        )
-        return await self._execute_full_pipeline(
-            symbol,
-            side,
-            amount,
-            price,
-            price_tick,
-            max_loss_usd,
-            max_reprices,
-        )
-
-    async def _check_spread_gate(self, symbol: str, regime: str) -> bool:
-        """Reject if bid-ask spread exceeds regime threshold."""
-        try:
-            if self.redis:
-                state = await self.redis.get_global_state(symbol)
-                if state and state.get("best_bid") and state.get("best_ask"):
-                    bid = Decimal(str(state["best_bid"]))
-                    ask = Decimal(str(state["best_ask"]))
-                    if bid <= 0 or ask <= 0:
-                        return True
-                    spread = (ask - bid) / bid
-                    threshold = (
-                        CHOP_RANGE_SPREAD_PCT
-                        if regime in ("CHOP", "RANGE")
-                        else TREND_SPREAD_PCT
-                    )
-                    return spread <= threshold
-
-            # Fallback
-            tickers = await self.client.fetch_tickers(symbol=symbol)
-            if not tickers:
-                return True
-            ticker = tickers[0] if isinstance(tickers, list) else tickers
-            bid = Decimal(str(ticker.get("bid", 0)))
-            ask = Decimal(str(ticker.get("ask", 0)))
-            if bid <= 0 or ask <= 0:
-                return True
-            spread = (ask - bid) / bid
-            threshold = (
-                CHOP_RANGE_SPREAD_PCT
-                if regime in ("CHOP", "RANGE")
-                else TREND_SPREAD_PCT
-            )
-            if spread > threshold:
-                logger.warning(
-                    "SOR: spread %.4f exceeds threshold %.4f for %s (%s)",
-                    float(spread),
-                    float(threshold),
-                    symbol,
-                    regime,
-                )
-                return False
-            return True
-        except Exception:
-            logger.warning(
-                "SOR: spread check failed for %s, rejecting (fail-closed)", symbol
-            )
-            return False
-
-    async def _try_post_only(
-        self, symbol: str, side: str, amount: Decimal, price: Decimal
-    ) -> dict[str, Any] | None:
-        """Attempt a single Post-Only limit order."""
-        metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
-        try:
-            order = await self.client.create_limit_order(symbol, side, amount, price)
-            if order.get("status") in ("open", "closed"):
-                metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-                fill_price = Decimal(
-                    str(order.get("average", order.get("avgPrice", price)))
-                )
-                slippage_bps = abs(fill_price - price) / price * Decimal("10000")
-                metrics.execution_slippage_bps.labels(symbol=symbol).observe(
-                    float(slippage_bps)
-                )
-                return order
-        except Exception as exc:
-            logger.warning("SOR: Post-Only failed: %s", exc)
-        return None
-
-    async def _execute_full_pipeline(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        price: Decimal,
-        price_tick: Decimal,
-        max_loss_usd: Decimal,
-        max_reprices: int,
-    ) -> dict[str, Any] | None:
-        """Post-Only → Reprice → Market pipeline with configurable reprices."""
-        # Step 1: Post-Only
-        order = await self._try_post_only(symbol, side, amount, price)
-        if order is not None:
-            sl_id = await self._place_sl_after_fill(
-                symbol, side, price, amount, max_loss_usd, price_tick
-            )
-            order["sl_order_id"] = sl_id
-            return order
-
-        # Step 2: Reprice attempts
-        current_price = price
-        effective_tick = max(price * Decimal("0.001"), Decimal("0.01"))
-        for attempt in range(max_reprices):
-            await asyncio.sleep(self.reprice_delay_seconds)
-            if side == "buy":
-                current_price += effective_tick
-            else:
-                current_price -= effective_tick
-            if current_price <= 0:
-                break
-            metrics.sor_step_total.labels(symbol=symbol, step="reprice").inc()
-            if order and order.get("id"):
-                await self.client.cancel_order(order["id"], symbol)
-            try:
-                order = await self.client.create_limit_order(
-                    symbol, side, amount, current_price
-                )
-                if order.get("status") in ("open", "closed"):
-                    fill_price = Decimal(
-                        str(order.get("average", order.get("avgPrice", current_price)))
-                    )
-                    slippage_bps = abs(fill_price - price) / price * Decimal("10000")
-                    metrics.execution_slippage_bps.labels(symbol=symbol).observe(
-                        float(slippage_bps)
-                    )
-                    sl_id = await self._place_sl_after_fill(
-                        symbol,
-                        side,
-                        current_price,
-                        amount,
-                        max_loss_usd,
-                        price_tick,
-                    )
-                    order["sl_order_id"] = sl_id
-                    return order
-            except Exception:
-                logger.debug("SOR: reprice %d failed", attempt + 1)
-
-        # Step 3: Market fallback
-        if order and order.get("id"):
-            await self.client.cancel_order(order["id"], symbol)
-        metrics.sor_step_total.labels(symbol=symbol, step="market").inc()
-        try:
-            market_order = await self.client.create_market_order(symbol, side, amount)
-            metrics.orders_placed.labels(symbol=symbol, side=side).inc()
-            fill_price = Decimal(
-                str(market_order.get("average", market_order.get("avgPrice", price)))
-            )
-            slippage_bps = abs(fill_price - price) / price * Decimal("10000")
-            metrics.execution_slippage_bps.labels(symbol=symbol).observe(
-                float(slippage_bps)
-            )
-            sl_id = await self._place_sl_after_fill(
-                symbol, side, price, amount, max_loss_usd, price_tick
-            )
-            market_order["sl_order_id"] = sl_id
-            return market_order
-        except Exception as exc:
-            metrics.orders_failed.labels(
-                symbol=symbol, error_type=type(exc).__name__
-            ).inc()
-            logger.error("SOR: market fallback failed: %s", exc)
-            return None
-
-    async def execute_sniper_trap(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        target_price: Decimal,
-        max_slippage_bps: int,
-    ) -> dict[str, Any] | None:
-        """Execute resting limit order for Sniper Trap. No fallback, no SL placement (SL placed by APM after partial/full fill)."""
-        side = "buy" if side in ("buy", "LONG") else "sell"
-        logger.info(f"SOR Sniper Trap: {side} {amount} {symbol} target={target_price}")
-        
-        try:
-            # 1. Check Slippage Tolerance
-            tickers = await self.client.fetch_tickers()
-            if isinstance(tickers, dict):
-                ticker = tickers.get(symbol) or tickers.get(symbol.replace("/", ""))
-                if ticker:
-                    bid = Decimal(str(ticker.get("bid", "0") or "0"))
-                    ask = Decimal(str(ticker.get("ask", "0") or "0"))
-                    best_price = bid if side == "buy" else ask
-                    
-                    if best_price > 0:
-                        if side == "buy":
-                            # Safe Limit Price = Max(Target, Best_Bid - Tick) (Wait: actually slightly below Best_Bid to ensure Maker)
-                            safe_limit_price = max(target_price, best_price * Decimal("0.9995"))
-                        else:
-                            # Safe Limit Price = Min(Target, Best_Ask + Tick)
-                            safe_limit_price = min(target_price, best_price * Decimal("1.0005"))
-                        
-                        slippage = abs(safe_limit_price - target_price) / target_price * Decimal("10000")
-                        if slippage > max_slippage_bps:
-                            logger.warning(f"SOR Sniper Trap Aborted: Safe price {safe_limit_price} exceeds {max_slippage_bps} bps slippage from {target_price}")
-                            return None
-                        
-                        # Update target price to safe limit price
-                        target_price = safe_limit_price
-
-            # 2. Place Post-Only Order
-            order = await self.client.create_limit_order(
-                symbol, side, amount, target_price, params={"timeInForce": "PostOnly"}
-            )
-            
-            if order.get("status") in ("New", "PartiallyFilled", "open", "closed"):
-                logger.info(f"Sniper Trap Placed: {order.get('orderId')} at {target_price}")
-                return order
-            else:
-                logger.warning(f"Sniper Trap Rejected: {order.get('rejectReason', order)}")
-                return None
-                
-        except Exception as e:
-            logger.error(f"SOR Sniper Trap execution failed: {e}")
-            return None
-
-    async def execute_fee_aware(
-        self,
-        symbol: str,
-        side: str,
-        amount: Decimal,
-        price: Decimal,
-        ai_confidence: float = 0.5,
-        atr: Decimal | float = Decimal("0"),
-        estimated_slippage_pct: Decimal = Decimal("0.0001"),
-        price_tick: Decimal = Decimal("0.01"),
-        max_loss_usd: Decimal = Decimal("1.00"),
-    ) -> dict[str, Any] | None:
-        """Fee-aware order execution based on Expected Move (EM) vs Cost of Aggression (CoA).
-
-        1. EM = AI_Confidence * ATR (expressed as USD offset from price).
-        2. CoA = (Taker_Fee [0.00055] + Estimated_Slippage_pct) * Price.
-        3. Decision Rules:
-           - EM > (CoA * 3): High Expectancy setup -> Aggressive chase (1.0s reprice) / market fallback.
-           - EM < (CoA * 1.5): Thin Edge setup -> Strict Post-Only, cancel & abandon if unfilled in 10s.
-           - Otherwise: Moderate Expectancy -> Fallback to standard 3-step routing execute().
-        """
-        side_norm = "buy" if side in ("buy", "LONG") else "sell"
-        if price <= 0 or amount <= 0:
-            logger.warning(f"SOR fee_aware: invalid price {price} or amount {amount} for {symbol}")
-            return None
-
-        # Normalize confidence to 0.0-1.0
-        conf_val = float(ai_confidence)
-        if conf_val > 1.0:
-            conf_val /= 100.0
-        conf = Decimal(str(max(0.0, min(1.0, conf_val))))
-
-        atr_dec = Decimal(str(atr)) if atr else Decimal("0")
-        # Ensure ATR is treated as price offset; if passed as percentage (< 1.0), convert to price offset
-        atr_price_offset = (atr_dec * price) if (atr_dec > 0 and atr_dec < Decimal("1.0")) else atr_dec
-        em_price_offset = conf * atr_price_offset
-
-        taker_fee_pct = Decimal("0.00055")
-        coa_pct = taker_fee_pct + Decimal(str(estimated_slippage_pct))
-        coa_price_offset = coa_pct * price
-
-        # Maker Rebate Targeting: If exchange pays maker rebate (< 0), lower thin edge threshold to 1.0x
-        maker_fee = Decimal("0.0002")
-        if self.client and hasattr(self.client, "get_maker_fee_rate"):
-            try:
-                res = await self.client.get_maker_fee_rate(symbol)
-                if isinstance(res, (int, float, str, Decimal)):
-                    maker_fee = Decimal(str(res))
-            except Exception:
-                pass
-
-        thin_edge_mult = Decimal("1.0") if maker_fee < 0 else Decimal("1.5")
-
-        logger.info(
-            f"SOR Fee-Aware Evaluation: {symbol} {side_norm} | EM_Offset=${em_price_offset:.4f} (Conf={conf:.2f}, ATR_Offset={atr_price_offset:.4f}) vs CoA_Offset=${coa_price_offset:.4f} (CoA_pct={coa_pct:.5f}, Rebate={maker_fee < 0})"
-        )
-
-        # Rule 1: Thin Edge (EM < thin_edge_mult * CoA) -> Strict Post-Only, cancel & abandon after 10s
-        if em_price_offset > 0 and em_price_offset < (coa_price_offset * thin_edge_mult):
-            logger.info(
-                f"SOR Fee-Aware: Thin Edge detected for {symbol} (EM_Offset=${em_price_offset:.4f} < {thin_edge_mult}*CoA=${coa_price_offset * thin_edge_mult:.4f}). "
-                f"Enforcing strict Post-Only (10s cancel limit, no Taker fee)."
-            )
-            metrics.sor_step_total.labels(symbol=symbol, step="strict_post_only").inc()
-            try:
-                order = await self.client.create_limit_order(
-                    symbol, side_norm, amount, price, params={"timeInForce": "PostOnly"}
-                )
-                if order.get("status") in ("closed", "Filled"):
-                    fill_price = Decimal(str(order.get("average", order.get("avgPrice", price))))
-                    sl_id = await self._place_sl_after_fill(
-                        symbol, side_norm, fill_price, amount, max_loss_usd, price_tick
-                    )
-                    order["sl_order_id"] = sl_id or ""
-                    return order
-
-                # Unfilled immediately -> wait up to 10s for fill, then cancel & abandon
-                order_id = order.get("id") or order.get("orderId")
-                if order_id:
-                    await asyncio.sleep(10.0)
-                    try:
-                        status = await self.client.get_order_status(order_id, symbol)
-                        if status.get("status") in ("closed", "Filled"):
-                            fill_price = Decimal(str(status.get("average", status.get("avgPrice", price))))
-                            sl_id = await self._place_sl_after_fill(
-                                symbol, side_norm, fill_price, amount, max_loss_usd, price_tick
-                            )
-                            status["sl_order_id"] = sl_id or ""
-                            return status
-                        else:
-                            await self.client.cancel_order(order_id, symbol)
-                            logger.info(f"SOR Fee-Aware: Cancelled unfilled thin-edge Post-Only order {order_id} for {symbol}")
-                    except Exception as ce:
-                        logger.warning(f"SOR Fee-Aware: error cancelling thin-edge order for {symbol}: {ce}")
-            except Exception as e:
-                if await self._handle_auth_block(symbol, e):
-                    return None
-                logger.warning(f"SOR Fee-Aware: Thin-edge Post-Only failed for {symbol}: {e}")
-            metrics.orders_rejected.labels(symbol=symbol, reason="fee_aware_thin_edge").inc()
-            return None
-
-        # Rule 2: High Expectancy (EM > 3 * CoA) -> Aggressive chase (1.0s reprice) / market fallback
-        if em_price_offset > 0 and em_price_offset > (coa_price_offset * Decimal("3.0")):
-            logger.info(
-                f"SOR Fee-Aware: High Expectancy detected for {symbol} (EM_Offset=${em_price_offset:.4f} > 3*CoA=${coa_price_offset * Decimal('3.0'):.4f}). "
-                f"Aggressively chasing limit fill with 1.0s reprice / market fallback."
-            )
-            orig_delay = self.reprice_delay_seconds
-            self.reprice_delay_seconds = 1.0
-            try:
-                return await self.execute(
-                    symbol=symbol,
-                    side=side,
-                    amount=amount,
-                    price=price,
-                    price_tick=price_tick,
-                    max_loss_usd=max_loss_usd,
-                )
-            finally:
-                self.reprice_delay_seconds = orig_delay
-
-        # Rule 3: Moderate Expectancy (or ATR unavailable) -> Standard 3-step execution
-        return await self.execute(
-            symbol=symbol,
-            side=side,
-            amount=amount,
-            price=price,
-            price_tick=price_tick,
-            max_loss_usd=max_loss_usd,
-        )
 

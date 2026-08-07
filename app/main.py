@@ -55,9 +55,19 @@ _orig_getaddrinfo = _socket.getaddrinfo
 
 def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     """Override socket.getaddrinfo — try gluetun DNS (external) then Docker DNS (internal)."""
-    # 1. Try gluetun DNS (127.0.0.1) — forwards to Cloudflare 1.1.1.1 via VPN tunnel (not poisoned)
+    # Exclude internal Docker service names & local IP/localhost
+    if (
+        not isinstance(host, str)
+        or host in {"postgres", "redis", "gluetun", "localhost", "127.0.0.1", "0.0.0.0", "9router", "prometheus", "grafana", "karsa-postgres", "karsa-redis"}
+        or host.endswith(".internal")
+        or host.startswith("172.")
+        or host.startswith("127.")
+    ):
+        return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
+    # 1. Try Docker internal DNS (127.0.0.11) — fast (2ms) resolution for both internal services & internet domains
     try:
-        ips = _dns_query("127.0.0.1", host)
+        ips = _dns_query("127.0.0.11", host)
         if ips:
             af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
             return [
@@ -71,9 +81,9 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
             ]
     except Exception:
         pass
-    # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
+    # 2. Try gluetun DNS (127.0.0.1) — fallback
     try:
-        ips = _dns_query("127.0.0.11", host)
+        ips = _dns_query("127.0.0.1", host)
         if ips:
             af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
             return [
@@ -823,7 +833,7 @@ async def regime_engine_task(
     _fetch_sem = asyncio.Semaphore(5)
 
     async def _classify_one(symbol: str) -> None:
-        """Fetch 1H candles + classify single symbol."""
+        """Fetch 1H candles + classify single symbol with conviction."""
         try:
             async with _fetch_sem:
                 candles_raw = await ohlcv_fetcher.fetch(
@@ -837,9 +847,23 @@ async def regime_engine_task(
             import numpy as _np
 
             candles = _np.array(candles_raw, dtype=float)
-            regime = await asyncio.to_thread(regime_classifier.classify, candles)
-            await redis_client.set_symbol_regime(symbol, regime.value)
-            logger.info(f"Regime {symbol}: {regime.value}")
+
+            from app.core.feature_extractor import FeatureExtractor
+            from app.core.feature_store import FeatureStore
+            from app.core.market_snapshot import MarketSnapshot
+
+            snapshot = MarketSnapshot(
+                symbol=symbol,
+                timestamp_ms=int(candles[-1][0]),
+                candles=candles,
+            )
+            store = FeatureStore(snapshot)
+            features = FeatureExtractor.extract(store)
+            regime, conviction = await asyncio.to_thread(
+                regime_classifier.classify_with_conviction, features, snapshot
+            )
+            await redis_client.set_symbol_regime(symbol, regime.value, conviction)
+            logger.info(f"Regime {symbol}: {regime.value} conviction={conviction:.3f}")
         except Exception as e:
             logger.warning(f"RegimeClassifier {symbol} error: {e}")
 

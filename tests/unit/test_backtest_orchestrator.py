@@ -1,7 +1,7 @@
 """Tests for app.backtest.orchestrator and app.backtest.formatter."""
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock
 
@@ -27,7 +27,7 @@ from app.backtest.orchestrator import (
 # ---------------------------------------------------------------------------
 
 
-NOW = datetime.now(UTC)
+NOW = datetime.now(timezone.utc)
 
 
 def _make_result(  # noqa: PLR0913

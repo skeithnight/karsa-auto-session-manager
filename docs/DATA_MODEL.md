@@ -37,6 +37,10 @@ Redis is used for high-speed state persistence, cross-component caching, and Wat
 | `risk:portfolio_cb:consecutive_loss_count` | String | None | `"3"` | Current consecutive loss streak (Phase 6) |
 | `risk:portfolio_cb:blocked_until` | String | None | `"2024-01-15T15:30:00Z"` | ISO timestamp for entry block expiry (Phase 6) |
 | `risk:portfolio_cb:start_of_day_equity` | String | None | `"1000.00"` | Equity snapshot at UTC 00:00 for daily loss calc (Phase 6) |
+| `karsa:features:{symbol}` | String | 3600s | `{"beta": 1.2, "correlation": 0.85, "atr_1h": 0.02, "volume_relative": 1.5}` | Statistical features cache (1h TTL) |
+| `karsa:ai_decision:{symbol}` | String | 14400s | `{"direction": "LONG", "confidence": 72, "model": "claude-haiku-3-5"}` | AI decision cache (4h TTL) |
+| `karsa:hybrid_decision:{symbol}` | String | None | `{"final_score": 0.78, "hard_pass": true, "soft_penalties": [...]}` | Hybrid decision engine output |
+| `karsa:settings:{key}` | String | None | Setting value as string | User settings (written by SettingsStore) |
 
 #### Shadow Mode Redis Keys
 
@@ -190,6 +194,33 @@ CREATE TABLE system_events (
 
 CREATE INDEX idx_system_events_severity ON system_events(severity, timestamp DESC);
 ```
+
+### Table: `user_settings`
+Stores persistent user settings for the Telegram bot. Written by `SettingsStore`, read by bot handlers and alpha bridge.
+
+| Column | Type | Default | Description |
+|:---|:---|:---|:---|
+| id | SERIAL PRIMARY KEY | — | Auto-incrementing ID |
+| user_id | BIGINT NOT NULL | — | Telegram user ID |
+| setting_key | VARCHAR(50) NOT NULL | — | Setting name (e.g., "max_positions", "risk_profile") |
+| setting_value | VARCHAR(100) NOT NULL | — | Setting value as string |
+| created_at | TIMESTAMPTZ | NOW() | Row creation time |
+| updated_at | TIMESTAMPTZ | NOW() | Last update time |
+
+**Indexes:**
+- `idx_user_settings_user_id` on `user_id`
+- `idx_user_settings_key` on `setting_key`
+
+**Source:** `scripts/migrations/004_user_settings.sql`
+
+### Table: `backtest_results` (Extended)
+Additional columns for hybrid backtest reports:
+
+| Column | Type | Default | Description |
+|:---|:---|:---|:---|
+| hybrid_score | DECIMAL(5,4) | NULL | Hybrid decision engine score (0-1) |
+| guardrail_flags | JSONB | NULL | Hard/soft guardrail evaluation results |
+| statistical_features | JSONB | NULL | Snapshot of statistical features at entry |
 
 ---
 

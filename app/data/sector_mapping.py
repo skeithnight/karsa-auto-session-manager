@@ -98,12 +98,3 @@ def get_sector(symbol: str) -> str:
         logger.warning(f"Sector mapping: unknown symbol {symbol}")
         return "UNKNOWN"
     return sector
-
-
-def all_classified(symbols: list[str]) -> bool:
-    """Check that all symbols have a sector classification."""
-    unclassified = [s for s in symbols if s not in SECTOR_MAP]
-    if unclassified:
-        logger.warning(f"Unclassified symbols: {unclassified}")
-        return False
-    return True

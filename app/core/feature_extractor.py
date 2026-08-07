@@ -48,8 +48,12 @@ class FeatureExtractor:
     @staticmethod
     def extract(store: FeatureStore) -> FeatureVector:
         """Build the FeatureVector using cached values from the FeatureStore."""
-        return FeatureVector(
-            close=float(store.snapshot.get_close_prices()[-1]) if len(store.snapshot.get_close_prices()) > 0 else None,
+        import logging
+        _logger = logging.getLogger("karsa.feature_extractor")
+
+        closes = store.snapshot.get_close_prices()
+        fv = FeatureVector(
+            close=float(closes[-1]) if len(closes) > 0 else None,
             ema_20=store.get_ema(20),
             ema_200=store.get_ema(200),
             sma_20=store.get_sma(20),
@@ -64,3 +68,12 @@ class FeatureExtractor:
             cvd_slope=store.snapshot.cvd_slope,
             spread_pct=store.get_spread_pct()
         )
+
+        # Log which fields are None for debugging
+        none_fields = [k for k, v in fv.__dict__.items() if v is None]
+        if none_fields:
+            _logger.debug(
+                "FeatureExtractor: %d fields are None: %s (candles=%d)",
+                len(none_fields), none_fields, len(closes),
+            )
+        return fv

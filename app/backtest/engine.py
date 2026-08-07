@@ -8,7 +8,7 @@ Mirrors ShadowAPM's worst_price_seen / funding / fee logic exactly.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import numpy as np
@@ -19,6 +19,16 @@ from app.alpha.strategy_router import StrategyRouter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 
 FUNDING_INTERVAL_BARS: int = 8  # every 8 candles (1h candles)
+
+
+@dataclass(frozen=True)
+class EquityPoint:
+    """Single point on the equity curve."""
+
+    timestamp_ms: int
+    equity: Decimal
+    drawdown_pct: float
+    position_count: int
 
 
 @dataclass(frozen=True)
@@ -45,6 +55,11 @@ class BacktestReport:
     exit_time: datetime | None
     risk_profile: RiskProfile
     trade_taken: bool
+    equity_curve: tuple[EquityPoint, ...] = ()
+    benchmark_return_pct: float = 0.0
+    alpha: float = 0.0
+    beta: float = 0.0
+    information_ratio: float = 0.0
 
 
 class BacktestEngine:
@@ -99,6 +114,8 @@ class BacktestEngine:
         micro_candles: list[list] | None = None,
         historical_funding: list | None = None,
         historical_oi: list | None = None,
+        initial_equity: Decimal = Decimal("10000"),
+        benchmark_closes: list[float] | None = None,
     ) -> list[BacktestReport]:
         """Run backtest for a single symbol over historical candles.
 
@@ -112,6 +129,11 @@ class BacktestEngine:
 
         arr = np.array(candles, dtype=float)
         reports: list[BacktestReport] = []
+
+        # Equity tracking
+        equity = initial_equity
+        peak_equity = initial_equity
+        equity_curve: list[EquityPoint] = []
 
         # Lower gate when microstructure data is missing — candle-only scoring
         # cannot reach the normal 65 threshold (CHOP max=20, TREND max=60).
@@ -150,7 +172,7 @@ class BacktestEngine:
             for direction in directions:
                 # Live gate: Session block (Asian dead zone)
                 if self._enable_live_gates:
-                    candle_ts = datetime.fromtimestamp(context_candles[-1][0] / 1000, tz=UTC)
+                    candle_ts = datetime.fromtimestamp(context_candles[-1][0] / 1000, tz=timezone.utc)
                     hour = candle_ts.hour
                     if 0 <= hour < 7 and symbol not in ("BTC/USDT", "ETH/USDT"):
                         continue  # Skip altcoin entries during Asian session
@@ -186,6 +208,44 @@ class BacktestEngine:
                         candles=arr,
                         atr=Decimal(str(round(atr_array[idx], 8))),
                     )
+
+                    # Update equity with trade PnL
+                    equity += report.pnl_net
+                    peak_equity = max(peak_equity, equity)
+                    drawdown_pct = float((peak_equity - equity) / peak_equity) if peak_equity > 0 else 0.0
+
+                    equity_curve.append(EquityPoint(
+                        timestamp_ms=int(arr[idx, 0]),
+                        equity=equity,
+                        drawdown_pct=drawdown_pct,
+                        position_count=1,
+                    ))
+
+                    # Rebuild report with equity curve
+                    report = BacktestReport(
+                        symbol=report.symbol,
+                        direction=report.direction,
+                        regime=report.regime,
+                        score=report.score,
+                        entry_price=report.entry_price,
+                        exit_price=report.exit_price,
+                        exit_reason=report.exit_reason,
+                        sl_price=report.sl_price,
+                        tp_price=report.tp_price,
+                        amount=report.amount,
+                        size_multiplier=report.size_multiplier,
+                        pnl_gross=report.pnl_gross,
+                        pnl_net=report.pnl_net,
+                        total_fees=report.total_fees,
+                        total_funding=report.total_funding,
+                        bars_held=report.bars_held,
+                        entry_time=report.entry_time,
+                        exit_time=report.exit_time,
+                        risk_profile=report.risk_profile,
+                        trade_taken=report.trade_taken,
+                        equity_curve=tuple(equity_curve),
+                    )
+
                     reports.append(report)
                     idx += max(report.bars_held, 1) + 1
                     break
@@ -226,6 +286,81 @@ class BacktestEngine:
             if not trade_taken:
                 idx += 1
 
+        # Calculate benchmark comparison if provided
+        if benchmark_closes and len(benchmark_closes) >= 2:
+            benchmark_return = (benchmark_closes[-1] - benchmark_closes[0]) / benchmark_closes[0]
+            strategy_return = float(equity - initial_equity) / float(initial_equity) if initial_equity > 0 else 0.0
+
+            # Alpha = strategy return - benchmark return
+            alpha = strategy_return - benchmark_return
+
+            # Beta = covariance(strategy, benchmark) / variance(benchmark)
+            if len(benchmark_closes) > 1:
+                bench_returns = [
+                    (benchmark_closes[i] - benchmark_closes[i-1]) / benchmark_closes[i-1]
+                    for i in range(1, len(benchmark_closes))
+                ]
+                if bench_returns:
+                    bench_mean = sum(bench_returns) / len(bench_returns)
+                    bench_var = sum((r - bench_mean) ** 2 for r in bench_returns) / len(bench_returns)
+
+                    # Align strategy returns with benchmark
+                    strategy_returns = []
+                    for r in reports:
+                        if r.trade_taken and r.exit_price and r.entry_price:
+                            if r.direction == "LONG":
+                                ret = float(r.exit_price - r.entry_price) / float(r.entry_price)
+                            else:
+                                ret = float(r.entry_price - r.exit_price) / float(r.entry_price)
+                            strategy_returns.append(ret)
+
+                    if strategy_returns and bench_var > 0:
+                        strat_mean = sum(strategy_returns) / len(strategy_returns)
+                        cov = sum((s - strat_mean) * (b - bench_mean) for s, b in zip(strategy_returns, bench_returns[:len(strategy_returns)])) / len(strategy_returns)
+                        beta = cov / bench_var
+
+                        # Information ratio = alpha / tracking error
+                        tracking_error = bench_var ** 0.5
+                        information_ratio = alpha / tracking_error if tracking_error > 0 else 0.0
+                    else:
+                        beta = 0.0
+                        information_ratio = 0.0
+                else:
+                    beta = 0.0
+                    information_ratio = 0.0
+
+                # Update all reports with benchmark data
+                updated_reports = []
+                for r in reports:
+                    updated_reports.append(BacktestReport(
+                        symbol=r.symbol,
+                        direction=r.direction,
+                        regime=r.regime,
+                        score=r.score,
+                        entry_price=r.entry_price,
+                        exit_price=r.exit_price,
+                        exit_reason=r.exit_reason,
+                        sl_price=r.sl_price,
+                        tp_price=r.tp_price,
+                        amount=r.amount,
+                        size_multiplier=r.size_multiplier,
+                        pnl_gross=r.pnl_gross,
+                        pnl_net=r.pnl_net,
+                        total_fees=r.total_fees,
+                        total_funding=r.total_funding,
+                        bars_held=r.bars_held,
+                        entry_time=r.entry_time,
+                        exit_time=r.exit_time,
+                        risk_profile=r.risk_profile,
+                        trade_taken=r.trade_taken,
+                        equity_curve=r.equity_curve,
+                        benchmark_return_pct=round(benchmark_return * 100, 2),
+                        alpha=round(alpha, 4),
+                        beta=round(beta, 4),
+                        information_ratio=round(information_ratio, 4),
+                    ))
+                reports = updated_reports
+
         return reports
 
     def _determine_directions(self, regime: MarketRegime) -> list[str]:
@@ -264,7 +399,7 @@ class BacktestEngine:
         last_funding_bar = entry_candle_idx
         bars_held = 0
         ts_ms = entry_candle[0]
-        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=UTC)
+        entry_time = datetime.fromtimestamp(ts_ms / 1000, tz=timezone.utc)
 
         entry_fee_rate = self._maker_fee if profile.use_post_only else self._taker_fee
 
@@ -460,7 +595,7 @@ class BacktestEngine:
         bars_held,
         accumulated_funding,
     ) -> BacktestReport:
-        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=UTC)
+        exit_time = datetime.fromtimestamp(exit_ts_ms / 1000, tz=timezone.utc)
 
         if direction == "LONG":
             pnl_gross = (exit_price - entry_price) * amount

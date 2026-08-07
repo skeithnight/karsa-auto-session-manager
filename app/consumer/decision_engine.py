@@ -8,13 +8,16 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import numpy as np
 
 from app.alpha.evidence_collector import EvidenceCollector
-from app.alpha.regime_classifier import MarketRegime, RegimeClassifier
+from app.alpha.ev_scorer import EVScorer
+from app.alpha.ev_threshold import DynamicThreshold
+from app.alpha.rejected_signal_tracker import RejectedSignalTracker
+from app.alpha.regime_classifier import MarketRegime
 from app.alpha.market_analyzer import MarketAnalyzer
 from app.alpha.strategy_router import StrategyRouter
 from app.core.decision_context import DecisionContext
@@ -28,7 +31,6 @@ from app.learning.statistical_learning import StatisticalLearning
 from app.alpha.sector_filter import SectorRotationFilter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 from app.risk.kelly_sizer import KellySizer
-from app.research.ranking_engine import RankingEngine, PromotionPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +145,11 @@ class DecisionEngine:
         self._sector_filter = SectorRotationFilter()
         self._background_tasks = set()
 
+        # Phase 1: EV Composite Scoring (parallel path for A/B comparison)
+        self._ev_scorer = EVScorer()
+        self._ev_threshold = DynamicThreshold()
+        self._rejected_tracker = RejectedSignalTracker(redis_client)
+
         self._router = StrategyRouter(
             volatility_scaling=True,
             collector=self._evidence_collector,
@@ -206,26 +213,6 @@ class DecisionEngine:
         except Exception:
             pass
         return 1500.0
-
-    @staticmethod
-    def compute_elo(rating_a: float, rating_b: float, score_a: float, k_factor: float = 32.0) -> tuple[float, float]:
-        """Compute ELO rating update.
-
-        Args:
-            rating_a: Current ELO of strategy A.
-            rating_b: Current ELO of strategy B (or baseline 1500).
-            score_a: Score for A (1.0 = win, 0.5 = draw, 0.0 = loss).
-            k_factor: K-factor for update speed.
-
-        Returns:
-            Tuple of (new_rating_a, new_rating_b).
-        """
-        import math
-        expected_a = 1.0 / (1.0 + math.pow(10, (rating_b - rating_a) / 400.0))
-        expected_b = 1.0 - expected_a
-        new_a = rating_a + k_factor * (score_a - expected_a)
-        new_b = rating_b + k_factor * ((1.0 - score_a) - expected_b)
-        return new_a, new_b
 
     async def _get_risk_pct(self) -> Decimal:
         """Read risk_pct from Redis karsa:auto:config. Default10%."""
@@ -295,6 +282,7 @@ class DecisionEngine:
         ranking_decision = await self._check_ranking_gate()
         if ranking_decision == "REJECT":
             logger.debug("skip %s — RankingEngine REJECT", symbol)
+            await self._track_rejection(symbol, "LONG", "ranking_reject", regime=regime if 'regime' in dir() else None)
             return None
         # ─────────────────────────────────────────────────────────────────
 
@@ -328,22 +316,33 @@ class DecisionEngine:
         # ─── SESSION HARD-BLOCK (Asian Dead Zone) ────────────────────────
         # Block altcoin entries during low-liquidity Asian session.
         # Cash is a position — the system should sleep during dead zones.
-        now_utc = datetime.now(UTC)
+        now_utc = datetime.now(timezone.utc)
         current_hour = now_utc.hour
         try:
             from app.core.config import get_settings
             _s = get_settings()
             if _s.session_block_enabled and _s.session_block_start_hour <= current_hour < _s.session_block_end_hour:
-                # Allow BTC/ETH if configured
-                if not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT"):
+                # Allow BTC/ETH and screened dynamic universe candidates (ACCUMULATION / MOMENTUM_SQUEEZE)
+                is_screened_candidate = False
+                if self._redis:
+                    try:
+                        raw_univ = await self._redis.get("system:universe:symbols")
+                        if raw_univ:
+                            u_data = _json.loads(raw_univ)
+                            is_screened_candidate = symbol in u_data.get("symbols", [])
+                    except Exception:
+                        pass
+
+                if not is_screened_candidate and (not _s.session_block_allow_btc_eth or symbol not in ("BTC/USDT", "ETH/USDT")):
                     logger.warning(
-                        "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d UTC). Altcoin entries blocked.",
+                        "SESSION BLOCK: %s rejected — Asian session low liquidity (hour=%d, block=%d-%d timezone.utc). Altcoin entries blocked.",
                         symbol, current_hour, _s.session_block_start_hour, _s.session_block_end_hour,
                     )
                     ObservabilityLogger.log_reject_reason(
                         symbol, "Session Block",
                         {"hour": current_hour, "block_start": _s.session_block_start_hour, "block_end": _s.session_block_end_hour}
                     )
+                    await self._track_rejection(symbol, "LONG", "session_block")
                     return None
         except Exception as e:
             logger.debug("Session block check failed for %s: %s", symbol, e)
@@ -386,6 +385,7 @@ class DecisionEngine:
                                 symbol, float(spread * 100)
                             )
                             ObservabilityLogger.log_reject_reason(symbol, "Spread Balloon Rejection", {"spread_pct": float(spread * 100)})
+                            await self._track_rejection(symbol, "LONG", "spread_balloon", price=Decimal(str(arr[-1][4])) if 'arr' in dir() else None)
                             return None
             except Exception as e:
                 logger.debug("Spread balloon check failed for %s: %s", symbol, e)
@@ -430,6 +430,26 @@ class DecisionEngine:
                 await self._redis.set(key, regime.value)
             except Exception as e:
                 logger.warning("Failed to save regime to redis for %s: %s", symbol, e)
+
+        # ─── PHASE 1: EV COMPOSITE SCORING (primary decision path) ──────
+        # Compute EV score for both directions — drives trade decisions
+        ev_scores: dict[str, tuple[float, float]] = {}  # direction -> (ev_score, threshold)
+        for dir_name in ["LONG", "SHORT"]:
+            try:
+                ev_score, ev_threshold = await self._compute_ev_score(
+                    symbol=symbol,
+                    direction=dir_name,
+                    regime=regime,
+                    features=features,
+                    funding_rate=funding_rate,
+                    oi_change=oi_change,
+                    multi_tf_agrees=True,  # Will be refined per-direction
+                    conviction=0.5,
+                )
+                ev_scores[dir_name] = (ev_score, ev_threshold)
+            except Exception as e:
+                logger.debug("EV scoring failed for %s %s: %s", symbol, dir_name, e)
+        # ─────────────────────────────────────────────────────────────────
 
         # Update Sector Rotation returns (4H return)
         if len(arr) >= 4:
@@ -485,15 +505,17 @@ class DecisionEngine:
 
             # Multi-Timeframe Trend Alignment Block
             if self._multi_tf:
-                mtf_res = await self._multi_tf.check(symbol, direction)
-                if mtf_res.get("blocked"):
-                    logger.info(
-                        "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
-                        symbol,
-                        direction,
-                    )
-                    ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
-                    continue
+                ev_sc, ev_th = ev_scores.get(direction, (0.0, 0.55))
+                if ev_sc < ev_th:
+                    mtf_res = await self._multi_tf.check(symbol, direction)
+                    if mtf_res.get("blocked"):
+                        logger.info(
+                            "evaluate: %s %s blocked by 4H Multi-Timeframe filter",
+                            symbol,
+                            direction,
+                        )
+                        ObservabilityLogger.log_reject_reason(symbol, "Multi-Timeframe Filter", {"direction": direction})
+                        continue
 
                 # Momentum Exemption: if the token is up/down > 8% in 24h, it has detached from the macro trend.
                 if len(arr) >= 24:
@@ -522,11 +544,22 @@ class DecisionEngine:
             metrics.funnel_raw_signals.inc()
 
             t_score = time.perf_counter()
+            # Fetch regime conviction from Redis (written by classification loop)
+            conviction = 0.5
+            if self._redis is not None:
+                try:
+                    _conv_key = f"system:regime:{symbol.replace('/', ':')}:conviction"
+                    raw_conv = await self._redis.get(_conv_key)
+                    if raw_conv is not None:
+                        conviction = float(raw_conv)
+                except Exception:
+                    pass
             context, vol_factor = await self._router.evaluate_signal(
                 features=features,
                 regime=regime,
                 direction=direction,
                 symbol=symbol,
+                conviction=conviction,
             )
             stage_timings["strategy_scoring"] = time.perf_counter() - t_score
             metrics.pipeline_stage_latency_seconds.labels(stage="strategy_scoring").observe(stage_timings["strategy_scoring"])
@@ -554,19 +587,7 @@ class DecisionEngine:
                 except Exception:
                     logger.debug("evaluate: symbol performance multiplier failed for %s", symbol)
 
-            # ELO-based strategy confidence: boost/penalize based on strategy's historical ELO
-            # ELO > 1550 = winning strategy (+5% boost), ELO < 1450 = losing strategy (-5% penalty)
-            strategy_key = f"{regime.value}:{direction}"
-            elo = await self._get_strategy_elo(strategy_key)
-            if elo != 1500.0:
-                elo_factor = 1.0 + (elo - 1500.0) / 2000.0  # ±5% at ±100 ELO
-                elo_factor = max(0.85, min(1.15, elo_factor))  # Clamp to ±15%
-                if elo_factor != 1.0:
-                    logger.info(
-                        "evaluate: %s %s ELO %.0f → factor %.3fx (score %.1f -> %.1f)",
-                        symbol, direction, elo, elo_factor, score, score * elo_factor,
-                    )
-                    score *= elo_factor
+
 
             # Correlation-Based Sizing: read correlation data from PRM's rolling correlation check
             # and adjust score based on how many open positions are correlated
@@ -619,7 +640,7 @@ class DecisionEngine:
 
             # --- Sprint 1: Funding Rate Carry Strategy ---
             # If funding is extremely negative for 3+ periods, add carry bonus
-            if self._redis is not None and direction == "LONG":
+            if self._redis is not None:
                 try:
                     from app.core.config import get_settings
                     _s = get_settings()
@@ -704,7 +725,6 @@ class DecisionEngine:
             # Penalize tokens with upcoming large token unlocks (sell pressure)
             if self._redis is not None:
                 try:
-                    from datetime import timedelta
                     unlock_penalty = await self._check_token_unlock(symbol, direction)
                     if unlock_penalty > 0:
                         score -= unlock_penalty
@@ -773,7 +793,7 @@ class DecisionEngine:
                     logger.debug(f"evaluate: HMM signal check failed for {symbol}: {e}")
 
             # Session / Time-of-Day Volatility Filtering
-            now_utc = datetime.now(UTC)
+            now_utc = datetime.now(timezone.utc)
             hour = now_utc.hour
             if 0 <= hour < 7:
                 session_mult, session_name = 0.7, "ASIA"
@@ -829,7 +849,41 @@ class DecisionEngine:
                 dip_buy_boost,
             )
 
-            if score >= effective_gate:
+            # ─── EV-DRIVEN DECISION (primary path) ──────────────────────
+            # Use EV score as primary decision metric, old gate as fallback
+            ev_score, ev_threshold = ev_scores.get(direction, (0.0, 0.55))
+            ev_passed = ev_score >= ev_threshold
+            old_gate_passed = score >= effective_gate
+
+            # Decision: EV score if available, fallback to old gate
+            if ev_scores and ev_passed:
+                decision_source = "ev_scorer"
+                logger.info(
+                    "evaluate: %s %s EV PASSED ev=%.3f >= threshold=%.3f (old gate=%.1f score=%.1f)",
+                    symbol, direction, ev_score, ev_threshold, effective_gate, score,
+                )
+            elif old_gate_passed:
+                # Fallback: old gate when EV scoring failed or returned no data
+                decision_source = "legacy_gate"
+                logger.info(
+                    "evaluate: %s %s LEGACY GATE PASSED score=%.1f >= gate=%.1f (ev=%.3f)",
+                    symbol, direction, score, effective_gate, ev_score,
+                )
+            else:
+                # Both failed — reject
+                decision_source = "rejected"
+                logger.info(
+                    "evaluate: %s %s REJECTED ev=%.3f < threshold=%.3f AND score=%.1f < gate=%.1f",
+                    symbol, direction, ev_score, ev_threshold, score, effective_gate,
+                )
+                # Track rejection with EV for post-hoc analysis
+                await self._track_rejection(
+                    symbol, direction, "low_score",
+                    regime=regime, price=Decimal(str(arr[-1][4])),
+                )
+                continue
+
+            if decision_source != "rejected":
                 # Fire AI Shadow Scoring ONLY for signals that passed local pre-filter
                 if self._crypto_analyst is not None and self._trade_store is not None:
                     import asyncio
@@ -914,12 +968,6 @@ class DecisionEngine:
                 )
 
                 # Don't return yet — continue to check other direction for higher EV
-            else:
-                ObservabilityLogger.log_reject_reason(
-                    symbol,
-                    "Low Score",
-                    {"score": score, "gate": effective_gate, "direction": direction}
-                )
 
         # Return highest-EV signal across all directions (Phase 2: Find Edge)
         if best_signal is not None:
@@ -1050,6 +1098,115 @@ class DecisionEngine:
         if regime in (MarketRegime.TREND_BEAR, MarketRegime.HYPER_BEAR):
             return ["SHORT"]
         return ["LONG", "SHORT"]
+
+    async def _compute_ev_score(
+        self,
+        symbol: str,
+        direction: str,
+        regime: MarketRegime,
+        features: object,
+        funding_rate: float | None,
+        oi_change: float | None,
+        multi_tf_agrees: bool,
+        conviction: float,
+    ) -> tuple[float, str]:
+        """Phase 1: Compute EV score using EVScorer.
+
+        Returns:
+            (ev_score, threshold) — both floats for comparison with existing score.
+        """
+        import numpy as np
+
+        # Extract feature values
+        rsi = float(features.rsi) if hasattr(features, 'rsi') and features.rsi is not None else 50.0
+        macd_hist = float(features.macd_hist) if hasattr(features, 'macd_hist') and features.macd_hist is not None else 0.0
+        ema_dist = float(features.ema_distance) if hasattr(features, 'ema_distance') and features.ema_distance is not None else 0.0
+        skew = float(features.skew) if hasattr(features, 'skew') and features.skew is not None else 0.0
+        cvd_slope = float(features.cvd_slope) if hasattr(features, 'cvd_slope') and features.cvd_slope is not None else 0.0
+        depth_ratio = float(features.depth_ratio) if hasattr(features, 'depth_ratio') and features.depth_ratio is not None else 1.0
+        spread_pct = float(features.spread_pct) if hasattr(features, 'spread_pct') and features.spread_pct is not None else 0.001
+
+        # Get historical win rate from trade memory
+        historical_win_rate = 0.5
+        if self._trade_memory is not None:
+            try:
+                recent = await self._trade_memory.get_recent(symbol, count=20)
+                if recent:
+                    wins = sum(1 for t in recent if t.get("pnl_pct", 0) > 0)
+                    historical_win_rate = wins / len(recent)
+            except Exception:
+                pass
+
+        # Get dynamic threshold
+        drawdown_pct = 0.0
+        if self._redis is not None:
+            try:
+                import json as _json
+                raw_peak = await self._redis.get("global:state:equity_peak")
+                if raw_peak and self._wallet_balance > 0:
+                    equity_peak = float(raw_peak)
+                    if equity_peak > 0:
+                        drawdown_pct = (equity_peak - float(self._wallet_balance)) / equity_peak
+            except Exception:
+                pass
+
+        hour_utc = datetime.now(timezone.utc).hour
+        threshold = await self._ev_threshold.get_threshold(
+            redis_client=self._redis,
+            drawdown_pct=drawdown_pct,
+            recent_win_rate=historical_win_rate,
+            hour_utc=hour_utc,
+            regime=regime.value if hasattr(regime, "value") else str(regime),
+        )
+
+        # Compute EV score
+        ev_score, components = self._ev_scorer.score(
+            regime=regime.value,
+            direction=direction,
+            spread_pct=spread_pct,
+            rsi=rsi,
+            macd_hist=macd_hist,
+            ema_dist=ema_dist,
+            skew=skew,
+            cvd_slope=cvd_slope,
+            depth_ratio=depth_ratio,
+            funding_rate=funding_rate if funding_rate is not None else 0.0,
+            multi_tf_agrees=multi_tf_agrees,
+            historical_win_rate=historical_win_rate,
+            regime_conviction=conviction,
+            oi_change_pct=oi_change if oi_change is not None else 0.0,
+            hour_utc=hour_utc,
+        )
+
+        logger.debug(
+            "EVScorer: %s %s ev=%.3f threshold=%.3f components=%s",
+            symbol, direction, ev_score, threshold, components,
+        )
+
+        return ev_score, threshold
+
+    async def _track_rejection(
+        self,
+        symbol: str,
+        direction: str,
+        reject_reason: str,
+        regime: MarketRegime | None = None,
+        price: object = None,
+    ) -> None:
+        """Track rejected signal with hypothetical EV for post-hoc analysis."""
+        ev_scores_local = getattr(self, '_ev_scores_cache', {})
+        ev_score = ev_scores_local.get(direction, (0.0, 0.0))[0]
+        try:
+            await self._rejected_tracker.track(
+                symbol=symbol,
+                direction=direction,
+                reject_reason=reject_reason,
+                hypothetical_ev=ev_score,
+                regime=regime.value if regime else None,
+                price=price,
+            )
+        except Exception:
+            pass
 
     async def _build_signal(
         self,

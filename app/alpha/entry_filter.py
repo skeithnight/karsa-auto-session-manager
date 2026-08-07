@@ -9,7 +9,7 @@ liquidity sweeps naturally widen the book during micro-structure events.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from loguru import logger
 
@@ -125,11 +125,11 @@ class EntryFilter:
                 )
                 return False, f"depth ratio {ratio:.2f} out of range"
 
-        # 4. Time-of-day (00:00–06:00 UTC blocked — dead Asian session)
-        t = now_utc or datetime.now(UTC)
+        # 4. Time-of-day (00:00–06:00 timezone.utc blocked — dead Asian session)
+        t = now_utc or datetime.now(timezone.utc)
         if self.blocked_hour_start <= t.hour < self.blocked_hour_end:
             logger.debug(f"check: returning False (blocked hour {t.hour})")
-            return False, f"blocked hour {t.hour}:00 UTC"
+            return False, f"blocked hour {t.hour}:00 timezone.utc"
 
         # 5. Existing position
         if has_position:

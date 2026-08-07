@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -217,7 +217,7 @@ class BacktestWorker:
             "trades_taken": sum(1 for r in reports if r.trade_taken),
             "total_pnl": str(sum(r.pnl_net for r in reports if r.trade_taken)),
             "error": error,
-            "timestamp": datetime.now(UTC).isoformat(),
+            "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         await self._redis.redis.publish(EVENT_CHANNEL, json.dumps(event))
 

@@ -1,0 +1,21 @@
+{
+  "analysis_date": "2026-07-31T13:04:42.677625+00:00",
+  "lead_exchange": "binance",
+  "lag_exchange": "bybit",
+  "symbols": [
+    {
+      "symbol": "BTC/USDT",
+      "lead_exchange": "binance",
+      "lag_exchange": "bybit",
+      "total_moves": 346,
+      "lead_count": 346,
+      "lead_pct": 100.0,
+      "avg_lead_seconds": 1.14,
+      "median_lead_seconds": 1.0,
+      "p95_lead_seconds": 1.53,
+      "arb_capture_rate": 1.0,
+      "statistical_significance": 0.0,
+      "edge_exists": true
+    }
+  ]
+}

@@ -128,6 +128,61 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         trail_atr_mult=Decimal("1.5"),
         sl_atr_buffer=Decimal("1.5"),
     ),
+    # Phase 2: Transition states — most profitable moment to trade
+    MarketRegime.TRANSITION_BULL: RiskProfile(
+        regime="TRANSITION_BULL",
+        size_multiplier=Decimal("1.2"),      # Larger than normal — best setup
+        take_profit_type="TRAILING",
+        stop_loss_type="TIGHT",
+        max_hold_time_mins=1440,             # 24 hours — let the trend develop
+        use_post_only=False,                 # Speed matters more than fees
+        trail_atr_mult=Decimal("2.5"),
+        sl_atr_buffer=Decimal("1.2"),
+    ),
+    MarketRegime.TRANSITION_BEAR: RiskProfile(
+        regime="TRANSITION_BEAR",
+        size_multiplier=Decimal("1.2"),
+        take_profit_type="TRAILING",
+        stop_loss_type="TIGHT",
+        max_hold_time_mins=1440,
+        use_post_only=False,
+        trail_atr_mult=Decimal("2.5"),
+        sl_atr_buffer=Decimal("1.2"),
+    ),
+}
+
+# Phase 2: CHOP sub-strategy profiles (used by strategy_router for CHOP regime)
+CHOP_PROFILES = {
+    "CHOP_CARRY": RiskProfile(
+        regime="CHOP_CARRY",
+        size_multiplier=Decimal("0.5"),      # Half size for carry (low risk)
+        take_profit_type="FIXED",
+        stop_loss_type="TIGHT",
+        max_hold_time_mins=480,              # 8 hours (one funding period)
+        use_post_only=True,
+        trail_atr_mult=Decimal("1.0"),
+        sl_atr_buffer=Decimal("1.0"),
+    ),
+    "CHOP_MEAN_REVERT": RiskProfile(
+        regime="CHOP_MEAN_REVERT",
+        size_multiplier=Decimal("0.4"),
+        take_profit_type="FIXED",
+        stop_loss_type="TIGHT",
+        max_hold_time_mins=240,              # 4 hours (up from 30 min)
+        use_post_only=True,
+        trail_atr_mult=Decimal("1.5"),
+        sl_atr_buffer=Decimal("1.0"),
+    ),
+    "CHOP_SWEEP": RiskProfile(
+        regime="CHOP_SWEEP",
+        size_multiplier=Decimal("0.3"),
+        take_profit_type="SCALP",
+        stop_loss_type="MICRO",
+        max_hold_time_mins=15,               # Quick in-and-out
+        use_post_only=False,                 # Market order for speed
+        trail_atr_mult=Decimal("0.5"),
+        sl_atr_buffer=Decimal("0.5"),
+    ),
 }
 
 

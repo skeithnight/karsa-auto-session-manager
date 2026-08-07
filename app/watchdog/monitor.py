@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from loguru import logger
@@ -140,7 +140,7 @@ class Watchdog:
             logger.debug("_check_heartbeat: returning None")
             return
 
-        now = datetime.now(UTC)
+        now = datetime.now(timezone.utc)
         stale_exchanges = []
         for exchange, ts in heartbeats.items():
             try:

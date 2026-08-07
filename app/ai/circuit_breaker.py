@@ -2,6 +2,7 @@
 
 Protects the trading engine from AI service outages.
 """
+
 from __future__ import annotations
 
 import time
@@ -17,7 +18,7 @@ class AICircuitBreaker:
         self.reset_timeout = reset_timeout_seconds
 
         self.failures = 0
-        self.state = "CLOSED" # CLOSED (healthy), OPEN (failing), HALF_OPEN (testing recovery)
+        self.state = "CLOSED"  # CLOSED (healthy), OPEN (failing), HALF_OPEN (testing recovery)
         self.last_failure_time = 0.0
 
     def allow_request(self) -> bool:

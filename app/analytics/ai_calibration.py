@@ -13,10 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections import defaultdict
 from typing import Any
-
-from loguru import logger as log_logger
 
 from app.alpha.ai_outcome_logger import AIOoutcomeLogger
 

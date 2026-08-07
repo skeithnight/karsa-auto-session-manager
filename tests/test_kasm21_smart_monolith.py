@@ -1,11 +1,6 @@
 """Unit tests for KASM 2.1 Smart Monolith components (MarketState, MarketAnalyzer, Formatter updates)."""
 
-try:
-    from datetime import UTC
-except ImportError:
-    from datetime import timezone
-    UTC = timezone.utc  # type: ignore[misc]
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 try:
     import pytest

@@ -17,6 +17,11 @@ import signal
 import sys
 import time
 
+import socket
+from app.main import _bypass_getaddrinfo
+
+socket.getaddrinfo = _bypass_getaddrinfo
+
 from app.bot.alert_service import AlertService
 from app.bot.runner import run_bot
 from app.core.config import get_settings
@@ -187,6 +192,7 @@ async def telemetry_listener_task(
         except Exception as e:
             logger.error("telemetry_listener_task error: %s", e)
             await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
     logger.debug("telemetry_listener_task: returning None")
 
@@ -201,7 +207,7 @@ async def shadow_feedback_task(
     """Periodically queries shadow performance and disables unprofitable regimes for Live."""
     logger.debug("shadow_feedback_task: entering")
     import json
-    from datetime import UTC, datetime, timedelta
+    from datetime import datetime, timedelta, timezone
 
     from sqlalchemy import text
 
@@ -211,7 +217,7 @@ async def shadow_feedback_task(
     while not kill_switch.is_set():
         try:
             logger.info("shadow_feedback_task: running Auto-Adjustment check")
-            current_date_utc = datetime.now(UTC)
+            current_date_utc = datetime.now(timezone.utc)
             cutoff_date = current_date_utc - timedelta(days=7)
 
             regime_stats = {}
@@ -339,7 +345,7 @@ async def shadow_feedback_task(
                         try:
                             disabled_at = datetime.fromisoformat(disabled_at_str)
                             if disabled_at.tzinfo is None:
-                                disabled_at = disabled_at.replace(tzinfo=UTC)
+                                disabled_at = disabled_at.replace(tzinfo=timezone.utc)
                                 
                             days_disabled = (current_date_utc - disabled_at).total_seconds() / 86400.0
                             if days_disabled >= 14:

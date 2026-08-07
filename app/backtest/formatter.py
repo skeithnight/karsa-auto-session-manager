@@ -38,6 +38,23 @@ class BacktestSummary:
     sharpe_ratio: float = 0.0
     sortino_ratio: float = 0.0
     regime_expectancy: dict[str, dict[str, float]] = field(default_factory=dict)
+    rolling_sharpe_30d: float = 0.0
+    rolling_sharpe_90d: float = 0.0
+    rolling_max_drawdown: float = 0.0
+    max_drawdown_pct: float = 0.0
+    total_return_pct: float = 0.0
+
+
+@dataclass
+class RollingMetrics:
+    """Rolling window metrics for equity curve analysis."""
+
+    window_days: int
+    sharpe_ratio: float
+    max_drawdown_pct: float
+    win_rate: float
+    total_pnl: float
+    trade_count: int
 
 
 def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSummary:
@@ -109,6 +126,99 @@ def compute_backtest_summary(results: list[BacktestTradeResult]) -> BacktestSumm
     return s
 
 
+def compute_rolling_metrics(
+    equity_curve: list[tuple[int, float]],
+    window_days: int = 30,
+) -> RollingMetrics:
+    """Compute rolling metrics over a window of the equity curve.
+
+    Args:
+        equity_curve: List of (timestamp_ms, equity) tuples
+        window_days: Rolling window size in days
+
+    Returns:
+        RollingMetrics with Sharpe, drawdown, win rate for the window
+    """
+    import math
+
+    if len(equity_curve) < 2:
+        return RollingMetrics(
+            window_days=window_days,
+            sharpe_ratio=0.0,
+            max_drawdown_pct=0.0,
+            win_rate=0.0,
+            total_pnl=0.0,
+            trade_count=0,
+        )
+
+    # Filter to window
+    latest_ts = equity_curve[-1][0]
+    window_ms = window_days * 86400 * 1000
+    window_points = [
+        (ts, eq) for ts, eq in equity_curve
+        if ts >= latest_ts - window_ms
+    ]
+
+    if len(window_points) < 2:
+        return RollingMetrics(
+            window_days=window_days,
+            sharpe_ratio=0.0,
+            max_drawdown_pct=0.0,
+            win_rate=0.0,
+            total_pnl=0.0,
+            trade_count=0,
+        )
+
+    # Calculate returns between points
+    returns = []
+    for i in range(1, len(window_points)):
+        prev_eq = window_points[i - 1][1]
+        curr_eq = window_points[i][1]
+        if prev_eq > 0:
+            ret = (curr_eq - prev_eq) / prev_eq
+            returns.append(ret)
+
+    if not returns:
+        return RollingMetrics(
+            window_days=window_days,
+            sharpe_ratio=0.0,
+            max_drawdown_pct=0.0,
+            win_rate=0.0,
+            total_pnl=0.0,
+            trade_count=0,
+        )
+
+    # Sharpe ratio (annualized)
+    mean_ret = sum(returns) / len(returns)
+    std_ret = math.sqrt(sum((r - mean_ret) ** 2 for r in returns) / max(len(returns) - 1, 1))
+    sharpe = round(mean_ret / std_ret * math.sqrt(365), 3) if std_ret > 0 else 0.0
+
+    # Max drawdown
+    peak = window_points[0][1]
+    max_dd = 0.0
+    for _, eq in window_points:
+        if eq > peak:
+            peak = eq
+        dd = float((peak - eq) / peak) if peak > 0 else 0.0
+        max_dd = max(max_dd, dd)
+
+    # Win rate
+    wins = sum(1 for r in returns if r > 0)
+    win_rate = round(wins / len(returns) * 100, 2) if returns else 0.0
+
+    # Total PnL
+    total_pnl = float(window_points[-1][1] - window_points[0][1])
+
+    return RollingMetrics(
+        window_days=window_days,
+        sharpe_ratio=sharpe,
+        max_drawdown_pct=round(max_dd * 100, 2),
+        win_rate=win_rate,
+        total_pnl=round(total_pnl, 4),
+        trade_count=len(returns),
+    )
+
+
 def format_backtest_status(status: BacktestJobStatus) -> str:
     """Format a BacktestJobStatus as a brief status line."""
     emoji_map = {
@@ -135,62 +245,32 @@ def format_backtest_summary(
     job_id: str,
     status: BacktestJobStatus | None = None,
 ) -> str:
-    """Render backtest results as Telegram-ready text.
-
-    Shows summary metrics, regime breakdown, and recent trades.
-    """
+    """Render backtest results as Telegram-ready text."""
     s = compute_backtest_summary(results)
-
-    lines: list[str] = []
-    lines.append(f"Backtest Results — {job_id[:8]}")
-    if status and status.symbol:
-        lines.append(f"Symbol: {status.symbol}")
-    lines.append("")
-
-    # Summary
-    lines.append("Summary")
-    lines.append(
-        f"  Reports: {s.total_reports}  |  "
-        f"Trades: {s.trades_taken}  |  "
-        f"Skipped: {s.trades_skipped}"
-    )
-    lines.append(
-        f"  Wins: {s.winning_trades}  |  "
-        f"Losses: {s.losing_trades}  |  "
-        f"Win Rate: {s.win_rate:.1f}%"
-    )
-    lines.append(f"  Net PnL: ${float(s.net_pnl):>8.2f}")
+    symbol_str = f" | {status.symbol}" if (status and status.symbol) else ""
 
     pf_str = f"{s.profit_factor:.2f}" if s.profit_factor != float("inf") else "∞"
-    lines.append(f"  Profit Factor: {pf_str}  |  Avg Hold: {s.avg_bars_held:.0f} bars")
-    lines.append("")
+    net_pnl_str = f"{'+$' if s.net_pnl >= 0 else '-$'}{abs(float(s.net_pnl)):,.2f}"
 
-    # Regime breakdown
-    if s.regime_counts:
-        lines.append("Regime Breakdown")
-        for regime, count in sorted(s.regime_counts.items(), key=lambda x: -x[1]):
-            lines.append(f"  {regime}: {count}")
-        lines.append("")
+    regime_str = "  " + "\n  ".join(f"{r:<14} : {c}" for r, c in s.regime_counts.items()) if s.regime_counts else "  N/A"
+    exit_str = "  " + "\n  ".join(f"{r:<14} : {c}" for r, c in s.exit_reason_counts.items()) if s.exit_reason_counts else "  N/A"
 
-    # Direction breakdown
-    if s.direction_counts:
-        direction_str = "  ".join(f"{d}: {c}" for d, c in s.direction_counts.items())
-        lines.append(f"Directions: {direction_str}")
-        lines.append("")
+    unified_block = (
+        f"Job ID     : {job_id[:8]}{symbol_str}\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📊 PERFORMANCE METRICS\n"
+        f"  Trades Taken  : {s.trades_taken} ({s.winning_trades}W / {s.losing_trades}L)\n"
+        f"  Win Rate      : {s.win_rate:.1f}%\n"
+        f"  Net PnL       : {net_pnl_str} USD\n"
+        f"  Profit Factor : {pf_str}\n"
+        f"  Avg Hold      : {s.avg_bars_held:.0f} bars\n\n"
+        f"🧠 REGIME BREAKDOWN\n"
+        f"{regime_str}\n\n"
+        f"🚪 EXIT REASONS\n"
+        f"{exit_str}"
+    )
 
-    # Exit reasons
-    if s.exit_reason_counts:
-        lines.append("Exit Reasons")
-        for reason, count in sorted(s.exit_reason_counts.items(), key=lambda x: -x[1]):
-            lines.append(f"  {reason}: {count}")
-        lines.append("")
-
-    taken = [r for r in results if r.trade_taken]
-    if taken:
-        lines.extend(_format_recent_trades(taken[-5:]))
-        lines.extend(_format_equity_spark(taken))
-
-    return "\n".join(lines)
+    return f"<b>🔬 BACKTEST RESULTS REPORT</b>\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n<pre>{unified_block}</pre>"
 
 
 def _format_recent_trades(trades: list[BacktestTradeResult]) -> list[str]:

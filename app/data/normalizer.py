@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation
 
 from loguru import logger
@@ -31,7 +31,7 @@ class GlobalState(BaseModel):
     best_bid: Decimal | None = None
     best_ask: Decimal | None = None
     total_volume: Decimal | None = None
-    updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+    updated_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class Normalizer:
@@ -59,7 +59,7 @@ class Normalizer:
                 symbol=symbol,
                 bids=bids,
                 asks=asks,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
             logger.debug("normalize_orderbook: returning ExchangeData")
             return result
@@ -81,7 +81,7 @@ class Normalizer:
                 exchange=exchange_id,
                 symbol=symbol,
                 last_price=price,
-                timestamp=datetime.now(UTC),
+                timestamp=datetime.now(timezone.utc),
             )
             logger.debug("normalize_trade: returning ExchangeData")
             return result
@@ -147,7 +147,7 @@ class Normalizer:
             best_bid=best_bid,
             best_ask=best_ask,
             total_volume=total_volume,
-            updated_at=datetime.now(UTC),
+            updated_at=datetime.now(timezone.utc),
         )
         logger.debug(f"build_global_state: vwap={global_vwap} skew={aggregate_skew}")
         logger.debug("build_global_state: returning GlobalState")

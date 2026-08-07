@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -25,7 +25,7 @@ class Position:
         self.size = size
         self.entry_price = entry_price
         self.unrealized_pnl = Decimal("0")
-        self.updated_at = datetime.now(UTC)
+        self.updated_at = datetime.now(timezone.utc)
         logger.debug("Position.__init__: returning")
 
     def to_dict(self) -> dict[str, Any]:
@@ -135,7 +135,7 @@ class StateManager:
                 ) / total_size
             pos.size = total_size
             pos.side = side
-            pos.updated_at = datetime.now(UTC)
+            pos.updated_at = datetime.now(timezone.utc)
         else:
             self.positions[symbol] = Position(symbol, side, size, price)
 
@@ -198,7 +198,7 @@ class StateManager:
             "pnl_usdt": str(pnl) if pnl else None,
             "execution_latency_ms": latency_ms,
             "status": status,
-            "executed_at": datetime.now(UTC).isoformat(),
+            "executed_at": datetime.now(timezone.utc).isoformat(),
             "order_id": order_id,
         }
         await self.redis.set_global_state(f"trade:{trade_id}", trade)

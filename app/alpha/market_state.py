@@ -6,12 +6,7 @@ Thread-safe and lock-free atomic replacement model.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-try:
-    from datetime import UTC
-except ImportError:
-    from datetime import timezone
-    UTC = timezone.utc  # type: ignore[misc]
-from datetime import datetime
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -20,7 +15,7 @@ from typing import Any
 class MarketState:
     """Immutable market state containing quantitative analysis outputs."""
 
-    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     regime: str = "RANGE"  # TREND_BULL, TREND_BEAR, RANGE, CHOP
     hmm_prediction: str = "NEUTRAL"  # BULL, BEAR, NEUTRAL
     hurst: float = 0.5
@@ -32,7 +27,7 @@ class MarketState:
     @property
     def is_degraded(self) -> bool:
         """Returns True if the market state is older than 10 minutes (600 seconds)."""
-        age = (datetime.now(UTC) - self.timestamp).total_seconds()
+        age = (datetime.now(timezone.utc) - self.timestamp).total_seconds()
         return age > 600.0
 
     def to_dict(self) -> dict[str, Any]:

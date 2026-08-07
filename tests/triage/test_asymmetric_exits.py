@@ -11,7 +11,7 @@ Verifies:
 from __future__ import annotations
 
 import asyncio
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -38,7 +38,7 @@ def _make_position(
 ) -> dict:
     """Build a position dict matching APM's expected structure."""
     if entry_time is None:
-        entry_time = datetime.now(UTC) - timedelta(minutes=5)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=5)
     return {
         "symbol": symbol,
         "side": side,
@@ -62,7 +62,7 @@ class TestAsymmetricTimeExits:
     async def test_losing_position_exits_in_3_minutes(self):
         """A losing position (R < 0) should be force-closed after 3 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=4)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=4)
         pos = _make_position(entry_time=entry_time, live_price="0.98")  # 2% loss
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
@@ -78,7 +78,7 @@ class TestAsymmetricTimeExits:
     async def test_losing_position_not_closed_before_3_minutes(self):
         """A losing position should NOT be closed before 3 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=2)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=2)
         pos = _make_position(entry_time=entry_time, live_price="0.98")
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
@@ -92,7 +92,7 @@ class TestAsymmetricTimeExits:
     async def test_breakeven_position_exits_in_15_minutes(self):
         """A breakeven position (R == 0) should be closed after 15 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=16)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=16)
         pos = _make_position(entry_time=entry_time, live_price="1.00")
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.00"), Decimal("0.01"))
@@ -108,7 +108,7 @@ class TestAsymmetricTimeExits:
     async def test_winning_position_no_time_limit(self):
         """A winning position (R > 0) should NOT have a time exit."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=60)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=60)
         pos = _make_position(entry_time=entry_time, live_price="1.02")
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.02"), Decimal("0.01"))
@@ -123,7 +123,7 @@ class TestAsymmetricTimeExits:
     async def test_quick_profit_exit_for_extreme_spike(self):
         """A winning position with extreme R in first 5 minutes should exit (safety net)."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=3)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=3)
         pos = _make_position(entry_time=entry_time, live_price="1.05")
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.05"), Decimal("0.01"))
@@ -139,7 +139,7 @@ class TestAsymmetricTimeExits:
     async def test_hard_max_hold_fallback(self):
         """Hard max hold should still work as a fail-safe."""
         apm = _make_apm()
-        entry_time = datetime.now(UTC) - timedelta(minutes=1441)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=1441)
         pos = _make_position(entry_time=entry_time, live_price="1.001")
 
         r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.001"), Decimal("0.01"))
@@ -189,7 +189,7 @@ class TestSessionBlock:
 
     @pytest.mark.asyncio
     async def test_session_block_during_asian_hours(self):
-        """Entries should be blocked between 04:00-12:00 UTC."""
+        """Entries should be blocked between 04:00-12:00 timezone.utc."""
         from app.consumer.decision_engine import DecisionEngine
 
         mock_redis = AsyncMock()
@@ -198,7 +198,7 @@ class TestSessionBlock:
         engine = _make_decision_engine(redis_client=mock_redis)
 
         with patch("app.consumer.decision_engine.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 7, 26, 8, 0, tzinfo=UTC)
+            mock_dt.now.return_value = datetime(2026, 7, 26, 8, 0, tzinfo=timezone.utc)
             mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
 
             candles = [[0] * 6] * 100

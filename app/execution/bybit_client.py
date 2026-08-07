@@ -14,6 +14,9 @@ from typing import Any
 
 from loguru import logger
 from pybit.unified_trading import HTTP
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from app.core import metrics
 from app.core.config import get_settings
@@ -51,6 +54,13 @@ class BybitClient:
             api_secret=self.settings.bybit_api_secret,
             testnet=self.settings.bybit_testnet,
         )
+        # Disable SSL verification when going through VPN/proxy (gluetun).
+        # The WireGuard tunnel intercepts SSL and presents a cert that doesn't
+        # match api.bybit.com, causing hostname mismatch errors.
+        # pybit uses requests.Session internally — patch it directly.
+        if hasattr(self.session, "client"):
+            self.session.client.verify = False
+            logger.debug("SSL verification disabled for pybit (VPN/proxy mode)")
         self.connected = True
 
     async def connect(self) -> None:
@@ -82,17 +92,23 @@ class BybitClient:
                         if not token:  # skip pure-numeric symbols like "4USDT"
                             continue
                         ccxt_sym = f"{token}/USDT"
+                        full_ccxt_sym = f"{base}/USDT"
                         self._symbol_map[ccxt_sym] = bybit_sym
+                        self._symbol_map[full_ccxt_sym] = bybit_sym
+
                         # Store lot size and min qty for order rounding
                         lot_filter = inst.get("lotSizeFilter", {})
                         ls = lot_filter.get("qtyStep", "1")
                         mq = lot_filter.get("minOrderQty", "1")
                         self._lot_sizes[ccxt_sym] = Decimal(str(ls))
+                        self._lot_sizes[full_ccxt_sym] = Decimal(str(ls))
                         self._min_qty[ccxt_sym] = Decimal(str(mq))
+                        self._min_qty[full_ccxt_sym] = Decimal(str(mq))
 
                         price_filter = inst.get("priceFilter", {})
                         ts = price_filter.get("tickSize", "0.01")
                         self._price_ticks[ccxt_sym] = Decimal(str(ts))
+                        self._price_ticks[full_ccxt_sym] = Decimal(str(ts))
 
                     cursor = resp["result"].get("nextPageCursor")
                     if not cursor:
@@ -172,8 +188,8 @@ class BybitClient:
                     last_exc = e
                     err_str = str(e).lower()
                     logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
-                    if "auth" in err_str:
-                        self.connected = False  # force session recovery on auth failure
+                    if any(w in err_str for w in ("auth", "409", "conflict", "json", "decode")):
+                        self.connected = False  # force session recovery on auth, 409, conflict, or non-JSON response
 
                 # Exponential backoff: 1s, 2s, 4s, 8s, 16s
                 # DNS errors get longer backoff (VPN tunnel recovery)

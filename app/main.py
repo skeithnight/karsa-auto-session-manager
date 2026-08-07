@@ -65,9 +65,9 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
     ):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    # 1. Try gluetun DNS (127.0.0.1) — forwards to Cloudflare 1.1.1.1 via VPN tunnel (not poisoned)
+    # 1. Try Docker internal DNS (127.0.0.11) — fast (2ms) resolution for both internal services & internet domains
     try:
-        ips = _dns_query("127.0.0.1", host)
+        ips = _dns_query("127.0.0.11", host)
         if ips:
             af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
             return [
@@ -81,9 +81,9 @@ def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
             ]
     except Exception:
         pass
-    # 2. Try Docker internal DNS (127.0.0.11) — resolves db, redis, 9router
+    # 2. Try gluetun DNS (127.0.0.1) — fallback
     try:
-        ips = _dns_query("127.0.0.11", host)
+        ips = _dns_query("127.0.0.1", host)
         if ips:
             af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
             return [

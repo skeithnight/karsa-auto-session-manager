@@ -17,6 +17,11 @@ import signal
 import sys
 import time
 
+import socket
+from app.main import _bypass_getaddrinfo
+
+socket.getaddrinfo = _bypass_getaddrinfo
+
 from app.bot.alert_service import AlertService
 from app.bot.runner import run_bot
 from app.core.config import get_settings
@@ -187,6 +192,7 @@ async def telemetry_listener_task(
         except Exception as e:
             logger.error("telemetry_listener_task error: %s", e)
             await asyncio.sleep(5)
+        await asyncio.sleep(1)
 
     logger.debug("telemetry_listener_task: returning None")
 

@@ -115,7 +115,7 @@ class TestPromptBuilder:
         assert "TREND_BULL" in user
         # Price features
         assert "64000" in user
-        assert "800" in user  # ATR
+        assert "55" in user  # ATR %
         # Trend
         assert "62" in user  # RSI
         assert "28" in user  # ADX
@@ -389,8 +389,8 @@ class TestNineRouterService:
         from app.ai.nine_router_service import NineRouterService, _ProviderConfig
 
         bad_resp = httpx.Response(
-            status_code=200,
-            json={"choices": [{"message": {"content": "bad"}}]},
+            500,
+            json={"error": "Server error"},
             request=httpx.Request("POST", "http://p1/chat/completions"),
         )
         good_resp = httpx.Response(

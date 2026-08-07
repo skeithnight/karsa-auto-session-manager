@@ -1750,18 +1750,23 @@ async def main() -> None:  # noqa: PLR0915
     )
     logger.info(f"live universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}")
 
-    # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
+    # Pre-fill CandleBuffer concurrently with historical candles (max 5 concurrent requests)
     try:
         # exchange and ohlcv_fetcher already initialized above for MultiTFFilter
-        for sym in initial_symbols:
-            try:
-                candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
-                if candles:
-                    for c in candles:
-                        consumer._buffer.append(sym, c)
-                logger.info(f"live pre-filled buffer for {sym} with {len(candles or [])} candles")
-            except Exception as e:
-                logger.warning(f"failed to pre-fill {sym}: {e}")
+        prefill_sem = asyncio.Semaphore(5)
+
+        async def _prefill_symbol(sym: str) -> None:
+            async with prefill_sem:
+                try:
+                    candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
+                    if candles:
+                        for c in candles:
+                            consumer._buffer.append(sym, c)
+                    logger.info(f"live pre-filled buffer for {sym} with {len(candles or [])} candles")
+                except Exception as e:
+                    logger.warning(f"failed to pre-fill {sym}: {e}")
+
+        await asyncio.gather(*[_prefill_symbol(sym) for sym in initial_symbols])
     except Exception as e:
         logger.warning(f"OHLCVFetcher init failed — no candle pre-fill: {e}")
 

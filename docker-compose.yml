@@ -106,7 +106,7 @@ services:
     depends_on:
       - gluetun
     volumes:
-      - 9router_data:/data
+      - 9router_data:/app/data
 
   # -- Karsa Data Engine (shared WS proxy) ------------------------
 

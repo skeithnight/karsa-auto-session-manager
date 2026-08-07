@@ -23,8 +23,8 @@ class AIClient:
         router_url: str,
         auth_token: str,
         model: str,
-        timeout_seconds: float = 60.0,
-        max_retries: int = 2,
+        timeout_seconds: float = 45.0,
+        max_retries: int = 1,
     ) -> None:
         self.router_url = router_url.rstrip("/")
         self.auth_token = auth_token

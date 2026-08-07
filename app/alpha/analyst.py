@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
@@ -369,7 +369,17 @@ class CryptoAnalyst:
         """Parse AI JSON response into AnalystResult. Handles both JSON and free-form text."""
         try:
             text = response.strip()
-            if text.startswith("```"):
+
+            # Strip <think>...</think> tags if model includes reasoning output
+            if "<think>" in text and "</think>" in text:
+                text = text.split("</think>", 1)[1].strip()
+
+            # Attempt to extract embedded JSON block ({...})
+            import re
+            json_match = re.search(r"\{.*\}", text, re.DOTALL)
+            if json_match:
+                text = json_match.group(0)
+            elif text.startswith("```"):
                 text = text.split("\n", 1)[1] if "\n" in text else text[3:]
                 if text.endswith("```"):
                     text = text[:-3]

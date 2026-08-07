@@ -494,5 +494,5 @@ class BacktestOrchestrator:
                 await pubsub.unsubscribe(EVENT_CHANNEL)
                 await pubsub.close()
         except Exception as exc:
-            logger.error("listen_for_completion_failed error=%s", exc)
+            logger.error(f"listen_for_completion_failed error={exc}")
         return None

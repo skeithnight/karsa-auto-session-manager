@@ -849,18 +849,23 @@ async def main() -> None:
         f"shadow universe: {len(initial_symbols)} symbols from {'redis' if universe_symbols else 'config'}"
     )
 
-    # Pre-fill CandleBuffer with historical candles so DecisionEngine can evaluate immediately
-    for sym in initial_symbols:
-        try:
-            candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
-            if candles:
-                for c in candles:
-                    consumer._buffer.append(sym, c)
-            logger.info(
-                f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles"
-            )
-        except Exception as e:
-            logger.warning(f"failed to pre-fill {sym}: {e}")
+    # Pre-fill CandleBuffer concurrently with historical candles (max 5 concurrent requests)
+    prefill_sem = asyncio.Semaphore(5)
+
+    async def _prefill_symbol(sym: str) -> None:
+        async with prefill_sem:
+            try:
+                candles = await ohlcv_fetcher.fetch(sym, "1h", 60)
+                if candles:
+                    for c in candles:
+                        consumer._buffer.append(sym, c)
+                logger.info(
+                    f"shadow pre-filled buffer for {sym} with {len(candles or [])} candles"
+                )
+            except Exception as e:
+                logger.warning(f"failed to pre-fill {sym}: {e}")
+
+    await asyncio.gather(*[_prefill_symbol(sym) for sym in initial_symbols])
 
     ingestor, ingestor_task = _start_ingestor(
         settings, redis, consumer, initial_symbols

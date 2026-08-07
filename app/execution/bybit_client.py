@@ -14,6 +14,9 @@ from typing import Any
 
 from loguru import logger
 from pybit.unified_trading import HTTP
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from app.core import metrics
 from app.core.config import get_settings

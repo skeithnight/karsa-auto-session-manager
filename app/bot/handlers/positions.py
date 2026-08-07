@@ -129,7 +129,29 @@ async def portfolio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         bybit = _get_bybit(context)
         r = _get_redis(context)
-        positions = await bybit.fetch_positions()
+        positions = []
+        try:
+            positions = await bybit.fetch_positions()
+        except Exception as fetch_err:
+            logger.warning(f"portfolio_cmd: Bybit fetch_positions failed ({fetch_err}), falling back to Redis keys")
+            try:
+                import json as _json
+                pos_keys = await r.keys("karsa:position:*")
+                for p_key in pos_keys:
+                    p_key_str = p_key if isinstance(p_key, str) else p_key.decode()
+                    p_raw = await r.get(p_key_str)
+                    if p_raw:
+                        p_data = _json.loads(p_raw) if isinstance(p_raw, str) else p_raw
+                        side_val = "buy" if p_data.get("side") == "LONG" else "sell"
+                        positions.append({
+                            "symbol": p_data.get("symbol", ""),
+                            "side": side_val,
+                            "contracts": p_data.get("amount", "0"),
+                            "entry_price": p_data.get("entry_price", "0"),
+                            "unrealized_pnl": "0.00",
+                        })
+            except Exception as r_err:
+                logger.warning(f"portfolio_cmd: Redis fallback failed ({r_err})")
 
         try:
             is_active = (await r.get("karsa:auto:state:active")) == "1"

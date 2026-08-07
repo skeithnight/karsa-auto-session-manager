@@ -188,8 +188,8 @@ class BybitClient:
                     last_exc = e
                     err_str = str(e).lower()
                     logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
-                    if "auth" in err_str:
-                        self.connected = False  # force session recovery on auth failure
+                    if any(w in err_str for w in ("auth", "409", "conflict", "json", "decode")):
+                        self.connected = False  # force session recovery on auth, 409, conflict, or non-JSON response
 
                 # Exponential backoff: 1s, 2s, 4s, 8s, 16s
                 # DNS errors get longer backoff (VPN tunnel recovery)

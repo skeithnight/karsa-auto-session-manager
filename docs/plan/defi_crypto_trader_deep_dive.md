@@ -89,14 +89,14 @@ All pools live inside ONE contract. Instead of deploying a new ERC-20 pair contr
 
 ### Core Repositories
 
-| Repository | Purpose | Key Contracts |
-| :--- | :--- | :--- |
-| [`Uniswap/v4-core`](https://github.com/Uniswap/v4-core) | Core pool logic, PoolManager, flash accounting | `PoolManager.sol`, `Pool.sol`, `Position.sol` |
-| [`Uniswap/v4-periphery`](https://github.com/Uniswap/v4-periphery) | Higher-level integrations, hook base contracts | `BaseHook.sol`, `PositionManager.sol` |
-| [`Uniswap/universal-router`](https://github.com/Uniswap/universal-router) | Unified swap router (v2+v3+v4+NFTs) | `UniversalRouter.sol` |
-| [`Uniswap/permit2`](https://github.com/Uniswap/permit2) | Next-gen token approval system | `Permit2.sol` |
-| [`uniswapfoundation/v4-template`](https://github.com/uniswapfoundation/v4-template) | Foundry boilerplate for Hook development | Template hook + test fixtures |
-| [`fewwwww/awesome-uniswap-hooks`](https://github.com/fewwwww/awesome-uniswap-hooks) | Community-curated hook examples | Various hook POCs |
+| Repository                                                                          | Purpose                                        | Key Contracts                                 |
+| :------------------------------------------------------------------------------------| :-----------------------------------------------| :----------------------------------------------|
+| [`Uniswap/v4-core`](https://github.com/Uniswap/v4-core)                             | Core pool logic, PoolManager, flash accounting | `PoolManager.sol`, `Pool.sol`, `Position.sol` |
+| [`Uniswap/v4-periphery`](https://github.com/Uniswap/v4-periphery)                   | Higher-level integrations, hook base contracts | `BaseHook.sol`, `PositionManager.sol`         |
+| [`Uniswap/universal-router`](https://github.com/Uniswap/universal-router)           | Unified swap router (v2+v3+v4+NFTs)            | `UniversalRouter.sol`                         |
+| [`Uniswap/permit2`](https://github.com/Uniswap/permit2)                             | Next-gen token approval system                 | `Permit2.sol`                                 |
+| [`uniswapfoundation/v4-template`](https://github.com/uniswapfoundation/v4-template) | Foundry boilerplate for Hook development       | Template hook + test fixtures                 |
+| [`fewwwww/awesome-uniswap-hooks`](https://github.com/fewwwww/awesome-uniswap-hooks) | Community-curated hook examples                | Various hook POCs                             |
 
 ### Smart Order Routing Architecture
 

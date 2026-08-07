@@ -95,9 +95,6 @@ scratch/
 *.csv
 .claude/
 
-# Markdown files
-*.md
-
 Archive/
 
 tests/

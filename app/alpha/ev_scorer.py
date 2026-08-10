@@ -201,7 +201,27 @@ class EVScorer:
             components.session_quality, components.regime_alignment,
         )
 
-        return final_ev, components
+        return round(final_ev, 4), components
+
+    def apply_gas_adjustment(
+        self,
+        raw_ev: float,
+        gas_cost_usd: float,
+        trade_notional_usd: float = 1000.0,
+        venue: str = "DEX",
+    ) -> float:
+        """Deduct projected EVM gas costs from raw EV score for DEX venues.
+        
+        CEX venues (Bybit, Hyperliquid) incur no EVM gas adjustment.
+        """
+        if venue != "DEX" or trade_notional_usd <= 0:
+            return raw_ev
+
+        gas_bps = (gas_cost_usd / trade_notional_usd) * 10000.0
+        # 100 bps spread penalty reduces EV score by 0.10
+        ev_penalty = gas_bps / 1000.0
+        adjusted_ev = max(0.0, raw_ev - ev_penalty)
+        return round(adjusted_ev, 4)
 
     # ─── Component Scorers ──────────────────────────────────────────
 

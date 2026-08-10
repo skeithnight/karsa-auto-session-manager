@@ -412,4 +412,73 @@ These keys are read and written by `app/bot/handlers.py`. They use `decode_respo
 
 > **Note:** The `karsa:auto:*` keys are written by the Autonomous Session Manager (ASM). ASM gates executor — no trades execute when session is inactive.
 
-> **Open Issue:** Redis scope is an open conflict (see `CONTEXT.md` §7, Issue #1). The presence of `RedisClient` in `app/core/` and these keys in the data model means Redis is treated as IN SCOPE. This should be formally resolved and the conflict closed.
+---
+
+## 8. DeFi & Hybrid Intelligence Layer (v3.0 — Ratified per ADR-010)
+
+### 8.1 Redis Keys
+
+| Key Pattern | Type | TTL | Structure / Value | Purpose |
+| :--- | :--- | :--- | :--- | :--- |
+| `onchain:price:{pool_address}` | String | 30s | `{"symbol": "ETH/USDT", "dex_price": "3000.50", "tick": 200, "liquidity": "..."}` | DEX pool price state |
+| `onchain:gas:gwei` | String | 15s | `"25.4"` | Current Ethereum gas price in gwei |
+| `treasury:active:{venue}` | String | None | `{"venue": "pendle_pt", "amount_usdc": "100.0", "expected_apy": "0.08"}` | Active treasury allocation state |
+| `treasury:total_deployed` | String | None | `"500.0"` | Total idle capital deployed (Decimal string) |
+| `defi:whitelist:{protocol}` | String | None | `{"protocol_name": "Pendle", "chain_id": 1, "risk_tier": "BLUE_CHIP"}` | Audited protocol whitelist entry |
+| `lvr:opportunity:{symbol}` | String | 60s | `{"spread_bps": "45.2", "gas_cost_usd": "2.10", "net_ev": "0.58"}` | Latest LVR calculation for symbol |
+
+### 8.2 PostgreSQL Tables (`treasury_allocations`, `defi_interactions`, `lvr_opportunities`)
+
+```sql
+CREATE TABLE treasury_allocations (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    venue VARCHAR(50) NOT NULL,
+    amount_usdc DECIMAL(20,8) NOT NULL,
+    entry_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    exit_timestamp TIMESTAMPTZ,
+    expected_apy DECIMAL(10,6),
+    realized_yield DECIMAL(20,8),
+    status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'
+        CHECK (status IN ('ACTIVE', 'PENDING_EXIT', 'CLOSED', 'FAILED')),
+    tx_hash VARCHAR(66),
+    metadata JSONB
+);
+
+CREATE TABLE defi_interactions (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    protocol VARCHAR(50) NOT NULL,
+    chain_id INTEGER NOT NULL,
+    action VARCHAR(30) NOT NULL,
+    tx_hash VARCHAR(66),
+    gas_used INTEGER,
+    gas_cost_usd DECIMAL(20,8),
+    status VARCHAR(20) NOT NULL CHECK (status IN ('PENDING', 'CONFIRMED', 'REVERTED', 'FAILED')),
+    details JSONB
+);
+
+CREATE TABLE lvr_opportunities (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    symbol VARCHAR(20) NOT NULL,
+    cex_mid_price DECIMAL(20,8) NOT NULL,
+    dex_price DECIMAL(20,8) NOT NULL,
+    spread_bps DECIMAL(10,4) NOT NULL,
+    gas_cost_usd DECIMAL(20,8),
+    net_ev DECIMAL(20,8),
+    was_actionable BOOLEAN NOT NULL,
+    was_executed BOOLEAN DEFAULT FALSE
+);
+```
+
+### 8.3 Prometheus Metrics
+
+| Metric Name | Type | Labels | Description |
+| :--- | :--- | :--- | :--- |
+| `karsa_onchain_price_staleness_seconds` | Gauge | `pool_address` | Seconds since last DEX price update |
+| `karsa_lvr_spread_bps` | Histogram | `symbol` | CEX-DEX spread distribution |
+| `karsa_lvr_opportunities_total` | Counter | `symbol`, `actionable` | LVR opportunity detection count |
+| `karsa_treasury_deployed_usdc` | Gauge | `venue` | Currently deployed idle capital per venue |
+| `karsa_treasury_yield_usdc` | Counter | `venue` | Cumulative yield earned per venue |
+| `karsa_gas_cost_usd` | Histogram | `action` | Gas cost per on-chain interaction |
+| `karsa_defi_tx_total` | Counter | `protocol`, `status` | On-chain transaction count by outcome |

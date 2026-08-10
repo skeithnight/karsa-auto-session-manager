@@ -160,9 +160,20 @@ To enforce this runbook, the following code patterns are **mandatory** for the d
 - If `SHADOW_MODE_ENABLED=true` but live Bybit positions exist, the live positions are invisible to the shadow APM. Shadow mode does NOT close live positions — they remain on Bybit unmanaged. Always close live positions before switching to shadow mode.
 
 **Verification checklist (after activation):**
-1. `karsa_shadow_mode_active` metric = 1
-2. Startup log shows "SHADOW MODE ENABLED" warning
-3. No "Reconciliation failed" errors (should be skipped entirely)
-4. `position_reconciler_task` is NOT started
-5. Shadow positions appear under `shadow:position:*` Redis keys after first virtual fill
-6. Shadow trades appear in `shadow_trades` table after virtual close
+6. Shadow positions appear under `shadow:position:*` Redis keys after first virtual fill
+7. Shadow trades appear in `shadow_trades` table after virtual close
+
+---
+
+## 7. On-Chain Failure Modes & Operator Playbook (v3.0)
+
+| Failure Mode | Detection | Automated Action | Operator Action |
+| :--- | :--- | :--- | :--- |
+| **Ethereum Node Drop** | `onchain:price:*` TTL expires (>30s stale) | Pause LVR module. Maintain failure isolation: CEX trading pipeline continues unhindered. | Check node provider (Alchemy/Infura/Geth). Restart node or switch provider URL in `.env`. |
+| **Flashbots Bundle Failure** | `defi_interactions` status=`FAILED` | Retry bundle with 1.5x priority fee (1 attempt). If 2nd fails, abort tx. Never route to public mempool. | Inspect block builder status at `flashbots.net`. If persistent network congestion, increase priority fee cap. |
+| **High Gas Price Spike** | `onchain:gas:gwei` > `MAX_DEPLOY_GAS_GWEI` | Defer non-essential on-chain ops (LP adjustments, oracle pushes). Urgent treasury exits proceed with warning. | Monitor gas via Etherscan Gas Tracker. Resume normal operations once gwei drops below threshold. |
+| **Pendle PT Expiry (<24h)** | `treasury_allocations.maturity` check | Auto-exit Pendle PT position, redeem 1:1 for underlying asset, return USDC to idle balance. | Verify redeemed USDC balance reflected in `treasury:total_deployed`. |
+| **Hyperliquid API Throttling** | HTTP 429 response from HL API | Pause Hyperliquid routing for 15 minutes. SOR falls back to Bybit-only execution. | Verify HL account rate limits and volume tiers on Hyperliquid dashboard. |
+| **v4 Hook Oracle Update Stale** | Oracle update tx reverts or stale >5min | Hook pool falls back to last known regime. KASM logs CRITICAL error. | Check transaction error log. Manually push regime update or pause hook dynamic fees via admin function. |
+| **Smart Contract De-peg / Exploit** | Whitelisted protocol TVL drops >20% in 1h | Emergency exit: pull all capital from affected protocol. Add address to emergency blocklist. | Perform root-cause analysis on exploit. File incident report. |
+

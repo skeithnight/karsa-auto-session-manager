@@ -27,7 +27,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 *   **Redis Cache Layer:** Redis is used for high-speed state caching (`global:state:{symbol}`, `system:heartbeat`, `system:circuit_breaker`, `system:config:regime`) and session state. Already implemented in codebase.
 
 ### B. Data Ingestion (The "Read" Pipeline)
-*   **CCXT Pro WebSockets:** Persistent, auto-reconnecting WebSocket connections to **Binance** (and optionally OKX/Bybit public feeds) for the Top 5 most liquid pairs (BTC, ETH, SOL, BNB, XRP). **Note:** `config.py` defaults to 35 pairs — needs alignment with MVP scope.
+*   **CCXT Pro WebSockets:** Persistent, auto-reconnecting WebSocket connections to **Binance** (and optionally OKX/Bybit public feeds) for the dynamic universe of ~60 liquid pairs (filtered via `crypto_universe.py` for volume, momentum, squeeze, and overextension, excluding TradFi perps and fresh listings).
 *   **Data Normalization:** Standardizing incoming ticker and L2 order book data into a unified internal Python dictionary (in-memory state).
 *   **Bad Tick Filtering:** A basic statistical filter to reject obvious exchange API glitches (e.g., price spikes > 5% in a single tick).
 
@@ -43,7 +43,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 
 ### D. Execution (The "Write" Pipeline)
 *   **Bybit-Only Execution:** The bot will strictly place, amend, and cancel orders on Bybit.
-*   **WireGuard VPN Integration:** All Bybit traffic (REST and Private WebSockets) must be routed through the WireGuard VPN tunnel (gluetun sidecar).
+*   **WireGuard VPN Integration:** All Bybit traffic (REST and Private WebSockets) and 9router AI proxy traffic must be routed through the self-hosted WireGuard VPN tunnel via `gluetun` sidecar.
 *   **Private WebSockets:** Use Bybit's Private WebSocket channel for order management to minimize proxy handshake latency.
 *   **Basic Smart Order Routing (SOR):** A simple 3-step execution logic: 
     1. Try Post-Only Limit Order. 
@@ -54,7 +54,7 @@ This rule protects the project from "shiny object syndrome" (e.g., adding Reinfo
 *   **Simplified 3-Layer Risk Gate:** (Stripped down from 9 layers for MVP).
     1. *Global Liquidity:* Is the aggregated 24h volume above the minimum threshold?
     2. *Proxy/Spread Health:* Is the price spread between Binance and Bybit abnormally wide? (If yes, halt).
-    3. *Hard Circuit Breaker:* If daily unrealized + realized PnL drops below -3% (per `RISK_AND_RUNBOOK.md`), flatten all positions and halt the bot. **Note:** Code currently defaults to -2% — this conflict is tracked in `CONTEXT.md` Issue #2 and must be resolved before live trading.
+    3. *Hard Circuit Breaker:* If daily unrealized + realized PnL drops below -2% (per `RISK_AND_RUNBOOK.md`), 4-hour cooldown: cancel open orders, block new entries, and trigger System Doctor AI.
 *   **Postgres Logging:** Every signal generated, risk check passed/failed, and order placed must be written to the `trades` and `logs` tables.
 *   **Basic Prometheus Metrics:** Expose `/metrics` for: `orders_placed_total`, `order_latency_seconds`, and `websocket_disconnects_total`.
 
@@ -70,7 +70,7 @@ If you find yourself wanting to build these, put them in the `docs/IDEAS_BACKLOG
 *   ❌ **Microservice Split:** We are not separating the Orchestrator and Bot into different Docker containers communicating via Redis Pub/Sub. It introduces fatal state-divergence risks.
 *   ❌ **Advanced Portfolio Correlation Math:** For the MVP, we treat every trade independently. We are not calculating rolling correlation matrices across open positions.
 *   ❌ **Grafana Dashboards:** While Prometheus is in scope for raw metrics, building beautiful Grafana UI dashboards is a distraction. We will read raw metrics or logs for V1.
-*   ❌ **Trading Low-Cap Altcoins:** Strictly Top 5 liquid perps for the MVP.
+*   ❌ **Trading Low-Cap Altcoins:** Strictly Top liquid perps for the MVP.
 
 ---
 
@@ -85,7 +85,7 @@ We will build the MVP in four strict, sequential phases. We do not move to the n
 *   *Deliverable:* A script that runs continuously, prints normalized global VWAP/Skew to the console, and survives network drops.
 
 ### Phase 2: The Hands (Execution & Proxy)
-*   Implement Bybit Private WebSocket connection via WireGuard VPN tunnel.
+*   Implement Bybit Private WebSocket connection via WireGuard VPN tunnel (`gluetun`).
 *   Implement the Basic SOR (Limit -> Reprice -> Market).
 *   Implement State Reconciliation on startup.
 *   *Deliverable:* A script that can successfully place, track, and close a dummy market order on Bybit Testnet through the WireGuard VPN tunnel, logging the exact latency.
@@ -126,13 +126,27 @@ Once the MVP core pipeline (Phase 1–4 of §5) is stable, the following enhance
 | **2** | Multi-signal confidence (lead-lag + funding + OI) | ~5-6h | ✅ DONE |
 | **3** | Entry quality filter (spread, book depth, time-of-day) | ~2-3h | ✅ DONE |
 | **4** | Position lifecycle (trailing stop + performance checkpoints) | ~6-8h | ✅ DONE |
-| **5** | Wire executor_task → `sor.execute()` (unblock chain) | ~30 min | 🔴 TODO |
-| **6** | Dynamic universe scoring | ~4-5h | 🔴 TODO |
-| **7** | Multi-timeframe confirmation (4H) | ~2-3h | 🔴 TODO |
-| **8** | AI CryptoAnalyst mandatory (remove toggle) | ~1-2h | 🔴 TODO |
-| **9** | Trade memory injection | ~2-3h | 🔴 TODO |
-| **10** | Sector diversity cap | ~2-3h | 🔴 TODO |
+| **5** | Wire executor_task → `sor.execute()` (unblock chain) | ~30 min | ✅ DONE |
+| **6** | Dynamic universe scoring | ~4-5h | ✅ DONE |
+| **7** | Multi-timeframe confirmation (4H) | ~2-3h | ✅ DONE |
+| **8** | AI CryptoAnalyst mandatory (remove toggle) | ~1-2h | ✅ DONE |
+| **9** | Trade memory injection | ~2-3h | ✅ DONE |
+| **10** | Sector diversity cap | ~2-3h | ✅ DONE |
 
-**Total remaining:** ~12-17 hours. Each phase independently mergeable.
+**Status:** All Phases 0A–10 are fully completed and wired end-to-end.
 
 **Deferred (post V1.1):** Grafana dashboards (out of scope), Reinforcement Learning.
+
+---
+
+## 8. DeFi Scope Expansion (v3.0 — Ratified per ADR-010)
+
+Per **ADR-010**, KASM expands from CEX-only (v2.1) into a Hybrid Intelligence Trading System (v3.0). This section supersedes the strict "Bybit-Only Execution" and "No Multi-Exchange Execution" out-of-scope constraints for Phase 8+ as follows:
+
+| Component | Scope | Gating Criteria | Status |
+| :--- | :--- | :--- | :--- |
+| **On-Chain Data Ingestion** | Read-only EVM pool feeds (Uniswap v3/v4) + Gas Tracker | Phase 1 shadow stability pass | 🟢 IN SCOPE (Phase 3) |
+| **LVR Calculator** | CEX-DEX price discrepancy & gas-adjusted EV scoring | Phase 3 completion | 🟢 IN SCOPE (Phase 4) |
+| **Treasury Automation** | Idle USDC routing to Pendle PT / HLP Vault yield | Phase 4 completion + 30-day shadow proof | 🟢 IN SCOPE (Phase 5) |
+| **Multi-Venue Execution** | Hyperliquid API integration (perp DEX) | Phase 4 completion | 🟢 IN SCOPE (Phase 6) |
+| **On-Chain Liquidity** | Uniswap v4 Dynamic Fee Hooks (regime-based fees) | External audit + Phase 5 & 6 stability | 🟢 IN SCOPE (Phase 7) |

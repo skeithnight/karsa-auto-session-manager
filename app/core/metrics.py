@@ -57,6 +57,49 @@ skew_value = Gauge(
     ["symbol"],
 )
 
+# ── On-Chain / DeFi Metrics (v3.0) ───────────────────────────
+karsa_onchain_price_staleness_seconds = Gauge(
+    "karsa_onchain_price_staleness_seconds",
+    "Seconds since last DEX price update",
+    ["pool_address"],
+)
+
+karsa_lvr_spread_bps = Histogram(
+    "karsa_lvr_spread_bps",
+    "CEX-DEX spread distribution in bps",
+    ["symbol"],
+)
+
+karsa_lvr_opportunities_total = Counter(
+    "karsa_lvr_opportunities_total",
+    "LVR opportunity detection count",
+    ["symbol", "actionable"],
+)
+
+karsa_treasury_deployed_usdc = Gauge(
+    "karsa_treasury_deployed_usdc",
+    "Currently deployed idle capital per venue",
+    ["venue"],
+)
+
+karsa_treasury_yield_usdc = Counter(
+    "karsa_treasury_yield_usdc",
+    "Cumulative yield earned per venue",
+    ["venue"],
+)
+
+karsa_gas_cost_usd = Histogram(
+    "karsa_gas_cost_usd",
+    "Gas cost per on-chain interaction",
+    ["action"],
+)
+
+karsa_defi_tx_total = Counter(
+    "karsa_defi_tx_total",
+    "On-chain transaction count by outcome",
+    ["protocol", "status"],
+)
+
 # ── Pipeline Funnel (flow-stage counters) ──────────────────
 funnel_universe_scanned = Counter("karsa_funnel_universe_scanned_total", "Funnel global")
 funnel_raw_signals = Counter("karsa_funnel_raw_signals_total", "Funnel global")

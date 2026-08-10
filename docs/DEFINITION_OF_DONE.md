@@ -126,6 +126,19 @@ When working on specific modules, the following additional criteria apply:
 - [ ] Switching from shadow to live mode does not leave orphaned shadow state that interferes with live operation
 - [ ] Unit tests exist for fee asymmetry (maker vs taker), wick detection (worst_price_seen), funding deduction, and pending limit state machine
 
+### M. DeFi Components (v3.0)
+
+- [ ] All financial values use `decimal.Decimal` — including gas costs, yield rates, TVL.
+- [ ] On-chain transactions NEVER use public mempool — Flashbots Protect / MEV Blocker enforced at the transport layer.
+- [ ] Smart contract interactions only with `DeFiWhitelistEntry`-registered protocols (PRM blocks unregistered).
+- [ ] Gas price checked before any on-chain tx — if gas > configured gwei ceiling, tx is deferred, not submitted.
+- [ ] All on-chain interactions logged to `defi_interactions` Postgres table with tx_hash.
+- [ ] EVM WebSocket disconnection does NOT affect CEX trading pipeline — failure isolation enforced.
+- [ ] Treasury Manager respects global circuit breaker — if CB fires, all treasury positions enter graceful exit.
+- [ ] On-chain position recovery: if process crashes, treasury allocations can be reconciled from on-chain state.
+- [ ] Mainnet fork tests (Foundry/Hardhat) exist for all smart contract interactions.
+- [ ] Nonce management: concurrent on-chain txs use proper nonce sequencing, no duplicate nonce errors.
+
 ---
 
 ## 4. The "Definition of NOT Done" (Anti-Patterns)

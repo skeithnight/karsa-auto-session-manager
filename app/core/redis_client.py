@@ -80,12 +80,15 @@ class RedisClient:
 
     # --- Generic Key/Value ---
 
-    async def set(self, key: str, value: str) -> None:
-        """Set a generic Redis key."""
+    async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        """Set a generic Redis key with optional TTL."""
         logger.debug(f"set: entering key={key}")
         if not self.redis:
             raise RuntimeError("Redis not connected")
-        await self.redis.set(key, value)
+        if ex is not None:
+            await self.redis.set(key, value, ex=ex)
+        else:
+            await self.redis.set(key, value)
         logger.debug("set: returning None")
 
     async def get(self, key: str) -> str | None:

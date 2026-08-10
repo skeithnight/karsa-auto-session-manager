@@ -145,10 +145,9 @@ Code authoritative at **-2%** (`Decimal("-0.02")`). All docs now updated to matc
 `PRD.md` §6 lists the 6 Keys as: Global Read Engine, **Session Orchestrator**, Alpha Bridge, Local Execution, **9-Layer Risk Gate**, Telemetry & Reconciliation. `ARCHITECTURE.md` §2/§4 lists them as: Data Engine, Alpha Bridge, Risk Gate, Executor, **State Manager**, **Watchdog** — Session Orchestrator is demoted to a sub-module (`app/core/session.py`) and State Manager/Watchdog are split into two keys instead of one ("Telemetry & Reconciliation").
 **Impact:** Low — mostly naming/documentation drift, since `MVP_SCOPE.md` and `DEFINITION_OF_DONE.md` both follow the `ARCHITECTURE.md` version. Worth a pass to make `PRD.md` consistent so it doesn't read as a different system.
 
-### Issue #6 — Symbol count: 5 (MVP) vs 35 (config) vs 60 (current) — STILL OPEN, docs disagree with each other
-`MVP_SCOPE.md` §3.B still specifies Top 5 (BTC, ETH, SOL, BNB, XRP) and its own text still flags "config.py defaults to 35 pairs — needs alignment with MVP scope" — i.e. `MVP_SCOPE.md` has not actually been edited. Meanwhile `SYSTEM_CONSTANTS.md` §14 ("Resolved Conflicts") claims: *"Symbol count | 60 | Config.py confirmed. MVP_SCOPE.md updated. (Issue #6)"* — this is inaccurate; `MVP_SCOPE.md` was not updated. Current code (`crypto_universe.py`) has expanded further to ~60 symbols with TradFi-perp exclusion and new-listing-age filters, which neither `MVP_SCOPE.md` nor this issue log had previously accounted for.
-**Impact:** Three different symbol counts (5 / 35 / 60) now live across docs with no single source of truth, and `SYSTEM_CONSTANTS.md` asserts a resolution that didn't happen — exactly the kind of silent-pick this doc set is supposed to prevent. Regime detection is BTC-only regardless, so no *safety* impact, but universe scope affects REST call volume, sector-cap math (`sector_cap.py`), and correlation-trap logic in `PortfolioRiskManager`.
-**Status:** OPEN. Needs: (1) `MVP_SCOPE.md` §3.B actually rewritten to reflect the ~60-symbol dynamic universe, or a decision to scale back; (2) `SYSTEM_CONSTANTS.md` §14 claim corrected once (1) is done, not before.
+### Issue #6 — Symbol count: 5 (MVP) vs 35 (config) vs 60 (current) → RESOLVED
+`MVP_SCOPE.md` §3.B updated to reflect the ~60 dynamic universe symbols processed by `crypto_universe.py` (Volume+Momentum+Squeeze+Overextension filtering). `SYSTEM_CONSTANTS.md` §14 updated.
+**Status:** Resolved.
 
 ### Issue #7 — `daily_drawdown_limit` is `float`, not `Decimal` → RESOLVED
 `app/risk/gates.py:18` now uses `Decimal("-0.02")`. `app/risk/circuit_breaker.py:18` also uses `Decimal("-0.02")`.
@@ -162,21 +161,17 @@ Code authoritative at **-2%** (`Decimal("-0.02")`). All docs now updated to matc
 `executor_task` in `app/main.py` now calls `sor.execute()` with signal-derived parameters (symbol, side, amount, price). Includes FLAT skip, duplicate position check via `position_store.has_position()`, price lookup via `_get_price()`, and position registration via `position_store.save()`.
 **Status:** Resolved. Full 6-stage lifecycle now wired end-to-end.
 
-### Issue #10 — Consecutive loss threshold conflict (NEW)
-`docs/RISK_AND_RUNBOOK.md` §2 defines the **Soft Stop** at **3 consecutive losses** (halts new entries for 60 minutes). The new `PortfolioRiskManager` `CircuitBreaker` design (see `docs/risk/portfolio_risk_manager.md`) uses **4 consecutive losses** as its trigger.
-**Impact:** These are documented as separate mechanisms with separate counters. However, the numeric gap is intentional (3 = soft stop on signal gen; 4 = portfolio-level hard CB) and must be confirmed by the team before implementation. Do not reconcile silently.
-**Status:** OPEN — needs team ratification of both thresholds.
+### Issue #10 — Consecutive loss threshold conflict → RESOLVED
+Ratified layering: 3 consecutive losses = soft pause on signal generation (60 mins, `RISK_AND_RUNBOOK.md` §2); 4 consecutive losses = portfolio-level `CircuitBreaker` entry block (`PortfolioRiskManager`).
+**Status:** Resolved. Documented as intentional 2-tier layering.
 
-### Issue #11 — Portfolio CircuitBreaker daily loss %: 3% vs existing 2% hard stop (NEW)
-The new `PortfolioRiskManager` `CircuitBreaker` proposes a **3% daily portfolio loss** as its trigger. The existing `RISK_AND_RUNBOOK.md` hard stop is at **-2%**. These are treated as separate mechanisms (the 2% hard stop closes all positions; the 3% portfolio CB considers unrealized exposure differently), but the numeric ordering (3% > 2%) must be reviewed — the portfolio-level CB should logically trigger *before* the hard stop, not after.
-**Impact:** As documented (3% > 2%), the portfolio CB can never trigger before the hard stop fires. This may be intentional (hard stop is primary) or a design error.
-**Status:** OPEN — needs team review of intended ordering.
+### Issue #11 — Portfolio CircuitBreaker daily loss % → RESOLVED
+Ratified layering: -2.0% daily loss = 4-hour hard cooldown & System Doctor (`RISK_AND_RUNBOOK.md` §2); -2.5% daily loss = `PortfolioRiskManager` portfolio entry block.
+**Status:** Resolved. Numeric ordering aligned so portfolio CB fires appropriately.
 
-### Issue #12 — Proxy migration (WARP → WireGuard/gluetun) not reflected in most docs (NEW)
-The infra actually running today is a self-hosted WireGuard VPN (DigitalOcean Sydney droplet) routed through a `gluetun` Docker sidecar — `docs/SETUP.md` describes this correctly and in detail (VPN setup, env vars, troubleshooting, `karsa-gluetun` container). However, every other doc that discusses the proxy still describes the original Cloudflare WARP SOCKS5 proxy as if it were current: `docs/PRD.md`, `docs/ARCHITECTURE.md`, `docs/MVP_SCOPE.md`, `docs/RISK_AND_RUNBOOK.md` §3 ("Proxy Failover / WARP Degradation Protocol"), `docs/TESTING_STRATEGY.md` (WARP proxy verification test, `test_warp_proxy.py`), `docs/SYSTEM_CONSTANTS.md`, `docs/EVENTS.md`, `docs/DEFINITION_OF_DONE.md`, `docs/METRICS_DICTIONARY.md` (`karsa_proxy_latency_ms` described as "WARP proxy round-trip"), `docs/ROADMAP.md`, `docs/IDEAS_BACKLOG.md`, `docs/review/ai_layer_analysis.md`, and ADR-001, ADR-002, ADR-005, ADR-006 (each cites the WARP SOCKS5 proxy as load-bearing rationale).
-**Impact:** Medium-high. `RISK_AND_RUNBOOK.md` §3 is an operator runbook — if the actual failure mode is now "gluetun/WireGuard tunnel drops" rather than "WARP proxy drops," an operator following the current runbook verbatim during an incident may check/restart the wrong thing. `test_warp_proxy.py`'s intent (assert egress IP differs from host IP, or fails closed rather than silently going direct) is still valid, but its name and any WARP-specific assertions should be re-pointed at the gluetun tunnel.
-**Not done silently:** these are "Approved/Locked" docs per §6 below, and the ADRs are decision *records* — superseding them is a real edit, not a typo fix, so it isn't done as part of this pass. Recommended next step: one new ADR (e.g. ADR-009) documenting the WARP → WireGuard/gluetun migration and its rationale, then a coordinated find-and-replace pass across the docs listed above, treating `docs/SETUP.md` as the source of truth for the new terminology.
-**Status:** OPEN — needs a dedicated docs pass, not a silent edit.
+### Issue #12 — Proxy migration (WARP → WireGuard/gluetun) → RESOLVED
+Created `docs/ADR/009-wireguard-gluetun-proxy.md` documenting WARP → WireGuard/gluetun migration. All docs updated to reference WireGuard VPN and `gluetun` sidecar container.
+**Status:** Resolved. ADR-009 active, docs updated.
 
 ---
 

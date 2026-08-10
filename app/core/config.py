@@ -46,6 +46,9 @@ class Settings(BaseSettings):
     shadow_taker_fee_pct: str = "0.00055"
     shadow_maker_fee_pct: str = "0.0002"
 
+    # ── On-Chain / EVM ─────────────────────────────────────────
+    evm_rpc_url: str = "https://eth.llamarpc.com"
+
     # ── Portfolio Risk Limits ──────────────────────────────────
     max_gross_exposure_pct: str = "0.50"
     max_net_exposure_pct: str = "0.30"

@@ -266,6 +266,16 @@ Smart Order Router in `executor_task`:
 - **AI Position Judge** (`position_judge.py`): 2-tier escalation (haiku → sonnet). 3 consecutive HOLDs on losing position → forced EXIT.
 - **Trade Memory** (`trade_memory.py`): On exit, store PnL, hold duration, regime, exit reason to Redis sorted set for future AI context.
 
+### H. On-Chain & Hybrid Intelligence Layer (v3.0 — Ratified per ADR-010)
+
+`app/defi/` adds on-chain data ingestion, LVR calculation, treasury management, and Uniswap v4 hook controls:
+
+*   **Layer 1 (Sensorium):** `onchain_feed.py` subscribes to EVM pool events (Uniswap v3/v4); `gas_tracker.py` monitors gwei. Runs in an isolated `asyncio.Task` to preserve single-process CEX failure isolation.
+*   **Layer 2 (Brain):** `lvr_calculator.py` computes CEX-DEX price discrepancies against CEX mid-price consensus. `ev_scorer.py` applies gas-adjusted EV penalties for DEX venues.
+*   **Layer 3 (Vault):** `treasury_manager.py` routes idle USDC to Pendle PT / HLP Vault yield during low-EV regimes. Checks `whitelist_registry.py` and PRM before any deployment.
+*   **Layer 4 (Hands):** `hyperliquid_client.py` and `multi_venue_sor.py` expand execution to Hyperliquid. `evm_router.py` enforces Flashbots Protect / MEV Blocker routing for all on-chain transactions (no public mempool).
+*   **Layer 5 (Maker):** `v4_hook_controller.py` pushes off-chain regime state updates to an on-chain Uniswap v4 Dynamic Fee Hook oracle.
+
 ---
 
 ### Telegram Bot (Key 7)

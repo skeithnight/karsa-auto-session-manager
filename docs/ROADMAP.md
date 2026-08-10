@@ -157,9 +157,17 @@ Purpose: prove the system under real slippage, real fees, and real psychological
 
 ---
 
-## Phase 8: Backlog-Driven Expansion
+## Phase 8: Backlog-Driven Expansion & Hybrid Intelligence (v3.0)
 
-Ongoing. Pull items from `IDEAS_BACKLOG.md` strictly in the order their re-evaluation triggers actually fire — not in order of excitement. Each promoted item gets scoped as its own mini-PRD before any code is written, preserving the same discipline that got the MVP built safely in the first place.
+Ongoing. Per **ADR-010**, Phase 8 includes the criteria-gated Hybrid Intelligence expansion across 5 sub-phases:
+
+| Sub-phase | Scope | Source | Gating Criteria |
+| :--- | :--- | :--- | :--- |
+| **8.1** | On-Chain Data Ingestion (Read-Only) | `implementation_plan_defi_v3.md` Phase 3 | Phase 1 shadow stability pass |
+| **8.2** | LVR Calculator & Gas-Adjusted EV | `implementation_plan_defi_v3.md` Phase 4 | Phase 8.1 completion |
+| **8.3** | Treasury Automation (Pendle PT / HLP) | `implementation_plan_defi_v3.md` Phase 5 | Phase 8.2 completion + 30-day shadow proof |
+| **8.4** | Multi-Venue Execution (Hyperliquid) | `implementation_plan_defi_v3.md` Phase 6 | Phase 8.2 completion |
+| **8.5** | Uniswap v4 Dynamic Fee Hooks | `implementation_plan_defi_v3.md` Phase 7 | External audit + Phase 8.3 & 8.4 stability |
 
 ---
 

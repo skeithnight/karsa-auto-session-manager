@@ -157,7 +157,7 @@
 | 9router port | `20129` | port | `docker-compose.yml` | AI proxy endpoint |
 | PostgreSQL default | `karsa:karsa@db:5432/karsa` | — | `config.py:25` | Default connection string |
 | Redis default | `redis://redis:6379/0` | — | `config.py:28` | Default Redis URL |
-| VPN tunnel type | WireGuard | — | `docker-compose.yml` | gluetun sidecar, network_mode |
+| VPN tunnel type | WireGuard | — | `docker-compose.yml`, `ADR-009` | gluetun sidecar, network_mode |
 
 ---
 
@@ -176,7 +176,10 @@
 | Constant | Value | Resolution |
 | :--- | :--- | :--- |
 | Daily drawdown limit | `-0.02` | Code authoritative. All docs aligned at -2%. (Issue #2) |
-| Symbol count | 60 | Config.py confirmed. MVP_SCOPE.md updated. (Issue #6) |
+| Symbol count | ~60 dynamic | Config.py / crypto_universe.py confirmed. MVP_SCOPE.md updated. (Issue #6) |
+| Proxy infrastructure | WireGuard / gluetun | ADR-009 documented. WARP superseded by gluetun sidecar. (Issue #12) |
+| Soft stop vs Portfolio CB | 3 losses / 4 losses | 3 = soft stop on signal gen; 4 = portfolio CB entry block. (Issue #10) |
+| Drawdown vs Portfolio CB | -2.0% / -2.5% | -2.0% = 4h cooldown; -2.5% = portfolio CB entry block. (Issue #11) |
 
 ---
 

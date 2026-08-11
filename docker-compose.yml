@@ -70,8 +70,11 @@ services:
       - WIREGUARD_PRIVATE_KEY=${WIREGUARD_PRIVATE_KEY}
       - WIREGUARD_ADDRESSES=${WIREGUARD_ADDRESSES}
       - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP}
-      - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-51820}
-      - WIREGUARD_PUBLIC_KEY=${WIREGUARD_PUBLIC_KEY}
+      - PUBLICIP_ENABLED=no
+      - HEALTHCHECK_VPN=off
+      - DNS_SERVER=on
+      - DNS_TYPE=dot
+      - DOT_PROVIDERS=cloudflare
       - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       - FIREWALL_INPUT_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8
       - FIREWALL_INPUT_PORTS=20128,20129,20219
@@ -85,7 +88,6 @@ services:
       retries: 5
       start_period: 30s
     ports:
-      - "20129:20128"
       - "20128:20128"
       - "20219:20128"
     networks:
@@ -100,11 +102,18 @@ services:
     env_file: .env
     environment:
       - DATA_DIR=/app/data
-      - PORT=20128
+      - PORT=20129
       - HOSTNAME=0.0.0.0
-    network_mode: "service:gluetun"
-    depends_on:
-      - gluetun
+    networks:
+      - karsa-backend
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "20129:20129"
+    extra_hosts:
+      - "api.anthropic.com:160.79.104.10"
+      - "api.openai.com:104.18.32.47"
     volumes:
       - 9router_data:/app/data
 

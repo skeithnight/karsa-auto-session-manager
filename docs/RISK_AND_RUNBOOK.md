@@ -1,179 +1,57 @@
 # Risk Management & Operations Runbook
 **Project Name:** `karsa-auto-session-manager`  
-**Document Status:** Approved / Locked  
-**Classification:** CRITICAL / SAFETY
-**Last Revised:** 2026-07-17 — Shadow Mode operations added, WARP→WireGuard cleanup (Phase 3.1)  
+**Document Status:** Approved / Live Specification  
+**Classification:** CRITICAL / SAFETY  
+**Last Revised:** 2026-08-11
 
 ---
 
 ## 1. Emergency Kill Switch (Manual Intervention)
-**Purpose:** Allow the operator to instantly halt all trading and flatten all positions in `< 10 seconds`, bypassing all normal logic, risk gates, and smart order routing.
 
-### Implementation Mechanisms
-The system will listen for two distinct "Kill" triggers concurrently in the main `asyncio` loop:
+**Purpose:** Instantly halt trading, flatten open positions, and exit in `< 10 seconds` without waiting for normal APM or strategy logic.
 
-1. **Telegram Command (Primary):** 
-   * The bot listens for a specific Telegram message (e.g., `/kill_karsa`) from the authorized `TELEGRAM_CHAT_ID`.
-2. **Local File Flag (Backup):** 
-   * The Watchdog checks for the existence of a specific file on the host machine every 1 second (e.g., `touch /tmp/KILL_KARSA`).
+### Triggers
+1. **Telegram Command (Primary)**: Authorized user issues `/kill` or `/stop` via the `karsa-commander` bot interface.
+2. **Local File Flag (Backup)**: Creation of flag file `touch /tmp/KILL_KARSA` on the container host.
 
-### The Kill Sequence (Must execute in < 10s)
-When triggered, the bot immediately executes the following sequence, ignoring all errors or timeouts:
-1. **Cancel All:** Send a batch request to Bybit to cancel **all** open limit orders.
-2. **Market Flatten:** Send Market Close (IOC) orders for **all** open positions.
-3. **Halt Loop:** Set the global `asyncio.Event` to stop the Alpha Bridge and Data Engine.
-4. **Final Alert:** Send a final Telegram message: *"🚨 KILL SWITCH ACTIVATED. All positions flattened. Bot halted."*
-5. **Exit:** Terminate the Python process (`sys.exit(1)`).
+### Emergency Sequence
+1. **Cancel All**: Send a batch request to Bybit to cancel all open orders.
+2. **Market Flatten**: Issue immediate market close orders for all active positions.
+3. **Halt Loop**: Set the global `kill_switch` `asyncio.Event`.
+4. **Alert**: Push Telegram alert: *"🚨 KILL SWITCH ACTIVATED. All orders canceled, positions flattened."*
 
 ---
 
-## 2. Automated Circuit Breakers (System Intervention)
-**Purpose:** Pre-defined, deterministic rules that force the bot to halt itself before a human needs to intervene.
+## 2. Automated Circuit Breakers
 
-| Breaker Name | Trigger Condition | Bot Action |
+| Breaker Name | Trigger Condition | Automated Action |
 | :--- | :--- | :--- |
-| **Daily Drawdown (Hard)** | Realized + Unrealized PnL drops **> 2.5%** from the starting daily equity. | **4-HOUR COOLDOWN:** Cancel orders, block new entries for 4 hours. Triggers **System Doctor** AI to diagnose and auto-treat `karsa:auto:config` in Redis. |
-| **Consecutive Losses (Soft)** | **3** losing trades in a row. | **4-HOUR COOLDOWN:** Halt *new* trade generation for 4 hours. Triggers **System Doctor** AI to diagnose and patch configuration. |
-| **Execution Latency Spike** | Average order execution latency exceeds **1500ms** over a 5-minute rolling window. | **HALT:** Cancel open orders, pause new entries. Alert Telegram: *"Proxy degradation detected."* |
-| **Margin Utilization** | Total Bybit margin used exceeds **40%** of total account equity. | **HALT:** Block all new position openings. Allow existing positions to be managed/closed. |
-| **Stale Data** | Global Read Engine (Binance/OKX) receives no WebSocket updates for **> 15 seconds**. | **HALT:** Pause Alpha generation. Do not open new trades. Alert Telegram. |
-| **AI Call Latency** | AI analyst p95 latency exceeds **5 seconds** over a 5-minute rolling window. | **DEGRADE:** Skip AI for next cycle, use deterministic confidence only. Alert Telegram: *"AI degraded, running deterministic."* |
-| **AI Confidence Anomaly** | AI returns confidence **< 0.20** for **10+ consecutive** signals. | **ALERT:** Possible model degradation or market regime shift. Telegram: *"AI confidence anomaly — review recommended."* |
-| **AI Unavailable** | 9router returns error or timeout on **3 consecutive** calls. | **HALT SIGNALS:** AI is mandatory — no bypass. All signals rejected until AI recovers. Alert Telegram: *"AI offline, signals halted."* |
-| **Universe Scorer Empty** | Universe scorer returns **0 symbols** above threshold. | **FALLBACK:** Use static symbol list from `config.py`. Alert Telegram: *"Universe empty, fallback to static list."* |
-| **ASM Session Inactive** | `karsa:auto:state:active` is `"0"` or missing in Redis. | **BLOCK:** Executor skips all signals. No new positions opened. Data pipeline stays warm. Existing positions managed normally. |
+| **Portfolio Daily Loss** | Cumulative daily account equity loss exceeds **2.0%** from midnight UTC baseline. | **DAILY HALT:** `PortfolioRiskManager` blocks all new entries for the rest of the UTC day. Sets `risk:portfolio_cb:daily_loss_fired = 1`. |
+| **Consecutive Losses** | **3** consecutive losing trades recorded. | **4-HOUR COOLDOWN:** Pauses new signal generation for 4 hours. Triggers diagnostic analysis. |
+| **Execution Latency Spike** | Average Bybit order execution latency exceeds **1500ms** over 5 minutes. | **PAUSE ENTRIES:** Blocks new order placement; alerts operator via Telegram. |
+| **Data Engine Feed Stale** | No WebSocket tick updates received for **> 15 seconds**. | **HALT SIGNALS:** Pauses signal generation until feed recovers. Existing positions protected by exchange SL. |
+| **Mandatory AI Failure** | 9router proxy returns error or timeout on pre-entry evaluation. | **REJECT SIGNAL:** Forces confidence to `0.0`, guaranteeing deterministic signal rejection. |
+| **ISP DNS Poisoning** | Default UDP 53 DNS queries to `api.bybit.com` return Telkomsel block IPs (`182.23.*`). | **DOH BYPASS:** Automatically queries Cloudflare DoH (`https://1.1.1.1/dns-query`) to resolve AWS CloudFront IPs in ~50ms. |
 
 ---
 
-## 3. Proxy Failover (VPN Tunnel Degradation Protocol)
-**Context:** Because Bybit is geo-blocked, the WireGuard VPN tunnel (gluetun) is a mandatory single point of failure. If the tunnel drops, we cannot trust our execution latency.
+## 3. Active Position Manager (APM) Operational Guardrails
 
-### Detection
-The Watchdog monitors the Bybit Private WebSocket heartbeat and REST API response times. 
-
-### Failover Actions
-If the WireGuard VPN tunnel drops or latency spikes > 2000ms:
-1. **DO NOT attempt to Market Flatten immediately.** Sending market orders through a degraded proxy will result in catastrophic slippage or failed requests, leaving the bot blind.
-2. **Cancel Pending Orders:** Immediately cancel all open Limit orders. *(Reason: We don't want a limit order to accidentally fill 5 minutes later when the proxy reconnects while we are unaware).*
-3. **Rely on Exchange-Side Stops:** Ensure all open positions have **hard Stop-Loss orders resting on the Bybit exchange server** (not just in the bot's memory). 
-4. **Halt Trading:** Stop the Alpha Bridge from generating new signals.
-5. **Alert Human:** Send Telegram alert: *"⚠️ VPN Tunnel Degraded. Open orders canceled. Existing positions protected by exchange-side SL. Bot paused."*
-6. **Resume:** The bot will automatically attempt to reconnect the VPN tunnel every 30 seconds. Once stable for 60 seconds, it will resume trading.
+Every open position is continuously monitored by the `ActivePositionManager` (`app/execution/position_manager.py`):
+1. **Mandatory Exchange-Side Stop Loss**: Hard Stop Loss order MUST be placed on Bybit server immediately upon order fill.
+2. **Hard 5% SL Cap**: Stop Loss level is strictly capped at a maximum 5% distance.
+3. **Breakeven Lock at +1R**: Once unrealized profit reaches +1R, Stop Loss is automatically amended to entry price (breakeven).
+4. **Orphan Minimum Clean-up**: Residual position size below 5 USDT notional is automatically closed.
+5. **Regime Shift Kill Switch**: If `RegimeClassifier` detects an unfavorable regime shift (e.g. `TREND_BULL` to `TREND_BEAR` on a Long position), APM market-closes the position immediately.
 
 ---
 
-## 4. Disaster Recovery & State Reconciliation
-**Purpose:** Recover from catastrophic failures (Docker crash, Postgres volume corruption, unexpected server reboot) without creating "ghost" positions or desynced state.
+## 4. Disaster Recovery & Startup Reconciliation
 
-### The "Trust Nothing" Startup Protocol
-When the bot starts (or restarts), it **must not** trust the local PostgreSQL database. It must execute the following Reconciliation Sequence:
-
-1. **Fetch Exchange Truth:** Query Bybit REST API for all actual open positions and all active open orders.
-2. **Fetch Local Truth:** Query the local Postgres DB for the last known state.
-3. **Compare & Resolve:**
-   * *Scenario A (Clean):* Bybit and Postgres match perfectly. Proceed to normal startup.
-   * *Scenario B (Orphaned Orders):* Bybit has open limit orders that Postgres doesn't know about. **Action:** Cancel them immediately via Bybit API.
-   * *Scenario C (Ghost Positions):* Postgres says we are LONG 1 BTC, but Bybit says we are FLAT. **Action:** Overwrite Postgres with Bybit's truth. Log a `CRITICAL` error to Prometheus/Telegram.
-   * *Scenario D (Postgres Dead):* Postgres connection fails. **Action:** Create a fresh, empty Postgres schema, populate it with Bybit's current state, and proceed.
-4. **Sync Complete:** Only after this sequence finishes successfully does the Watchdog give the "Green Light" to the Alpha Bridge to start generating signals.
-
----
-
-## 5. Exchange Outage Handling
-
-### Read Exchanges (Binance, OKX) Go Down
-* **Impact:** We lose the "Global State" (VWAP, Skew). Our alpha is blind.
-* **Action:** The Data Engine flags the specific exchange as `STALE`. The Alpha Bridge automatically excludes that exchange from its calculations. If > 50% of read exchanges are stale, the bot halts new entries.
-
-### Write Exchange (Bybit) Goes Down
-* **Impact:** We cannot execute, amend, or cancel orders.
-* **Action:** 
-  1. Halt all new signal generation.
-  2. Rely entirely on **Exchange-Side Stop Losses** to protect open capital.
-  3. Continuously attempt to reconnect the Bybit WebSocket.
-  4. Alert Telegram: *"Bybit Outage. Trading paused. Positions protected by server-side SL."*
-
----
-
-## 6. Operations Runbook Matrix
-
-A quick-reference guide for the operator when alerts fire.
-
-| Alert / Symptom | Bot's Automated Action | Human Operator Action |
-| :--- | :--- | :--- |
-| **🚨 KILL SWITCH ACTIVATED** | Flattened all, bot stopped. | Investigate why it was triggered. Check Bybit UI to confirm flat. Restart bot manually when ready. |
-| **🛑 Daily Drawdown > 2.5%** | 4-Hour Cooldown, System Doctor triggered. | Review Doctor's AI diagnosis in Telegram. Verify if `karsa:auto:config` treatment is sufficient. Reset manually if safe. |
-| **🛑 3 Consecutive Losses** | 4-Hour Cooldown, System Doctor triggered. | Review Doctor's AI diagnosis in Telegram. Verify if `karsa:auto:config` treatment is sufficient. Reset manually if safe. |
-| **⚠️ VPN Tunnel Down** | Paused trading, stale data warnings. | Check `docker logs karsa-gluetun`. Verify WireGuard server is running on droplet. Check DO Cloud Firewall allows UDP 51820. |
-| **📉 Stale Data (>15s)** | Paused new entries. | Check VPN tunnel. Check if Binance/OKX are experiencing global outages. |
-| **⏳ Execution Latency > 1500ms** | Paused new entries. | Check Docker resource usage. Check VPN routing. |
-| **💀 Postgres Connection Failed** | Rebuilt state from Bybit, continued. | Check Docker logs for Postgres container. Restart Postgres container (`docker compose restart db`). |
-| **⚠️ Reconciliation Degraded** | Startup continues in degraded mode (data engine + alpha bridge run). | Check Bybit API key permissions ("Asset" read required). Verify VPN tunnel is up. Positions cannot be verified until Bybit reachable. |
-| **🔄 State Divergence Detected** | Canceled orphaned orders, synced DB. | Review `CRITICAL` logs. This indicates a bug in the execution logic or a missed WebSocket message. |
-| **🤖 AI Analyst Timeout** | Signals rejected (AI mandatory). | Check 9router health (`curl http://127.0.0.1:20129/health`). Check Anthropic API status. If persistent, temporarily set `ai_analyst_enabled=false` in `.env` (explicit flag, logged). |
-| **🤖 AI Position Judge All HOLDs** | Positions never exiting via AI. | Check consecutive hold counter in position store. Verify 3-HOLD forced exit is working. Review AI reasoning in Telegram alerts. |
-| **📊 Universe Scorer Empty** | Fell back to static symbol list. | Check if market-wide volume drop or data issue. Manually trigger `/universe` refresh via Telegram. |
-| **🧠 Trade Memory Corrupted** | AI prompts with garbage context. | Flush `karsa:memory:*` Redis keys. Rebuild from PostgreSQL `trades` table if needed. |
-| **⚙️ Sector Cap Rejected** | Signal blocked by sector diversity. | Review current sector allocation via `/status`. Adjust `sector_cap_max` in config if needed. |
-
----
-
-## 7. Mandatory Safety Implementations (Code Level)
-
-To enforce this runbook, the following code patterns are **mandatory** for the development team:
-
-1. **Exchange-Side Stop Losses:** Every time the Bybit Executor opens a position, it **must** immediately place a hard Stop-Loss order on the Bybit exchange server. The bot's internal "soft" stop-loss is secondary. If the bot dies, the exchange SL saves the capital.
-2. **Idempotent Execution:** The execution logic must be idempotent. If the bot crashes while sending an order, and restarts, the State Reconciliation engine must ensure it doesn't accidentally send the exact same order twice.
-3. **Graceful Shutdown:** The `main.py` must catch `SIGINT` (Ctrl+C) and `SIGTERM` (Docker stop). Upon catching these, it must execute the **Kill Switch Sequence** (Cancel orders -> Flatten -> Exit) before allowing the process to die. *Never just kill the process without flattening.*
-
----
-
-## 8. Shadow Mode Operations (Phase 3.1)
-
-**Activation:** Set `SHADOW_MODE_ENABLED=true` in `.env`. Restart the bot. Shadow components substitute live components automatically via conditional wiring in `main.py`.
-
-**What changes in shadow mode:**
-- No real orders placed on Bybit
-- Startup reconciliation is skipped (shadow positions have no exchange counterpart)
-- Position reconciler task (`position_reconciler_task`) is not started
-- `ShadowExecutor` replaces `SmartOrderRouter` for entry/exit
-- `ShadowAPM` replaces `ActivePositionManager` for post-trade monitoring
-- Shadow positions tracked under `shadow:position:*` Redis keys
-- Shadow trades written to `shadow_trades` table
-
-**Monitoring:**
-- `karsa_shadow_mode_active` = 1 confirms shadow mode is running
-- `karsa_shadow_pnl_usdt` for virtual PnL distribution
-- `karsa_shadow_fees_total_usdt` for cumulative trading fees
-- `karsa_shadow_funding_fees_total_usdt` for funding rate drag
-- `karsa_shadow_sl_hits_total` for stop-loss hit count
-- `karsa_shadow_limit_orders_unfilled_total` for expired pending orders
-
-**Switching back to live:**
-1. Set `SHADOW_MODE_ENABLED=false` in `.env`
-2. Restart the bot
-3. Live components resume automatically
-4. Shadow positions in Redis are orphaned (not cleaned up) — this is intentional, they don't interfere with live operation
-
-**Failure modes:**
-- If shadow mode is active and Bybit reconciliation runs (bug), it will see shadow positions as "ghost" and delete them. The code explicitly skips reconciliation — verify on startup logs that "SHADOW MODE ENABLED — no real orders will be placed" warning appears.
-- If `SHADOW_MODE_ENABLED=true` but live Bybit positions exist, the live positions are invisible to the shadow APM. Shadow mode does NOT close live positions — they remain on Bybit unmanaged. Always close live positions before switching to shadow mode.
-
-**Verification checklist (after activation):**
-6. Shadow positions appear under `shadow:position:*` Redis keys after first virtual fill
-7. Shadow trades appear in `shadow_trades` table after virtual close
-
----
-
-## 7. On-Chain Failure Modes & Operator Playbook (v3.0)
-
-| Failure Mode | Detection | Automated Action | Operator Action |
-| :--- | :--- | :--- | :--- |
-| **Ethereum Node Drop** | `onchain:price:*` TTL expires (>30s stale) | Pause LVR module. Maintain failure isolation: CEX trading pipeline continues unhindered. | Check node provider (Alchemy/Infura/Geth). Restart node or switch provider URL in `.env`. |
-| **Flashbots Bundle Failure** | `defi_interactions` status=`FAILED` | Retry bundle with 1.5x priority fee (1 attempt). If 2nd fails, abort tx. Never route to public mempool. | Inspect block builder status at `flashbots.net`. If persistent network congestion, increase priority fee cap. |
-| **High Gas Price Spike** | `onchain:gas:gwei` > `MAX_DEPLOY_GAS_GWEI` | Defer non-essential on-chain ops (LP adjustments, oracle pushes). Urgent treasury exits proceed with warning. | Monitor gas via Etherscan Gas Tracker. Resume normal operations once gwei drops below threshold. |
-| **Pendle PT Expiry (<24h)** | `treasury_allocations.maturity` check | Auto-exit Pendle PT position, redeem 1:1 for underlying asset, return USDC to idle balance. | Verify redeemed USDC balance reflected in `treasury:total_deployed`. |
-| **Hyperliquid API Throttling** | HTTP 429 response from HL API | Pause Hyperliquid routing for 15 minutes. SOR falls back to Bybit-only execution. | Verify HL account rate limits and volume tiers on Hyperliquid dashboard. |
-| **v4 Hook Oracle Update Stale** | Oracle update tx reverts or stale >5min | Hook pool falls back to last known regime. KASM logs CRITICAL error. | Check transaction error log. Manually push regime update or pause hook dynamic fees via admin function. |
-| **Smart Contract De-peg / Exploit** | Whitelisted protocol TVL drops >20% in 1h | Emergency exit: pull all capital from affected protocol. Add address to emergency blocklist. | Perform root-cause analysis on exploit. File incident report. |
-
+Upon boot or restart, Karsa ASM executes the **"Trust Nothing" Startup Reconciliation Protocol**:
+1. Query Bybit REST API for all active open positions and open orders.
+2. Query local PostgreSQL `trades` and Redis `karsa:positions:*` for internal state.
+3. **Reconcile**:
+   - Cancel orphaned Bybit orders unknown to internal state.
+   - Sync local database to match Bybit exchange truth.
+   - Register exchange-side Stop Loss orders with `PositionStore`.

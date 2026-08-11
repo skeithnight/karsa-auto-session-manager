@@ -19,9 +19,10 @@ logger = logging.getLogger("karsa.dns_bypass")
 _orig_getaddrinfo = socket.getaddrinfo
 _doh_cache: dict[str, tuple[float, list[str]]] = {}
 _TELKOMSEL_BLOCK_PREFIXES = ("182.23.", "139.255.")
+_in_doh = False
 
 
-def _dns_query(server: str, hostname: str, timeout: float = 0.2) -> list[str]:
+def _dns_query(server: str, hostname: str, timeout: float = 0.1) -> list[str]:
     """Query a DNS server directly via UDP. Returns list of IPs or empty list."""
     txid = b"\xaa\xbb"
     flags = b"\x01\x00"
@@ -97,34 +98,29 @@ def _bypass_getaddrinfo(
     flags: int = 0,
 ) -> list[tuple[Any, ...]]:
     """Override socket.getaddrinfo with DNS poisoning bypass."""
+    global _in_doh  # noqa: PLW0603
+
     if (
-        not isinstance(host, str)
-        or host in {"postgres", "redis", "gluetun", "localhost", "127.0.0.1", "0.0.0.0", "9router", "prometheus", "grafana", "karsa-postgres", "karsa-redis"}
+        _in_doh
+        or not isinstance(host, str)
+        or host in {"postgres", "redis", "gluetun", "localhost", "127.0.0.1", "0.0.0.0", "1.1.1.1", "8.8.8.8", "9router", "prometheus", "grafana", "karsa-postgres", "karsa-redis"}
         or host.endswith(".internal")
         or host.startswith("172.")
         or host.startswith("127.")
+        or (host and host[0].isdigit())
     ):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    # 1. Try Docker internal DNS (127.0.0.11) with short 0.2s timeout
+    # 1. Try Docker internal DNS (127.0.0.11) with short 0.1s timeout
     try:
-        ips = _dns_query("127.0.0.11", host, timeout=0.2)
-        if ips:
+        ips = _dns_query("127.0.0.11", host, timeout=0.1)
+        if ips and not ips[0].startswith(_TELKOMSEL_BLOCK_PREFIXES):
             af = socket.AF_INET6 if ":" in ips[0] else socket.AF_INET
             return [(af, socket.SOCK_STREAM, 0, "", (ips[0], port if isinstance(port, int) else 0))]
     except Exception:
         pass
 
-    # 2. Try gluetun DNS (127.0.0.1) with short 0.2s timeout
-    try:
-        ips = _dns_query("127.0.0.1", host, timeout=0.2)
-        if ips:
-            af = socket.AF_INET6 if ":" in ips[0] else socket.AF_INET
-            return [(af, socket.SOCK_STREAM, 0, "", (ips[0], port if isinstance(port, int) else 0))]
-    except Exception:
-        pass
-
-    # 3. Try standard system resolver
+    # 2. Try standard system resolver
     try:
         res = _orig_getaddrinfo(host, port, family, type, proto, flags)
         has_blocked = any(
@@ -137,11 +133,16 @@ def _bypass_getaddrinfo(
     except Exception:
         pass
 
-    # 4. Fallback to Cloudflare DNS-over-HTTPS (DoH) for poisoned domain
-    ips = _doh_query(host)
+    # 3. Fallback to Cloudflare DNS-over-HTTPS (DoH) for poisoned domain
+    try:
+        _in_doh = True
+        ips = _doh_query(host)
+    finally:
+        _in_doh = False
+
     if ips:
         af = socket.AF_INET6 if ":" in ips[0] else socket.AF_INET
-        return [(af, socket.SOCK_STREAM, 0, "", (ips[0], port if isinstance(port, int) else 0))]
+        return [(af, socket.SOCK_STREAM, 0, "", (ip, port if isinstance(port, int) else 0)) for ip in ips]
 
     return _orig_getaddrinfo(host, port, family, type, proto, flags)
 

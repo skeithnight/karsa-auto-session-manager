@@ -17,10 +17,8 @@ import signal
 import sys
 import time
 
-import socket
-from app.main import _bypass_getaddrinfo
-
-socket.getaddrinfo = _bypass_getaddrinfo
+from app.core.dns_bypass import setup_dns_bypass
+setup_dns_bypass()
 
 from app.bot.alert_service import AlertService
 from app.bot.runner import run_bot

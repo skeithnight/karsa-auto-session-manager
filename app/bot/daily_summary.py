@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 from sqlalchemy import text
+from app.bot.utils.format import HTML
 
 if TYPE_CHECKING:
     from app.core.database import DatabaseEngine
@@ -257,9 +258,9 @@ class DailySummaryService:
             "cost": 0.0,
         }
         try:
-            async with self.db.engine.connect() as conn:
-                # 1. AI evaluations count from ai_decisions table
-                try:
+            # 1. AI evaluations count from ai_decisions table
+            try:
+                async with self.db.engine.connect() as conn:
                     res = await conn.execute(
                         text(
                             """SELECT COUNT(*) FROM ai_decisions
@@ -270,12 +271,13 @@ class DailySummaryService:
                     row = res.fetchone()
                     if row and row[0]:
                         stats["evaluations"] = row[0]
-                except Exception:
-                    pass
+            except Exception:
+                pass
 
-                # If ai_decisions was empty, check signals table
-                if stats["evaluations"] == 0:
-                    try:
+            # If ai_decisions was empty, check signals table
+            if stats["evaluations"] == 0:
+                try:
+                    async with self.db.engine.connect() as conn:
                         sig_res = await conn.execute(
                             text(
                                 """SELECT COUNT(*) FROM signals
@@ -287,63 +289,68 @@ class DailySummaryService:
                         sig_row = sig_res.fetchone()
                         if sig_row and sig_row[0]:
                             stats["evaluations"] = sig_row[0]
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
-                # 2. Confidence / Win Rate / Contribution from closed trades (trades or shadow_trades)
-                for table in ("trades", "shadow_trades"):
-                    t_res = await conn.execute(
-                        text(
-                            f"""SELECT COUNT(*), COALESCE(AVG(ai_confidence), 0)
-                            FROM {table}
-                            WHERE exit_time IS NOT NULL
-                            AND ai_confidence IS NOT NULL
-                            AND exit_time >= :start AND exit_time < :end"""
-                        ),
-                        {"start": start, "end": end},
-                    )
-                    t_row = t_res.fetchone()
-                    if t_row and t_row[0] and t_row[0] > 0:
-                        if stats["evaluations"] == 0:
-                            stats["evaluations"] = t_row[0]
-                        stats["avg_confidence"] = int(t_row[1])
-
-                        # High confidence win rate (ai_confidence > 80)
-                        hc_result = await conn.execute(
+            # 2. Confidence / Win Rate / Contribution from closed trades (trades or shadow_trades)
+            for table in ("trades", "shadow_trades"):
+                try:
+                    async with self.db.engine.connect() as conn:
+                        t_res = await conn.execute(
                             text(
-                                f"""SELECT
-                                    COUNT(*) FILTER (WHERE pnl > 0) as wins,
-                                    COUNT(*) as total
+                                f"""SELECT COUNT(*), COALESCE(AVG(ai_confidence), 0)
                                 FROM {table}
                                 WHERE exit_time IS NOT NULL
-                                AND ai_confidence > 80
+                                AND ai_confidence IS NOT NULL
                                 AND exit_time >= :start AND exit_time < :end"""
                             ),
                             {"start": start, "end": end},
                         )
-                        hc_row = hc_result.fetchone()
-                        if hc_row and hc_row[1] and hc_row[1] > 0:
-                            stats["high_conf_wr"] = (hc_row[0] / hc_row[1]) * 100
+                        t_row = t_res.fetchone()
+                        if t_row and t_row[0] and t_row[0] > 0:
+                            if stats["evaluations"] == 0:
+                                stats["evaluations"] = t_row[0]
+                            stats["avg_confidence"] = int(t_row[1])
 
-                        # AI contribution: PnL from AI-assisted trades
-                        contrib_result = await conn.execute(
-                            text(
-                                f"""SELECT COALESCE(SUM(pnl), 0)
-                                FROM {table}
-                                WHERE exit_time IS NOT NULL
-                                AND ai_confidence IS NOT NULL AND ai_confidence > 50
-                                AND exit_time >= :start AND exit_time < :end"""
-                            ),
-                            {"start": start, "end": end},
-                        )
-                        contrib_row = contrib_result.fetchone()
-                        if contrib_row and contrib_row[0]:
-                            stats["contribution"] = Decimal(str(contrib_row[0]))
-                        break
+                            # High confidence win rate (ai_confidence > 80)
+                            hc_result = await conn.execute(
+                                text(
+                                    f"""SELECT
+                                        COUNT(*) FILTER (WHERE pnl > 0) as wins,
+                                        COUNT(*) as total
+                                    FROM {table}
+                                    WHERE exit_time IS NOT NULL
+                                    AND ai_confidence > 80
+                                    AND exit_time >= :start AND exit_time < :end"""
+                                ),
+                                {"start": start, "end": end},
+                            )
+                            hc_row = hc_result.fetchone()
+                            if hc_row and hc_row[1] and hc_row[1] > 0:
+                                stats["high_conf_wr"] = (hc_row[0] / hc_row[1]) * 100
 
-                # If avg_confidence is still 0, check signals table
-                if stats["avg_confidence"] == 0:
-                    try:
+                            # AI contribution: PnL from AI-assisted trades
+                            contrib_result = await conn.execute(
+                                text(
+                                    f"""SELECT COALESCE(SUM(pnl), 0)
+                                    FROM {table}
+                                    WHERE exit_time IS NOT NULL
+                                    AND ai_confidence IS NOT NULL AND ai_confidence > 50
+                                    AND exit_time >= :start AND exit_time < :end"""
+                                ),
+                                {"start": start, "end": end},
+                            )
+                            contrib_row = contrib_result.fetchone()
+                            if contrib_row and contrib_row[0]:
+                                stats["contribution"] = Decimal(str(contrib_row[0]))
+                            break
+                except Exception as table_exc:
+                    logger.debug(f"daily_summary_ai_stats_table_failed_{table}: {table_exc}")
+
+            # If avg_confidence is still 0, check signals table
+            if stats["avg_confidence"] == 0:
+                try:
+                    async with self.db.engine.connect() as conn:
                         sig_avg_res = await conn.execute(
                             text(
                                 """SELECT COALESCE(AVG(ai_confidence_score), 0)
@@ -356,8 +363,8 @@ class DailySummaryService:
                         sig_avg_row = sig_avg_res.fetchone()
                         if sig_avg_row and sig_avg_row[0]:
                             stats["avg_confidence"] = int(sig_avg_row[0])
-                    except Exception:
-                        pass
+                except Exception:
+                    pass
 
             # API cost from Redis
             date_str = start.strftime("%Y-%m-%d")
@@ -577,7 +584,7 @@ class DailySummaryService:
         lines.append("")
         lines.append("━" * 36)
 
-        return "\n".join(lines)
+        return HTML("\n".join(lines))
 
     @staticmethod
     def _fmt_pnl(pnl: Decimal) -> str:

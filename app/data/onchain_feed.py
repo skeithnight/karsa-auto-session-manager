@@ -52,7 +52,7 @@ class OnChainFeed:
     ) -> None:
         self._redis = redis_client
         self._rpc_url = rpc_url or get_settings().evm_rpc_url
-        self._pools = pools or DEFAULT_POOLS
+        self._pools = pools or get_settings().evm_pools or DEFAULT_POOLS
         self._poll_interval_s = poll_interval_s
         self._running = False
         self._task: asyncio.Task[None] | None = None
@@ -110,6 +110,8 @@ class OnChainFeed:
                             self._latest_prices[pool["pool_address"]] = state
                             redis_key = f"onchain:price:{pool['pool_address']}"
                             await self._redis.set(redis_key, state.model_dump_json(), ex=30)
+                            symbol_key = f"onchain:symbol:{pool['symbol']}"
+                            await self._redis.set(symbol_key, state.model_dump_json(), ex=30)
                             return state
         except Exception as e:
             logger.warning(

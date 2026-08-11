@@ -333,7 +333,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Entry point — shows the main dashboard."""
-    logger.debug("start_cmd: entering")
+    logger.info("start_cmd: processing start command from user %s", update.effective_user.id if update.effective_user else "unknown")
     try:
         await dashboard_cmd(update, context)
     except Exception as exc:

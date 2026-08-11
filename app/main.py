@@ -2,106 +2,8 @@
 
 from __future__ import annotations
 
-# Bypass ISP (Telkomsel) DNS poisoning at Python level.
-# ponytail: queries 1.1.1.1 directly via UDP, bypasses system resolv.conf entirely.
-# Upgrade to DoH/DoT when infra supports it.
-import socket as _socket
-import struct as _struct
-
-
-def _dns_query(server, hostname):
-    """Query a DNS server directly via UDP. Returns list of IPs or empty list."""
-    txid = b"\xaa\xbb"
-    flags = b"\x01\x00"
-    counts = _struct.pack(">HHHH", 1, 0, 0, 0)
-    question = b""
-    for part in hostname.encode().split(b"."):
-        question += bytes([len(part)]) + part
-    question += b"\x00" + _struct.pack(">HH", 1, 1)
-    packet = txid + flags + counts + question
-    sock = _socket.socket(_socket.AF_INET, _socket.SOCK_DGRAM)
-    sock.settimeout(2)
-    try:
-        sock.sendto(packet, (server, 53))
-        data, _ = sock.recvfrom(512)
-    finally:
-        sock.close()
-    offset = 12
-    while data[offset] != 0:
-        offset += data[offset] + 1
-    offset += 5
-    answers = _struct.unpack(">H", data[6:8])[0]
-    ips = []
-    for _ in range(answers):
-        if data[offset] & 0xC0:
-            offset += 2
-        else:
-            while data[offset] != 0:
-                offset += data[offset] + 1
-            offset += 1
-        rtype, rclass, ttl, rdlength = _struct.unpack(
-            ">HHIH", data[offset : offset + 10]
-        )
-        offset += 10
-        if rtype == 1 and rdlength == 4:
-            ip = ".".join(str(b) for b in data[offset : offset + 4])
-            ips.append(ip)
-        offset += rdlength
-    return ips
-
-
-_orig_getaddrinfo = _socket.getaddrinfo
-
-
-def _bypass_getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
-    """Override socket.getaddrinfo — try gluetun DNS (external) then Docker DNS (internal)."""
-    # Exclude internal Docker service names & local IP/localhost
-    if (
-        not isinstance(host, str)
-        or host in {"postgres", "redis", "gluetun", "localhost", "127.0.0.1", "0.0.0.0", "9router", "prometheus", "grafana", "karsa-postgres", "karsa-redis"}
-        or host.endswith(".internal")
-        or host.startswith("172.")
-        or host.startswith("127.")
-    ):
-        return _orig_getaddrinfo(host, port, family, type, proto, flags)
-
-    # 1. Try Docker internal DNS (127.0.0.11) — fast (2ms) resolution for both internal services & internet domains
-    try:
-        ips = _dns_query("127.0.0.11", host)
-        if ips:
-            af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
-            return [
-                (
-                    af,
-                    _socket.SOCK_STREAM,
-                    0,
-                    "",
-                    (ips[0], port if isinstance(port, int) else 0),
-                )
-            ]
-    except Exception:
-        pass
-    # 2. Try gluetun DNS (127.0.0.1) — fallback
-    try:
-        ips = _dns_query("127.0.0.1", host)
-        if ips:
-            af = _socket.AF_INET6 if ":" in ips[0] else _socket.AF_INET
-            return [
-                (
-                    af,
-                    _socket.SOCK_STREAM,
-                    0,
-                    "",
-                    (ips[0], port if isinstance(port, int) else 0),
-                )
-            ]
-    except Exception:
-        pass
-    # 3. Fallback to system resolver
-    return _orig_getaddrinfo(host, port, family, type, proto, flags)
-
-
-_socket.getaddrinfo = _bypass_getaddrinfo
+from app.core.dns_bypass import setup_dns_bypass
+setup_dns_bypass()
 
 import asyncio
 import random
@@ -143,8 +45,10 @@ from app.core.trade_reconciler import TradeReconciler
 from app.core.trade_store import TradeStore
 from app.data.ccxt_manager import CCXTManager
 from app.data.filters import BadTickFilter
+from app.data.gas_tracker import GasTracker
 from app.data.normalizer import Normalizer
 from app.data.ohlcv_fetcher import OHLCVFetcher
+from app.data.onchain_feed import OnChainFeed
 from app.data.universe_scorer import UniverseScorer
 from app.execution.bybit_client import BybitClient
 from app.execution.position_lifecycle import CheckpointManager, TrailingStopManager
@@ -1390,6 +1294,8 @@ async def main() -> None:
     )  # VPN up if ccxt_manager.start() succeeded (Bybit goes through WARP)
     normalizer = Normalizer()
     bad_tick_filter = BadTickFilter()
+    gas_tracker = GasTracker(redis_client=redis_client)
+    onchain_feed = OnChainFeed(redis_client=redis_client)
     alpha_metrics = AlphaMetrics()
     signal_generator = SignalGenerator()
     regime_engine = RegimeEngine()
@@ -1802,6 +1708,8 @@ async def main() -> None:
             if shadow_apm
             else active_position_manager.start_monitoring()
         ),
+        asyncio.create_task(gas_tracker.start()),
+        asyncio.create_task(onchain_feed.start()),
     ]
 
     task_names = [
@@ -1823,6 +1731,8 @@ async def main() -> None:
         "regime_classifier",
         "prm_daily_reset",
         "shadow_apm" if settings.shadow_mode_enabled else "active_position_manager",
+        "gas_tracker",
+        "onchain_feed",
     ]
     for t, name in zip(tasks, task_names):
         t.set_name(name)

@@ -104,13 +104,19 @@ class SmartOrderRouter:
             price_tick = self.client._price_ticks.get(symbol, Decimal("0.01"))
         order: dict[str, Any] | None = None
 
-        # Reject invalid price
+        # Reject invalid price or sub-minimum notional (< 5 USDT on Bybit)
         if price <= 0:
             logger.warning(f"SOR: invalid price {price} for {symbol}, skipping")
             return None
 
-        # Iceberg / TWAP Order Slicing
         notional = price * amount
+        if notional < Decimal("5.0"):
+            logger.warning(
+                f"SOR: notional {notional:.2f} USDT is below Bybit 5 USDT minimum for {symbol}, skipping"
+            )
+            return None
+
+        # Iceberg / TWAP Order Slicing
         if notional > Decimal("2000"):
             logger.info(
                 f"SOR Iceberg Mode: {symbol} notional > $2000, slicing into 4 chunks"

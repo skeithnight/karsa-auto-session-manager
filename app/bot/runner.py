@@ -99,14 +99,35 @@ async def run_bot(  # noqa: PLR0913
     # ── Register central callback dispatcher ────────────────────────────
     application.add_handler(CallbackQueryHandler(button_callback))
 
+    # ── Register plain text fallback handler (matches 'start', 'dashboard', etc.) ──
+    from telegram.ext import MessageHandler, filters
+
+    async def _plain_text_handler(update, context):
+        text = (update.message.text or "").strip().lower() if update.message else ""
+        logger.info(f"Telegram update received: '{text}' from user {update.effective_user.id if update.effective_user else 'unknown'}")
+        if text in {"start", "dashboard", "/start", "/dashboard"}:
+            await start_cmd(update, context)
+
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _plain_text_handler))
+
+    # ── Error handler ────────────────────────────────────────────────────
+    async def _on_error(update, context):
+        logger.error(f"PTB update error: {context.error}", exc_info=context.error)
+
+    application.add_error_handler(_on_error)
+
     # ── Start polling ───────────────────────────────────────────────────
+    logger.info("run_bot: calling application.initialize()")
     await application.initialize()
+    logger.info("run_bot: calling application.start()")
     await application.start()
 
     # Register bot instance with AlertService for proactive push alerts
     if alert_service is not None:
+        logger.info("run_bot: registering bot with AlertService")
         alert_service.register_bot(application.bot)
 
+    logger.info("run_bot: calling updater.start_polling()")
     await application.updater.start_polling(drop_pending_updates=True)
     logger.info("bot_polling_started")
 

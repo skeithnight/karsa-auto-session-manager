@@ -5,7 +5,8 @@ trades through the Bybit SmartOrderRouter. Every entry passes
 PortfolioRiskManager before execution — no bypass.
 """
 
-from __future__ import annotations
+from app.core.dns_bypass import setup_dns_bypass
+setup_dns_bypass()
 
 import asyncio
 import contextlib
@@ -428,6 +429,8 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
                 if hybrid_decision.size_pct > 0 and hybrid_decision.size_pct < 1.0:
                     original_amount = signal.amount
                     adjusted_amount = original_amount * Decimal(str(hybrid_decision.size_pct))
+                    if signal.entry_price > 0 and (original_amount * signal.entry_price) >= Decimal("5.0") and (adjusted_amount * signal.entry_price) < Decimal("5.0"):
+                        adjusted_amount = Decimal("5.05") / signal.entry_price
                     object.__setattr__(signal, "amount", adjusted_amount)
                     logger.info(
                         "HybridDecisionEngine sizing %s: %s -> %s (size=%s, confidence=%d)",
@@ -1389,10 +1392,10 @@ async def _balance_refresh_loop(
         await asyncio.sleep(interval_s)
         try:
             bal = await bybit.fetch_balance()
-            free = Decimal(str(bal.get("free", 0)))
-            if free > 0:
-                engine.set_wallet_balance(free)
-                logger.debug("balance refreshed: %s USDT", free)
+            total = Decimal(str(bal.get("total", bal.get("free", 0))))
+            if total > 0:
+                engine.set_wallet_balance(total)
+                logger.debug("balance refreshed: %s USDT (total equity)", total)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1955,10 +1958,10 @@ async def main() -> None:  # noqa: PLR0915
     if bybit:
         try:
             bal = await bybit.fetch_balance()
-            free = Decimal(str(bal.get("free", 0)))
-            if free > 0:
-                engine.set_wallet_balance(free)
-                logger.info("initial balance: %s USDT", free)
+            total = Decimal(str(bal.get("total", bal.get("free", 0))))
+            if total > 0:
+                engine.set_wallet_balance(total)
+                logger.info("initial balance: %s USDT (total equity)", total)
         except Exception:
             logger.warning("initial balance fetch failed — using fallback sizing")
 

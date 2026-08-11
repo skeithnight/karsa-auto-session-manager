@@ -4,8 +4,7 @@
 # Dispatches to the correct Python module based on KARSA_ROLE.
 
 if [ "$KARSA_ROLE" != "backtest" ] && [ "$KARSA_ROLE" != "commander" ]; then
-  echo "nameserver 127.0.0.1" > /etc/resolv.conf
-  echo "ENTRYPOINT: resolv.conf set to:" >&2
+  echo "ENTRYPOINT: resolv.conf contains:" >&2
   cat /etc/resolv.conf >&2
 fi
 echo "ENTRYPOINT: KARSA_ROLE=$KARSA_ROLE" >&2

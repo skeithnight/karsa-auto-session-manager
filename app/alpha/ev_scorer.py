@@ -223,6 +223,32 @@ class EVScorer:
         adjusted_ev = max(0.0, raw_ev - ev_penalty)
         return round(adjusted_ev, 4)
 
+    def apply_dex_divergence_adjustment(
+        self,
+        raw_ev: float,
+        cex_price: float,
+        dex_price: float | None,
+        direction: str,
+    ) -> float:
+        """Adjust EV score based on CEX vs DEX price divergence (Phase A Alpha Signal).
+
+        When DEX price leads in the direction of the trade (e.g., DEX > CEX for LONG),
+        it provides on-chain momentum confirmation (+0.02 to +0.05 EV boost).
+        """
+        if dex_price is None or dex_price <= 0 or cex_price <= 0:
+            return raw_ev
+
+        spread_bps = ((dex_price - cex_price) / cex_price) * 10000.0
+
+        if direction.upper() == "LONG" and spread_bps > 5.0:
+            boost = min(0.05, (spread_bps / 100.0) * 0.10)
+            return round(min(1.5, raw_ev + boost), 4)
+        elif direction.upper() == "SHORT" and spread_bps < -5.0:
+            boost = min(0.05, (abs(spread_bps) / 100.0) * 0.10)
+            return round(min(1.5, raw_ev + boost), 4)
+
+        return raw_ev
+
     # ─── Component Scorers ──────────────────────────────────────────
 
     def _score_regime(self, regime: str | None, direction: str) -> float:

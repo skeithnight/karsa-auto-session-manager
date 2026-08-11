@@ -70,7 +70,7 @@ class DynamicThreshold:
         """Compute dynamic EV threshold."""
         # Try Redis-cached threshold first
         if redis_client is not None:
-            cached = await self._read_cached(redis_client)
+            cached = await self._read_cached(redis_client, regime)
             if cached is not None:
                 return cached
 
@@ -111,15 +111,16 @@ class DynamicThreshold:
 
         # Cache in Redis (1h TTL)
         if redis_client is not None:
-            await self._cache(redis_client, threshold)
+            await self._cache(redis_client, threshold, regime)
 
         return threshold
 
-    async def _read_cached(self, redis_client: object) -> float | None:
+    async def _read_cached(self, redis_client: object, regime: str = "") -> float | None:
         """Read cached threshold from Redis."""
         try:
             import json as _json
-            raw = await redis_client.get("karsa:gate:ev_threshold")
+            reg_key = regime.upper() if regime else "DEFAULT"
+            raw = await redis_client.get(f"karsa:gate:ev_threshold:{reg_key}")
             if raw:
                 data = _json.loads(raw)
                 return data.get("threshold")
@@ -127,13 +128,14 @@ class DynamicThreshold:
             pass
         return None
 
-    async def _cache(self, redis_client: object, threshold: float) -> None:
+    async def _cache(self, redis_client: object, threshold: float, regime: str = "") -> None:
         """Cache threshold in Redis (1h TTL)."""
         try:
             import json as _json
             import time
+            reg_key = regime.upper() if regime else "DEFAULT"
             await redis_client.set(
-                "karsa:gate:ev_threshold",
+                f"karsa:gate:ev_threshold:{reg_key}",
                 _json.dumps({
                     "threshold": threshold,
                     "updated_at": time.time(),

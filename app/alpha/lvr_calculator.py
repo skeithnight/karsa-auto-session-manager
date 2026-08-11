@@ -36,7 +36,7 @@ class LVRCalculator:
 
     @classmethod
     def compute_opportunity(
-        self,
+        cls,
         symbol: str,
         binance_mid: Decimal | None,
         okx_mid: Decimal | None,
@@ -75,7 +75,7 @@ class LVRCalculator:
 
         net_ev_bps = spread_bps - gas_cost_bps - slippage_bps
 
-        threshold = min_threshold_bps if min_threshold_bps is not None else self.MIN_LVR_THRESHOLD_BPS
+        threshold = min_threshold_bps if min_threshold_bps is not None else cls.MIN_LVR_THRESHOLD_BPS
         is_actionable = net_ev_bps >= threshold
 
         now_str = datetime.now(timezone.utc).isoformat()

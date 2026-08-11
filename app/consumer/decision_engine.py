@@ -6,6 +6,7 @@ module and only diverge at execution (SmartOrderRouter vs ShadowExecutor).
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -1125,6 +1126,7 @@ class DecisionEngine:
         cvd_slope = float(features.cvd_slope) if hasattr(features, 'cvd_slope') and features.cvd_slope is not None else 0.0
         depth_ratio = float(features.depth_ratio) if hasattr(features, 'depth_ratio') and features.depth_ratio is not None else 1.0
         spread_pct = float(features.spread_pct) if hasattr(features, 'spread_pct') and features.spread_pct is not None else 0.001
+        close_price = float(features.close) if hasattr(features, 'close') and features.close is not None else 0.0
 
         # Get historical win rate from trade memory
         historical_win_rate = 0.5
@@ -1177,6 +1179,23 @@ class DecisionEngine:
             oi_change_pct=oi_change if oi_change is not None else 0.0,
             hour_utc=hour_utc,
         )
+
+        # Apply CEX vs DEX price divergence adjustment (Phase A on-chain alpha signal)
+        if self._redis is not None and close_price > 0:
+            try:
+                raw_onchain = await self._redis.get(f"onchain:symbol:{symbol}")
+                if raw_onchain:
+                    onchain_data = json.loads(raw_onchain)
+                    dex_price = float(onchain_data.get("dex_price", 0))
+                    if dex_price > 0:
+                        ev_score = self._ev_scorer.apply_dex_divergence_adjustment(
+                            raw_ev=ev_score,
+                            cex_price=close_price,
+                            dex_price=dex_price,
+                            direction=direction,
+                        )
+            except Exception as e:
+                logger.warning(f"DecisionEngine: DEX divergence check failed for {symbol}: {e}")
 
         logger.debug(
             "EVScorer: %s %s ev=%.3f threshold=%.3f components=%s",

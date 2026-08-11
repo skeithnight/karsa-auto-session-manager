@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
 try:
     from loguru import logger
@@ -48,6 +49,7 @@ class Settings(BaseSettings):
 
     # ── On-Chain / EVM ─────────────────────────────────────────
     evm_rpc_url: str = "https://eth.llamarpc.com"
+    evm_pools: list[dict[str, Any]] = Field(default_factory=list)
 
     # ── Portfolio Risk Limits ──────────────────────────────────
     max_gross_exposure_pct: str = "0.50"
@@ -296,6 +298,9 @@ class Settings(BaseSettings):
         if "+asyncpg" in dsn:
             dsn = dsn.replace("+asyncpg", "")
         return dsn
+
+
+Settings.model_rebuild()
 
 
 @lru_cache

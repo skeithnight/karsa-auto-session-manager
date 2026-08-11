@@ -49,6 +49,8 @@ class BybitClient:
 
     def _create_session(self) -> None:
         """Create or recreate pybit HTTP session."""
+        from app.core.dns_bypass import setup_dns_bypass
+        setup_dns_bypass()
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
             api_secret=self.settings.bybit_api_secret,

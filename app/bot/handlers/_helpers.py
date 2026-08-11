@@ -67,6 +67,8 @@ async def _reply(update: Update, content, **kwargs):
     """Unified reply helper — prepends timestamp, handles callback vs message context."""
     logger.debug("_reply: entering")
     ts = datetime.now().strftime("%Y-%m-%d %H:%M")
+    if kwargs.get("parse_mode") == "HTML" and not isinstance(content, HTML):
+        content = HTML(content)
     content = fmt(italic(ts), "\n", content)
     if isinstance(content, HTML) and "parse_mode" not in kwargs:
         kwargs["parse_mode"] = "HTML"

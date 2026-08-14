@@ -65,74 +65,76 @@ async def run_bot(  # noqa: PLR0913
         logger.debug("run_bot: returning (no token)")
         return
 
-    application = ApplicationBuilder().token(settings.telegram_bot_token).build()
+    def _build_app():
+        app = (
+            ApplicationBuilder()
+            .token(settings.telegram_bot_token)
+            .connect_timeout(30.0)
+            .read_timeout(30.0)
+            .write_timeout(30.0)
+            .pool_timeout(30.0)
+            .build()
+        )
+        app.bot_data["redis_client"] = redis_client
+        app.bot_data["bybit_client"] = bybit_client
+        app.bot_data["kill_switch"] = kill_switch
+        app.bot_data["session_manager"] = session_manager
+        app.bot_data["db_engine"] = db_engine
+        app.bot_data["emitter"] = emitter
+        app.bot_data["trade_reconciler"] = trade_reconciler
 
-    # ── Wire shared dependencies ────────────────────────────────────────
-    application.bot_data["redis_client"] = redis_client
-    application.bot_data["bybit_client"] = bybit_client
-    application.bot_data["kill_switch"] = kill_switch
-    application.bot_data["session_manager"] = session_manager
-    application.bot_data["db_engine"] = db_engine
-    application.bot_data["emitter"] = emitter
-    application.bot_data["trade_reconciler"] = trade_reconciler
-    logger.info(
-        f"bot_data wired: redis={'ok' if redis_client else 'None'} bybit={'ok' if bybit_client else 'None'} session_manager={'ok' if session_manager else 'None'} db={'ok' if db_engine else 'None'} emitter={'ok' if emitter else 'None'} reconciler={'ok' if trade_reconciler else 'None'}"
-    )
+        from telegram import Update as _Update
+        from telegram.ext import TypeHandler
 
-    # ── Register global update logger ───────────────────────────────────
-    from telegram import Update as _Update
-    from telegram.ext import TypeHandler
+        async def _log_update(u: _Update, c):
+            user_id = u.effective_user.id if u.effective_user else "unknown"
+            txt = u.effective_message.text if u.effective_message else (u.callback_query.data if u.callback_query else "non-text")
+            logger.info(f"📩 TELEGRAM INCOMING UPDATE: user={user_id} payload={txt!r}")
 
-    async def _log_update(u: _Update, c):
-        user_id = u.effective_user.id if u.effective_user else "unknown"
-        txt = u.effective_message.text if u.effective_message else (u.callback_query.data if u.callback_query else "non-text")
-        logger.info(f"📩 TELEGRAM INCOMING UPDATE: user={user_id} payload={txt!r}")
+        app.add_handler(TypeHandler(_Update, _log_update), group=-1)
 
-    application.add_handler(TypeHandler(_Update, _log_update), group=-1)
+        app.add_handler(CommandHandler("start", start_cmd))
+        app.add_handler(CommandHandler("dashboard", dashboard_cmd))
+        app.add_handler(CommandHandler("activity", activity_cmd))
+        app.add_handler(CommandHandler("portfolio", portfolio_cmd))
+        app.add_handler(CommandHandler("performance", performance_cmd))
+        app.add_handler(CommandHandler("report_menu", report_menu_cmd))
+        app.add_handler(CommandHandler("report_shadow", report_shadow_cmd))
+        app.add_handler(CommandHandler("control", control_cmd))
+        app.add_handler(CommandHandler("settings", settings_cmd))
+        app.add_handler(CommandHandler("positions", view_positions_detail_cmd))
+        app.add_handler(CommandHandler("history", trade_history_cmd))
+        app.add_handler(CommandHandler("backtest", backtest_cmd))
+        app.add_handler(CommandHandler("health", health_cmd))
+        app.add_handler(CommandHandler("analytics", analytics_cmd))
+        app.add_handler(CommandHandler("ai_status", ai_status_cmd))
+        app.add_handler(CommandHandler("summary", summary_cmd))
+        app.add_handler(CommandHandler("defi", defi_cmd))
+        app.add_handler(CommandHandler("treasury", defi_cmd))
 
-    # ── Register command handlers ───────────────────────────────────────
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("dashboard", dashboard_cmd))
-    application.add_handler(CommandHandler("activity", activity_cmd))
-    application.add_handler(CommandHandler("portfolio", portfolio_cmd))
-    application.add_handler(CommandHandler("performance", performance_cmd))
-    application.add_handler(CommandHandler("report_menu", report_menu_cmd))
-    application.add_handler(CommandHandler("report_shadow", report_shadow_cmd))
-    application.add_handler(CommandHandler("control", control_cmd))
-    application.add_handler(CommandHandler("settings", settings_cmd))
-    application.add_handler(CommandHandler("positions", view_positions_detail_cmd))
-    application.add_handler(CommandHandler("history", trade_history_cmd))
-    application.add_handler(CommandHandler("backtest", backtest_cmd))
-    application.add_handler(CommandHandler("health", health_cmd))
-    application.add_handler(CommandHandler("analytics", analytics_cmd))
-    application.add_handler(CommandHandler("ai_status", ai_status_cmd))
-    application.add_handler(CommandHandler("summary", summary_cmd))
-    application.add_handler(CommandHandler("defi", defi_cmd))
-    application.add_handler(CommandHandler("treasury", defi_cmd))
+        app.add_handler(CallbackQueryHandler(button_callback))
 
-    # ── Register central callback dispatcher ────────────────────────────
-    application.add_handler(CallbackQueryHandler(button_callback))
+        from telegram.ext import MessageHandler, filters
 
-    # ── Register plain text fallback handler (matches 'start', 'dashboard', etc.) ──
-    from telegram.ext import MessageHandler, filters
+        async def _plain_text_handler(update, context):
+            text = (update.message.text or "").strip().lower() if update.message else ""
+            logger.info(f"Telegram update received: '{text}' from user {update.effective_user.id if update.effective_user else 'unknown'}")
+            if text in {"start", "dashboard", "/start", "/dashboard"}:
+                await start_cmd(update, context)
 
-    async def _plain_text_handler(update, context):
-        text = (update.message.text or "").strip().lower() if update.message else ""
-        logger.info(f"Telegram update received: '{text}' from user {update.effective_user.id if update.effective_user else 'unknown'}")
-        if text in {"start", "dashboard", "/start", "/dashboard"}:
-            await start_cmd(update, context)
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _plain_text_handler))
 
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _plain_text_handler))
+        async def _on_error(update, context):
+            logger.error(f"PTB update error: {context.error}", exc_info=context.error)
 
-    # ── Error handler ────────────────────────────────────────────────────
-    async def _on_error(update, context):
-        logger.error(f"PTB update error: {context.error}", exc_info=context.error)
+        app.add_error_handler(_on_error)
+        return app
 
-    application.add_error_handler(_on_error)
-
-    # ── Start polling (with retry loop for transient container startup network lag) ──
+    # ── Start polling (with retry loop and clean rebuild) ──
     started = False
     max_retries = 10
+    application = _build_app()
+
     for attempt in range(1, max_retries + 1):
         try:
             logger.info("run_bot: calling application.initialize() attempt=%d", attempt)
@@ -151,9 +153,12 @@ async def run_bot(  # noqa: PLR0913
             started = True
             break
         except Exception as exc:
-            logger.warning("run_bot startup attempt %d/%d failed: %s", attempt, max_retries, exc)
+            logger.warning(f"run_bot startup attempt {attempt}/{max_retries} failed: {exc}")
+            with contextlib.suppress(Exception):
+                await application.shutdown()
             if attempt < max_retries:
                 await asyncio.sleep(min(2 ** (attempt - 1), 15))
+                application = _build_app()
 
     if not started:
         logger.critical("run_bot failed to start after %d attempts", max_retries)

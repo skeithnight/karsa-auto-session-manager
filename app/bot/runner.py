@@ -54,6 +54,7 @@ async def run_bot(  # noqa: PLR0913
         view_positions_detail_cmd,
         health_cmd,
         analytics_cmd,
+        defi_cmd,
     )
     from app.core.config import get_settings
 
@@ -78,6 +79,17 @@ async def run_bot(  # noqa: PLR0913
         f"bot_data wired: redis={'ok' if redis_client else 'None'} bybit={'ok' if bybit_client else 'None'} session_manager={'ok' if session_manager else 'None'} db={'ok' if db_engine else 'None'} emitter={'ok' if emitter else 'None'} reconciler={'ok' if trade_reconciler else 'None'}"
     )
 
+    # ── Register global update logger ───────────────────────────────────
+    from telegram import Update as _Update
+    from telegram.ext import TypeHandler
+
+    async def _log_update(u: _Update, c):
+        user_id = u.effective_user.id if u.effective_user else "unknown"
+        txt = u.effective_message.text if u.effective_message else (u.callback_query.data if u.callback_query else "non-text")
+        logger.info(f"📩 TELEGRAM INCOMING UPDATE: user={user_id} payload={txt!r}")
+
+    application.add_handler(TypeHandler(_Update, _log_update), group=-1)
+
     # ── Register command handlers ───────────────────────────────────────
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("dashboard", dashboard_cmd))
@@ -95,6 +107,8 @@ async def run_bot(  # noqa: PLR0913
     application.add_handler(CommandHandler("analytics", analytics_cmd))
     application.add_handler(CommandHandler("ai_status", ai_status_cmd))
     application.add_handler(CommandHandler("summary", summary_cmd))
+    application.add_handler(CommandHandler("defi", defi_cmd))
+    application.add_handler(CommandHandler("treasury", defi_cmd))
 
     # ── Register central callback dispatcher ────────────────────────────
     application.add_handler(CallbackQueryHandler(button_callback))
@@ -116,20 +130,34 @@ async def run_bot(  # noqa: PLR0913
 
     application.add_error_handler(_on_error)
 
-    # ── Start polling ───────────────────────────────────────────────────
-    logger.info("run_bot: calling application.initialize()")
-    await application.initialize()
-    logger.info("run_bot: calling application.start()")
-    await application.start()
+    # ── Start polling (with retry loop for transient container startup network lag) ──
+    started = False
+    max_retries = 10
+    for attempt in range(1, max_retries + 1):
+        try:
+            logger.info("run_bot: calling application.initialize() attempt=%d", attempt)
+            await application.initialize()
+            logger.info("run_bot: calling application.start()")
+            await application.start()
 
-    # Register bot instance with AlertService for proactive push alerts
-    if alert_service is not None:
-        logger.info("run_bot: registering bot with AlertService")
-        alert_service.register_bot(application.bot)
+            # Register bot instance with AlertService for proactive push alerts
+            if alert_service is not None:
+                logger.info("run_bot: registering bot with AlertService")
+                alert_service.register_bot(application.bot)
 
-    logger.info("run_bot: calling updater.start_polling()")
-    await application.updater.start_polling(drop_pending_updates=True)
-    logger.info("bot_polling_started")
+            logger.info("run_bot: calling updater.start_polling()")
+            await application.updater.start_polling(drop_pending_updates=True)
+            logger.info("bot_polling_started")
+            started = True
+            break
+        except Exception as exc:
+            logger.warning("run_bot startup attempt %d/%d failed: %s", attempt, max_retries, exc)
+            if attempt < max_retries:
+                await asyncio.sleep(min(2 ** (attempt - 1), 15))
+
+    if not started:
+        logger.critical("run_bot failed to start after %d attempts", max_retries)
+        return
 
     # ── Wait for kill switch ────────────────────────────────────────────
     await kill_switch.wait()

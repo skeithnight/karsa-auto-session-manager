@@ -27,14 +27,14 @@ class AlertService:
     Emergency messages (🚨 prefix) always send — circuit breaker / watchdog.
     """
 
-    # Emergency prefixes that always bypass rate limiting
-    _EMERGENCY_PREFIXES = ("🚨",)
+    # Trade & emergency prefixes that always bypass rate limiting
+    _ALWAYS_SEND_PREFIXES = ("🚨", "🚀", "🎯", "🛑", "🛡️")
 
     def __init__(self, chat_id: str, rate_limit_seconds: int = 60) -> None:
         self._chat_id = int(chat_id) if chat_id else 0
         self._bot = None
         self._queue: list[str] = []
-        # Rate limiting: prefix (first 20 chars) → last send timestamp
+        # Rate limiting: prefix (first 50 chars including symbol) → last send timestamp
         self._send_history: dict[str, float] = {}
         self._rate_limit_seconds = rate_limit_seconds
 
@@ -53,8 +53,8 @@ class AlertService:
     async def send(self, text: str) -> None:
         """Send HTML message to configured chat. Queues if bot not ready.
 
-        Rate limiting: drops duplicate-prefix messages within cooldown window.
-        Emergency messages (🚨 prefix) always send.
+        Trade execution and emergency messages always send immediately.
+        Other repetitive messages use 60s rate limit per prefix.
         """
         if not self._chat_id:
             return
@@ -63,17 +63,17 @@ class AlertService:
             logger.debug("AlertService: Bot not ready, queued message.")
             return
 
-        # Rate limiting — skip for emergency messages
-        prefix = text[:20]
-        is_emergency = any(prefix.startswith(p) for p in self._EMERGENCY_PREFIXES)
+        # Always send trade execution and emergency alerts immediately
+        prefix = text[:50]
+        is_bypass = any(p in text for p in self._ALWAYS_SEND_PREFIXES)
 
-        if not is_emergency:
+        if not is_bypass:
             now = time.monotonic()
             last_send = self._send_history.get(prefix, 0.0)
             if now - last_send < self._rate_limit_seconds:
                 logger.debug(
                     f"alert_rate_limited: {prefix!r} "
-                    f"(cooldown {self._rate_limit_seconds}s)"
+                    f"cooldown_remaining={self._rate_limit_seconds - (now - last_send):.1f}s"
                 )
                 return
             self._send_history[prefix] = now

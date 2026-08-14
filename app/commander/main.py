@@ -17,8 +17,8 @@ import signal
 import sys
 import time
 
-from app.core.dns_bypass import setup_dns_bypass
-setup_dns_bypass()
+from app.core.dns_fallback import setup_dns_fallback
+setup_dns_fallback()
 
 from app.bot.alert_service import AlertService
 from app.bot.runner import run_bot

@@ -134,50 +134,76 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async def _fetch_wallet():
         t = time.monotonic()
+        # 1. Try fresh Redis cache (120s TTL from live_loop)
         try:
             cached_raw = await r.get("karsa:wallet:latest")
             if cached_raw:
                 cached = json.loads(cached_raw)
                 logger.info("fetch_wallet_done (from redis) ms=%d", int((time.monotonic() - t) * 1000))
-                return {"wallet": cached, "ok": cached.get("ok", True)}
+                return {"wallet": cached, "ok": cached.get("ok", True), "stale": False}
         except Exception as cache_exc:
             logger.debug("redis_wallet_cache_read_failed: %s", cache_exc)
 
+        # 2. Try direct Bybit API call
         try:
-            wallet = await asyncio.wait_for(bybit.get_wallet_balance(), timeout=2.5)
+            wallet = await asyncio.wait_for(bybit.get_wallet_balance(), timeout=7.0)
             logger.info("fetch_wallet_done ms=%d", int((time.monotonic() - t) * 1000))
-            return {"wallet": wallet, "ok": not wallet.get("error")}
+            return {"wallet": wallet, "ok": wallet.get("connected", not wallet.get("error")), "stale": False}
         except Exception as exc:
             logger.error("fetch_wallet_failed", extra={"error": str(exc)})
-            return {"wallet": {}, "ok": False}
+
+        # 3. Fallback: last-known-good balance (24h TTL, survives outages)
+        try:
+            lkg_raw = await r.get("karsa:wallet:last_known_good")
+            if lkg_raw:
+                lkg = json.loads(lkg_raw)
+                logger.info("fetch_wallet_using_last_known_good ms=%d", int((time.monotonic() - t) * 1000))
+                return {"wallet": lkg, "ok": False, "stale": True}
+        except Exception:
+            pass
+
+        return {"wallet": {}, "ok": False, "stale": False}
 
     async def _fetch_vpn():
-        """Probe Gluetun VPN container health or AI proxy."""
+        """Probe Gluetun VPN container health."""
         t = time.monotonic()
         try:
             import httpx
 
             async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-                try:
-                    resp = await client.get("http://gluetun:8000/v1/publicip/ip")
-                    if resp.status_code in {200, 401, 404}:
-                        logger.info("fetch_vpn_done via gluetun ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
-                        return True
-                except Exception:
-                    pass
-
-                vpn_url = (
-                    getattr(settings, "nine_router_base_url", None)
-                    or getattr(settings, "ai_proxy_url", None)
-                    or getattr(settings, "llm_proxy_url", None)
-                    or getattr(settings, "ai_base_url", None)
-                )
-                if vpn_url and "127.0.0.1" not in vpn_url:
-                    resp = await client.get(f"{vpn_url}/v1/models")
-                    return resp.status_code < 500
-                return True
+                resp = await client.get("http://gluetun:8000/v1/publicip/ip")
+                if resp.status_code in {200, 401, 404}:
+                    logger.info("fetch_vpn_done via gluetun ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
+                    return True
+                return False
         except Exception as exc:
             logger.warning("fetch_vpn_failed", extra={"error": str(exc)})
+            return False
+
+    async def _fetch_9router():
+        """Probe 9router AI proxy container health."""
+        t = time.monotonic()
+        try:
+            import httpx
+
+            router_url = (
+                getattr(settings, "nine_router_base_url", None)
+                or "http://9router:20129"
+            )
+            if "127.0.0.1" in router_url or "localhost" in router_url:
+                router_url = router_url.replace("127.0.0.1", "9router").replace("localhost", "9router")
+
+            headers = {}
+            token = getattr(settings, "nine_router_auth_token", None)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+
+            async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
+                resp = await client.get(f"{router_url.rstrip('/')}/v1/models", headers=headers)
+                logger.info("fetch_9router_done ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
+                return resp.status_code == 200
+        except Exception as exc:
+            logger.warning("fetch_9router_failed", extra={"error": str(exc)})
             return False
 
     async def _with_timeout(coro, timeout_sec):
@@ -192,6 +218,7 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _with_timeout(_fetch_db(), 5),
         _with_timeout(_fetch_wallet(), 8),
         _with_timeout(_fetch_vpn(), 5),
+        _with_timeout(_fetch_9router(), 5),
     )
 
     logger.info("dashboard_parallel_fetch_total ms=%d", int((time.monotonic() - t0) * 1000))
@@ -202,23 +229,14 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db_ok = results[1] if isinstance(results[1], bool) else False
     wallet_data = results[2] if isinstance(results[2], dict) else {"wallet": {}, "ok": False}
     vpn_ok = results[3]  # None = not configured, True = ok, False = unreachable
-
-    # ── Deep health panel from TelemetryEmitter heartbeats ──────────────
-    services_health = ""
-    try:
-        from app.core.telemetry import format_health_summary, get_all_services_health
-
-        all_health = await asyncio.wait_for(get_all_services_health(r), timeout=2)
-        if all_health:
-            services_health = format_health_summary(all_health)
-    except Exception as exc:
-        logger.debug("dashboard_health_panel_skip: %s", exc)
+    router_ok = results[4] if isinstance(results[4], bool) else False
 
     redis_ok = redis_data.get("redis_ok", False)
     halt_active = redis_data.get("halt_active", False)
     is_active = redis_data.get("is_active", False)
     bybit_ok = wallet_data.get("ok", False)
     wallet = wallet_data.get("wallet", {})
+    wallet_stale = wallet_data.get("stale", False)
 
     balance = Decimal(str(wallet.get("balance", 0) or 0))
     available = Decimal(str(wallet.get("available", 0) or 0))
@@ -230,19 +248,34 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # Health pills row — precompute icons to avoid backslash-in-fstring
     GREEN = "\U0001f7e2"
     RED = "\U0001f534"
+    YELLOW = "\U0001f7e1"
     GREY = "⚪"
     vpn_icon = GREEN if vpn_ok is True else (GREY if vpn_ok is None else RED)
     db_icon = GREEN if db_ok else RED
     redis_icon = GREEN if redis_ok else RED
-    bybit_icon = GREEN if bybit_ok else RED
-    health_row = f"DB {db_icon}   Redis {redis_icon}   Bybit {bybit_icon}   VPN {vpn_icon}"
+    bybit_icon = GREEN if bybit_ok else (YELLOW if wallet_stale else RED)
+    router_icon = GREEN if router_ok else RED
+    health_row = f"DB {db_icon}   Redis {redis_icon}   Bybit {bybit_icon}   VPN {vpn_icon}   9router {router_icon}"
 
     cap_bar = format_bar(deployed_pct, 100, width=12)
-    wallet_block = (
-        f"Balance   ${float(balance):>10,.2f}\n"
-        f"Available ${float(available):>10,.2f}\n"
-        f"Deployed  ${float(deployed):>10,.2f}  {cap_bar}"
-    )
+
+    # Build wallet display — show DISCONNECTED state when Bybit is down
+    if not bybit_ok and not wallet_stale and balance == 0:
+        # Fully disconnected, no cached data at all
+        wallet_block = "⚠️ DISCONNECTED — cannot reach Bybit"
+    elif wallet_stale:
+        # Have last-known-good data but it's stale
+        wallet_block = (
+            f"Balance   ${float(balance):>10,.2f}  ⚠️ stale\n"
+            f"Available ${float(available):>10,.2f}\n"
+            f"Deployed  ${float(deployed):>10,.2f}  {cap_bar}"
+        )
+    else:
+        wallet_block = (
+            f"Balance   ${float(balance):>10,.2f}\n"
+            f"Available ${float(available):>10,.2f}\n"
+            f"Deployed  ${float(deployed):>10,.2f}  {cap_bar}"
+        )
 
     asm_status = "\U0001f7e2 ACTIVE" if is_active else "⚫ IDLE"
     halt_line = fmt("\n🚨 ", bold("HALT ACTIVE — All trading suspended")) if halt_active else ""
@@ -266,19 +299,6 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\n",
         pre(wallet_block),
     )
-
-    if services_health:
-        text += "\n" + "━" * 32 + "\n"
-        text += bold("Service Heartbeats") + "\n"
-        text += pre(services_health)
-
-    # ── Hybrid Intelligence panel ──────────────────────────────────────
-    try:
-        hybrid_data = await asyncio.wait_for(_fetch_hybrid_intelligence(r), timeout=3)
-        text += "\n" + "━" * 32 + "\n"
-        text += _format_hybrid_intelligence_section(hybrid_data)
-    except Exception as exc:
-        logger.debug("dashboard_hybrid_panel_skip: %s", exc)
 
     if is_active:
         keyboard = [

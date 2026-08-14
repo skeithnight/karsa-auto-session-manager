@@ -100,7 +100,7 @@ class ShadowAPM:
         is_hyper = str(pos.get("regime", "")).startswith("HYPER")
         quick_profit_mins = 3 if is_hyper else 5
         quick_profit_r = Decimal("1.0") if is_hyper else Decimal("2.0")
-        stag_mins = 10 if is_hyper else 25  # Adjusted to 25 minutes to allow altcoin accumulation base completion
+        stag_mins = 15 if is_hyper else 25  # Extended to 15m/25m minimum to allow noise resolution
         stag_r = Decimal("0.5") if is_hyper else Decimal("0.2")
 
         # Quick Profit Exit

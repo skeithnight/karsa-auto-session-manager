@@ -75,7 +75,7 @@ class AIExitBrain:
     # Ambiguous zone bounds
     R_MIN = 0.3   # Minimum R-multiple to activate
     R_MAX = 2.0   # Maximum R-multiple (above this = clear win, no AI needed)
-    HOLD_PCT_MIN = 0.3  # Minimum hold time percentage to activate
+    HOLD_PCT_MIN = 0.15  # Minimum hold time percentage to activate
 
     # Rate limiting
     COOLDOWN_SECS = 300  # 5 minutes between AI calls per position

@@ -240,22 +240,23 @@ async def report_menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton(
-                "\U0001f465 Shadow Funnel", callback_data="cmd_report_shadow"
-            )
+                "🏴‍☠️ DeFi & On-Chain", callback_data="cmd_report_defi"
+            ),
+            InlineKeyboardButton(
+                "\U0001f534 Live Funnel", callback_data="cmd_report_live"
+            ),
         ],
         [
             InlineKeyboardButton(
-                "\U0001f534 Live Funnel", callback_data="cmd_report_live"
-            )
+                "\U0001f465 Shadow Funnel", callback_data="cmd_report_shadow"
+            ),
+            InlineKeyboardButton(
+                "\U0001f7e1 Hybrid Backtest", callback_data="cmd_backtest_hybrid"
+            ),
         ],
         [
             InlineKeyboardButton(
                 "\U0001f52c Backtest Report", callback_data="cmd_backtest"
-            )
-        ],
-        [
-            InlineKeyboardButton(
-                "\U0001f7e1 Hybrid Backtest", callback_data="cmd_backtest_hybrid"
             )
         ],
         [

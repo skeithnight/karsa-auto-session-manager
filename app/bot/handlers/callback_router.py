@@ -32,6 +32,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _show_close_all_confirmation,
         _execute_close_all_positions,
     )
+    from app.bot.handlers.defi import defi_cmd
     from app.bot.handlers.reports import (
         performance_cmd,
         report_shadow_cmd,
@@ -93,6 +94,8 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await report_shadow_cmd(update, context)
     elif data == "cmd_report_live":
         await report_live_cmd(update, context)
+    elif data in ("cmd_report_defi", "cmd_defi", "refresh_defi"):
+        await defi_cmd(update, context)
 
     # AI Accuracy & Feature Correlation
     elif data == "cmd_ai_accuracy":

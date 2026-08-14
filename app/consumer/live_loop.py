@@ -5,8 +5,8 @@ trades through the Bybit SmartOrderRouter. Every entry passes
 PortfolioRiskManager before execution — no bypass.
 """
 
-from app.core.dns_bypass import setup_dns_bypass
-setup_dns_bypass()
+from app.core.dns_fallback import setup_dns_fallback
+setup_dns_fallback()
 
 import asyncio
 import contextlib
@@ -83,14 +83,24 @@ async def _wallet_metrics_loop(
                 wallet = await bybit.get_wallet_balance()
                 available = float(wallet.get("available", 0))
                 balance = float(wallet.get("balance", 0))
+                is_connected = wallet.get("connected", not wallet.get("error"))
                 metrics.wallet_balance.set(available)
                 try:
                     import json
-                    await redis.set(
-                        "karsa:wallet:latest",
-                        json.dumps({"balance": balance, "available": available, "ok": not wallet.get("error")}),
-                        ex=120,
-                    )
+                    wallet_payload = json.dumps({
+                        "balance": balance,
+                        "available": available,
+                        "ok": is_connected,
+                    })
+                    await redis.set("karsa:wallet:latest", wallet_payload, ex=120)
+                    # Persist last-known-good balance (24h TTL) for dashboard
+                    # fallback during outages — only write when connected
+                    if is_connected and balance > 0:
+                        await redis.set(
+                            "karsa:wallet:last_known_good",
+                            wallet_payload,
+                            ex=86400,
+                        )
                 except Exception as cache_exc:
                     logger.debug("failed_to_cache_wallet_in_redis: %s", cache_exc)
 
@@ -139,6 +149,92 @@ async def _wallet_metrics_loop(
 
         except Exception:
             logger.warning("wallet_metrics_loop error", exc_info=True)
+
+        try:
+            await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
+        except TimeoutError:
+            pass
+
+
+async def _bybit_health_watchdog(
+    bybit: Any,
+    redis: Any,
+    alert_service: Any | None,
+    shutdown_event: asyncio.Event,
+    interval_s: int = 60,
+    failure_threshold: int = 3,
+) -> None:
+    """Proactive Bybit connection health monitor.
+
+    Every interval_s seconds, call bybit.health_check() (get_server_time).
+    After failure_threshold consecutive failures:
+      - Send Telegram alert
+      - Attempt reconnection
+    On recovery after failure, send recovery alert.
+    Writes health status to Redis for dashboard consumption.
+    """
+    was_down = False
+    consecutive_ok = 0
+
+    while not shutdown_event.is_set():
+        try:
+            healthy = await bybit.health_check()
+
+            # Write health status to Redis
+            try:
+                import json as _json
+                health_payload = _json.dumps({
+                    "healthy": healthy,
+                    "last_check": asyncio.get_event_loop().time(),
+                    "consecutive_failures": bybit._consecutive_failures,
+                    "last_error": bybit._last_error,
+                })
+                await redis.set("karsa:bybit:health", health_payload, ex=180)
+            except Exception:
+                pass
+
+            if healthy:
+                consecutive_ok += 1
+                if was_down and consecutive_ok >= 2:
+                    # Confirmed recovery (2 consecutive OK to avoid flapping)
+                    was_down = False
+                    logger.info("bybit_health_watchdog: connection RESTORED")
+                    if alert_service:
+                        try:
+                            await alert_service.send_alert(
+                                "\U0001f7e2 Bybit connection restored"
+                            )
+                        except Exception:
+                            pass
+            else:
+                consecutive_ok = 0
+                failures = bybit._consecutive_failures
+                if failures >= failure_threshold and not was_down:
+                    was_down = True
+                    err_msg = bybit._last_error[:100] if bybit._last_error else "unknown"
+                    logger.warning(
+                        "bybit_health_watchdog: connection LOST after %d failures: %s",
+                        failures,
+                        err_msg,
+                    )
+                    if alert_service:
+                        try:
+                            await alert_service.send_alert(
+                                f"\U0001f534 Bybit connection lost — {err_msg}\n"
+                                "Attempting auto-reconnect..."
+                            )
+                        except Exception:
+                            pass
+
+                    # Attempt reconnect
+                    try:
+                        await bybit.reconnect()
+                        logger.info("bybit_health_watchdog: reconnect completed")
+                    except Exception as re_exc:
+                        logger.error("bybit_health_watchdog: reconnect failed: %s", re_exc)
+
+        except Exception as exc:
+            logger.warning("bybit_health_watchdog: loop error: %s", exc)
 
         try:
             await asyncio.wait_for(shutdown_event.wait(), timeout=interval_s)
@@ -1988,6 +2084,12 @@ async def main() -> None:  # noqa: PLR0915
         _wallet_metrics_loop(bybit, position_store, redis, shutdown_event),
         name="live-wallet-metrics",
     )
+
+    # ── Bybit Health Watchdog: auto-reconnect + Telegram alert ──────────
+    bybit_health_task = asyncio.create_task(
+        _bybit_health_watchdog(bybit, redis, alert_service, shutdown_event),
+        name="live-bybit-health",
+    ) if bybit else None
 
     # ── Ranking Engine: Strategy Promotion Gate ─────────────────────────
     ranking_task = asyncio.create_task(

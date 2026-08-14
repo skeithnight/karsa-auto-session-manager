@@ -83,8 +83,8 @@ class DynamicThreshold:
             threshold += 0.20
             logger.info("Threshold: CHOP regime (%s) → +0.20", regime)
         elif "RANGE" in reg_upper:
-            threshold += 0.15
-            logger.info("Threshold: RANGE regime (%s) → +0.15", regime)
+            threshold += 0.20
+            logger.info("Threshold: RANGE regime (%s) → +0.20", regime)
 
         # Drawdown adjustment
         if drawdown_pct > _DD_SEVERE_PCT:

@@ -49,14 +49,42 @@ class BadTickFilter:
             logger.warning(
                 f"Bad tick rejected: {key} price changed {price_change:.2%} in {time_delta:.3f}s"
             )
-            logger.debug("is_bad_tick: returning True (rejected)")
-            return True
-
         # Update tracking
         self.last_prices[key] = data.last_price
         self.last_timestamps[key] = data.timestamp
         logger.debug("is_bad_tick: returning False (within threshold)")
         return False
+
+    def filter_orderbook(self, data: ExchangeData) -> ExchangeData:
+        """Filter orderbook data — mark as stale if bad tick detected."""
+        logger.debug(f"filter_orderbook: entering exchange={data.exchange}")
+        if self.is_bad_tick(data):
+            data.is_stale = True
+            logger.debug("filter_orderbook: returning ExchangeData (stale)")
+        return data
+
+
+# Static/Dynamic asset blacklist for coins with persistent negative win rate / high slippage
+_DEFAULT_BLACKLIST = {"AEVO/USDT", "EPIC/USDT", "AEVOUSDT", "EPICUSDT"}
+
+
+class AssetQualityFilter:
+    """Filters out low-quality altcoins with high slippage or persistent negative win rate."""
+
+    def __init__(self, extra_blacklist: set[str] | None = None) -> None:
+        self.blacklist = set(_DEFAULT_BLACKLIST)
+        if extra_blacklist:
+            self.blacklist.update(extra_blacklist)
+
+    def is_blacklisted(self, symbol: str) -> bool:
+        """Check if symbol is blacklisted due to asset quality or negative win rate."""
+        sym_clean = symbol.replace("/", "").upper()
+        for b in self.blacklist:
+            if sym_clean == b.replace("/", "").upper():
+                logger.warning(f"AssetQualityFilter REJECT: {symbol} is blacklisted due to low asset quality/slippage")
+                return True
+        return False
+
 
     def filter_orderbook(self, data: ExchangeData) -> ExchangeData:
         """Filter orderbook data — mark as stale if bad tick detected."""

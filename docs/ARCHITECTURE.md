@@ -59,7 +59,7 @@ app/
 │   ├── config.py               # Pydantic Settings (.env secrets)
 │   ├── database.py              # PostgreSQL async engine (asyncpg)
 │   ├── redis_client.py          # Redis async client (aioredis)
-│   ├── dns_bypass.py            # Standard-library DoH DNS bypass
+│   ├── dns_fallback.py          # Standard-library DoH DNS fallback
 │   ├── session.py               # Autonomous session manager
 │   ├── state.py                 # In-memory state & Postgres sync
 │   ├── trade_store.py           # Trade CRUD operations

@@ -26,7 +26,11 @@ class AIClient:
         timeout_seconds: float = 45.0,
         max_retries: int = 1,
     ) -> None:
-        self.router_url = router_url.rstrip("/")
+        url = router_url.rstrip("/")
+        # In Docker containers, 127.0.0.1/localhost points to self; 9router is at http://9router:20129
+        if "127.0.0.1" in url or "localhost" in url:
+            url = url.replace("127.0.0.1", "9router").replace("localhost", "9router")
+        self.router_url = url
         self.auth_token = auth_token
         self.model = model
         self.timeout_seconds = timeout_seconds
@@ -93,8 +97,8 @@ class AIClient:
                     if resp.status == 429:
                         body = await resp.text()
                         last_error = f"rate_limited: {body}"
-                        wait = 2**attempt
-                        logger.warning(f"AI rate limited, retry in {wait}s")
+                        wait = 0.5 * (attempt + 1)
+                        logger.warning(f"AI rate limited (429), fast retry in {wait:.1f}s")
                         await asyncio.sleep(wait)
                         continue
 

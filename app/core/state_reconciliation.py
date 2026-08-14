@@ -50,6 +50,21 @@ class StateReconciler:
         # 2. Fetch internal state
         internal_positions = await self._fetch_internal_positions()
 
+        # 3. Clean stale unfilled limit/market orders on exchange
+        try:
+            active_symbols = {p.get("symbol") for p in exchange_positions if p.get("symbol")}
+            for o in exchange_orders:
+                sym = o.get("symbol")
+                oid = o.get("id")
+                if oid and sym and (sym not in active_symbols or o.get("type") in ("limit", "market")):
+                    try:
+                        await self._bybit.cancel_order(oid, sym)
+                        logger.info(f"StateReconciler: cancelled stale order {sym} {oid}")
+                    except Exception as e:
+                        logger.warning(f"StateReconciler: cancel failed for {sym} {oid}: {e}")
+        except Exception as e:
+            logger.warning(f"StateReconciler: order cleanup error: {e}")
+
         # 3. Diff positions
         orphaned, missing, updated = self._diff_positions(
             exchange_positions,

@@ -41,17 +41,23 @@ class RiskGate:
             )
         return passed
 
-    def check_spread_health(self, bid_price: Decimal, ask_price: Decimal) -> bool:
-        """Gate 2: Bid-ask spread within limits."""
+    def check_spread_health(self, bid_price: Decimal, ask_price: Decimal, hour_utc: int | None = None) -> bool:
+        """Gate 2: Bid-ask spread within limits (session-aware)."""
         if bid_price == 0:
             logger.warning("Spread gate FAILED: bid_price is zero")
             return False
 
+        if hour_utc is None:
+            from datetime import datetime, timezone
+            hour_utc = datetime.now(timezone.utc).hour
+
+        # Session-aware max spread limit (Asia/Pacific thin liquidity: 0.25%, LDN/NY: 0.50%)
+        limit = Decimal("0.0025") if (0 <= hour_utc < 7 or hour_utc >= 21) else self.max_spread_pct
         spread = (ask_price - bid_price) / bid_price
-        passed = spread <= self.max_spread_pct
+        passed = spread <= limit
         if not passed:
             logger.warning(
-                f"Spread gate FAILED: {spread:.4%} > {self.max_spread_pct:.4%}"
+                f"Spread gate FAILED: {spread:.4%} > {limit:.4%}"
             )
         return passed
 

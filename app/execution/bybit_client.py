@@ -45,24 +45,25 @@ class BybitClient:
         self._lot_sizes: dict[str, Decimal] = {}  # ccxt symbol → lot size step
         self._min_qty: dict[str, Decimal] = {}  # ccxt symbol → min order qty
         self._price_ticks: dict[str, Decimal] = {}  # ccxt symbol → price tick size
+        # Connection health tracking
+        self._last_success_ts: float = 0.0
+        self._consecutive_failures: int = 0
+        self._last_error: str = ""
         logger.debug("BybitClient.__init__: returning")
 
     def _create_session(self) -> None:
-        """Create or recreate pybit HTTP session."""
-        from app.core.dns_bypass import setup_dns_bypass
-        setup_dns_bypass()
+        """Create or recreate pybit HTTP session.
+
+        DNS resolution is handled by gluetun (DNS-over-TLS via Cloudflare)
+        at the network layer — no Python-level DNS bypass needed.
+        SSL verification is enabled (WireGuard is L3, doesn't intercept TLS).
+        """
         self.session = HTTP(
             api_key=self.settings.bybit_api_key,
             api_secret=self.settings.bybit_api_secret,
             testnet=self.settings.bybit_testnet,
+            recv_window=20000,
         )
-        # Disable SSL verification when going through VPN/proxy (gluetun).
-        # The WireGuard tunnel intercepts SSL and presents a cert that doesn't
-        # match api.bybit.com, causing hostname mismatch errors.
-        # pybit uses requests.Session internally — patch it directly.
-        if hasattr(self.session, "client"):
-            self.session.client.verify = False
-            logger.debug("SSL verification disabled for pybit (VPN/proxy mode)")
         self.connected = True
 
     async def connect(self) -> None:
@@ -157,7 +158,28 @@ class BybitClient:
 
     _MAX_RETRIES = 5
 
-    async def _execute(self, func, *args, **kwargs) -> dict:
+    async def health_check(self) -> bool:
+        """Lightweight probe — calls get_server_time() (no auth needed).
+
+        Used by the health watchdog to detect dead connections proactively.
+        """
+        try:
+            if not self.session:
+                return False
+            resp = await asyncio.wait_for(
+                asyncio.to_thread(self.session.get_server_time),
+                timeout=5,
+            )
+            if resp.get("retCode") == 0:
+                self._last_success_ts = time.monotonic()
+                self._consecutive_failures = 0
+                return True
+        except Exception as e:
+            self._last_error = str(e)
+        self._consecutive_failures += 1
+        return False
+
+    async def _execute(self, func_or_name: Any, *args, **kwargs) -> dict:
         """Run sync pybit call in thread with exponential backoff and session recovery."""
         async with self._lock:
             last_exc = None
@@ -168,14 +190,24 @@ class BybitClient:
                         logger.warning("pybit_session_recovery attempt=%d", attempt + 1)
                         self._create_session()
 
+                    if isinstance(func_or_name, str):
+                        target_func = getattr(self.session, func_or_name)
+                    elif hasattr(func_or_name, "__name__") and hasattr(self.session, func_or_name.__name__):
+                        target_func = getattr(self.session, func_or_name.__name__)
+                    else:
+                        target_func = func_or_name
+
                     start = time.monotonic()
                     resp = await asyncio.wait_for(
-                        asyncio.to_thread(func, *args, **kwargs),
+                        asyncio.to_thread(target_func, *args, **kwargs),
                         timeout=15,
                     )
                     elapsed_ms = (time.monotonic() - start) * 1000
                     metrics.proxy_latency.observe(elapsed_ms)
                     if resp.get("retCode") == 0:
+                        # Track successful call
+                        self._last_success_ts = time.monotonic()
+                        self._consecutive_failures = 0
                         return resp.get("result", {})
                     ret_code = resp.get("retCode")
                     ret_msg = resp.get("retMsg", "")
@@ -190,18 +222,24 @@ class BybitClient:
                     last_exc = e
                     err_str = str(e).lower()
                     logger.warning(f"pybit_error attempt={attempt + 1}: {e}")
-                    if any(w in err_str for w in ("auth", "409", "conflict", "json", "decode")):
-                        self.connected = False  # force session recovery on auth, 409, conflict, or non-JSON response
+                    if any(w in err_str for w in ("auth", "409", "conflict", "json", "decode", "ssl", "certificate")):
+                        self.connected = False  # force session recovery
 
                 # Exponential backoff: 1s, 2s, 4s, 8s, 16s
-                # DNS errors get longer backoff (VPN tunnel recovery)
-                is_dns = "dns" in str(last_exc).lower() or "name resolution" in str(last_exc).lower()
+                # Network errors get longer backoff (VPN tunnel recovery)
+                is_network = any(
+                    w in str(last_exc).lower()
+                    for w in ("dns", "name resolution", "connection", "ssl", "timeout")
+                )
                 if attempt < self._MAX_RETRIES - 1:
                     backoff = min(2 ** attempt, 30)
-                    if is_dns:
-                        backoff = max(backoff, 5)  # at least 5s for DNS issues
+                    if is_network:
+                        backoff = max(backoff, 5)  # at least 5s for network issues
                     await asyncio.sleep(backoff)
 
+            # Track failure
+            self._consecutive_failures += 1
+            self._last_error = str(last_exc) if last_exc else "unknown"
             raise last_exc or RuntimeError("Bybit call failed after retries")
 
     async def reconnect(self) -> None:
@@ -388,10 +426,8 @@ class BybitClient:
     async def fetch_balance(self) -> dict[str, Any]:
         """Fetch current USDT balance."""
         logger.debug("fetch_balance: entering")
-        if not self.connected or not self.session:
-            raise RuntimeError("Bybit not connected")
         result = await self._execute(
-            self.session.get_wallet_balance,
+            "get_wallet_balance",
             accountType="UNIFIED",
         )
         coins = result.get("list", [{}])[0].get("coin", [])
@@ -408,13 +444,14 @@ class BybitClient:
         return balance
 
     async def get_wallet_balance(self) -> dict:
-        """Get wallet balance — returns {balance, available} for dashboard."""
+        """Get wallet balance — returns {balance, available, connected} for dashboard."""
         logger.debug("get_wallet_balance: entering")
         try:
             balance_data = await self.fetch_balance()
             result = {
                 "balance": balance_data.get("total", Decimal("0")),
                 "available": balance_data.get("free", Decimal("0")),
+                "connected": True,
             }
             logger.info(
                 f"get_wallet_balance: balance={result['balance']} available={result['available']}"
@@ -422,7 +459,12 @@ class BybitClient:
             return result
         except Exception as e:
             logger.error(f"get_wallet_balance: error={e}")
-            return {"balance": Decimal("0"), "available": Decimal("0"), "error": str(e)}
+            return {
+                "balance": Decimal("0"),
+                "available": Decimal("0"),
+                "connected": False,
+                "error": str(e),
+            }
 
     async def fetch_positions(self) -> list:
         """Fetch all open positions."""
@@ -488,12 +530,10 @@ class BybitClient:
     async def fetch_tickers(self, symbol: str | None = None) -> list:
         """Fetch latest tickers for position monitoring. Used by APM."""
         logger.debug(f"fetch_tickers: entering symbol={symbol}")
-        if not self.connected or not self.session:
-            raise RuntimeError("Bybit not connected")
         params: dict[str, Any] = {"category": "linear"}
         if symbol:
             params["symbol"] = self._to_bybit_symbol(symbol)
-        result = await self._execute(self.session.get_tickers, **params)
+        result = await self._execute("get_tickers", **params)
         tickers = []
         for t in result.get("list", []):
             sym = t["symbol"]
@@ -511,6 +551,12 @@ class BybitClient:
             )
         logger.debug(f"fetch_tickers: returning {len(tickers)} tickers")
         return tickers
+
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any] | None:
+        """Fetch single ticker dict for a symbol."""
+        logger.debug(f"fetch_ticker: entering symbol={symbol}")
+        tickers = await self.fetch_tickers(symbol)
+        return tickers[0] if tickers else None
 
     async def get_executions(
         self,

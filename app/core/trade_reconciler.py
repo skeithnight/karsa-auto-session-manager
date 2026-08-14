@@ -87,10 +87,39 @@ class TradeReconciler:
         lookback_hours: int = 24,
     ) -> None:
         self.client = bybit_client
+        self.bybit = bybit_client
         self.store = trade_store
-        self.alert = alert_service
+        self.alert_service = alert_service
         self.lookback_hours = lookback_hours
         self._backfill_done = False
+
+    async def clean_stale_exchange_orders(self) -> int:
+        """Cancel unfilled stale limit/market orders on exchange that do not belong to active positions."""
+        logger.info("clean_stale_exchange_orders: starting check")
+        try:
+            open_orders = await self.client.fetch_open_orders()
+            if not open_orders:
+                return 0
+
+            positions = await self.client.fetch_positions()
+            active_symbols = {p.get("symbol") for p in positions if p.get("symbol")}
+
+            cancelled_count = 0
+            for o in open_orders:
+                sym = o.get("symbol")
+                oid = o.get("id")
+                if oid and sym and (sym not in active_symbols or o.get("type") in ("limit", "market")):
+                    try:
+                        await self.client.cancel_order(oid, sym)
+                        cancelled_count += 1
+                        logger.info(f"clean_stale_exchange_orders: cancelled stale {sym} order {oid}")
+                    except Exception as e:
+                        logger.warning(f"clean_stale_exchange_orders: cancel failed for {sym} {oid}: {e}")
+            logger.info(f"clean_stale_exchange_orders: completed, cancelled {cancelled_count} stale orders")
+            return cancelled_count
+        except Exception as e:
+            logger.warning(f"clean_stale_exchange_orders error: {e}")
+            return 0
 
     async def backfill_from_bybit(self, max_pages: int = 10) -> int:
         """One-time startup backfill: sync ALL Bybit closed PnL → Postgres.
@@ -914,3 +943,16 @@ class TradeReconciler:
             )
         except Exception as e:
             logger.warning(f"Trade reconciler: audit log failed for {d.symbol}: {e}")
+
+    async def reconcile_startup(self) -> None:
+        """Startup reconciliation sequence: backfill historical closed PnL & clean stale exchange orders."""
+        logger.info("reconcile_startup: starting startup reconciliation sequence")
+        try:
+            await self.backfill_from_bybit(max_pages=10)
+        except Exception as e:
+            logger.warning(f"reconcile_startup backfill error: {e}")
+
+        try:
+            await self.clean_stale_exchange_orders()
+        except Exception as e:
+            logger.warning(f"reconcile_startup order cleanup error: {e}")

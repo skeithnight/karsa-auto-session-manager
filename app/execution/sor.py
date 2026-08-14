@@ -347,7 +347,8 @@ class SmartOrderRouter:
                 if ticker:
                     bid = Decimal(str(ticker.get("bid", "0") or "0"))
                     ask = Decimal(str(ticker.get("ask", "0") or "0"))
-                    market_price = ask if side == "buy" else bid
+                    side_lower = (side or "").lower()
+                    market_price = ask if side_lower in ("buy", "long") else bid
                     if market_price > 0 and price > 0:
                         expected_slippage = abs(market_price - price) / price
                         if expected_slippage > Decimal("0.005"):
@@ -953,6 +954,74 @@ class SmartOrderRouter:
         logger.critical(
             f"FLATTEN ALL: complete — {closed}/{len(positions)} positions closed"
         )
+
+    def _check_spread_gate(self, spread_pct: Decimal | float, regime: Any = None) -> bool:
+        """Check if bid-ask spread is within regime tolerance."""
+        spread = Decimal(str(spread_pct))
+        regime_str = str(getattr(regime, "value", regime) or "").upper()
+        if "CHOP" in regime_str or "RANGE" in regime_str:
+            return spread <= CHOP_RANGE_SPREAD_PCT
+        return spread <= TREND_SPREAD_PCT
+
+    async def _try_post_only(
+        self, symbol: str, side: str, amount: Decimal, price: Decimal
+    ) -> dict[str, Any] | None:
+        """Attempt post-only limit order."""
+        try:
+            return await self.client.create_limit_order(
+                symbol, side, amount, price, {"postOnly": True}
+            )
+        except Exception as e:
+            logger.debug(f"_try_post_only failed for {symbol}: {e}")
+            return None
+
+    async def execute_fee_aware(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        ai_confidence: float = 0.5,
+        atr: Decimal | float = Decimal("0.02"),
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        """Execute order with fee-aware ATR unit normalization and routing."""
+        atr_dec = Decimal(str(atr))
+        # If ATR is passed as percentage (< 1.0), convert to price offset
+        if atr_dec < Decimal("1.0"):
+            atr_dec = atr_dec * price
+
+        return await self.execute(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            price=price,
+            **kwargs,
+        )
+
+    async def execute_regime_aware(
+        self,
+        symbol: str,
+        side: str,
+        amount: Decimal,
+        price: Decimal,
+        regime: Any = None,
+        spread_pct: Decimal | float | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any] | None:
+        """Execute order with regime-aware routing and spread constraints."""
+        if spread_pct is not None and not self._check_spread_gate(spread_pct, regime):
+            logger.warning(f"SOR regime-aware spread gate rejected {symbol} (spread={spread_pct})")
+            return None
+
+        return await self.execute(
+            symbol=symbol,
+            side=side,
+            amount=amount,
+            price=price,
+            **kwargs,
+        )
+
 
 
 

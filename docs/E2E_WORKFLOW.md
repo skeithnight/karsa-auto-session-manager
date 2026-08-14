@@ -108,7 +108,7 @@ All numerical monetary values (prices, sizes, PnL) strictly use `decimal.Decimal
 ## 3. Stage-by-Stage Detailed Specification
 
 ### Stage 1: Network & Ingestion Layer
-- **DoH DNS Bypass (`app/core/dns_bypass.py`)**: Standard-library Cloudflare DoH (`https://1.1.1.1/dns-query`) patches `socket.getaddrinfo` on startup. Bypasses ISP UDP 53 DNS poisoning in ~50ms without third-party dependencies.
+- **DoH DNS Fallback (`app/core/dns_fallback.py`)**: Standard-library Cloudflare DoH (`https://1.1.1.1/dns-query`) patches `socket.getaddrinfo` on startup. Bypasses ISP UDP 53 DNS poisoning in ~50ms without third-party dependencies.
 - **CCXT Pro Feed (`app/data/ccxt_manager.py`)**: Manages WebSocket orderbook and tick streams.
 - **Bad Tick Filtering (`app/data/filters.py`)**: Drops stale or corrupted price ticks before writing to state.
 - **On-Chain DEX Feed (`app/data/onchain_feed.py`)**: Polls EVM Uniswap v3/v4 pool slot0 prices via RPC and publishes to Redis key `onchain:symbol:{symbol}` (`ex=30`).

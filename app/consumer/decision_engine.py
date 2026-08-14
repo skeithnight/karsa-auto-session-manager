@@ -840,6 +840,11 @@ class DecisionEngine:
                                 symbol, dip_from_high * 100, effective_gate,
                             )
 
+            from app.data.filters import AssetQualityFilter
+            if AssetQualityFilter().is_blacklisted(symbol):
+                logger.warning("evaluate: %s REJECTED — blacklisted low asset quality", symbol)
+                continue
+
             logger.debug(
                 "evaluate: %s %s score=%.1f (gate=%.1f vol=%.2f dip_buy=%s)",
                 symbol,

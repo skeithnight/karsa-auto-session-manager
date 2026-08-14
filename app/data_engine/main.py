@@ -18,6 +18,10 @@ import sys
 import time
 from typing import Any
 
+from app.core.dns_fallback import setup_dns_fallback
+
+setup_dns_fallback()
+
 from app.alpha.lead_lag_buffer import LeadLagBuffer
 from app.alpha.regime import RegimeEngine
 from app.core import metrics

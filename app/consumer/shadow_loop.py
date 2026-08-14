@@ -19,6 +19,10 @@ import time
 from decimal import Decimal
 from typing import Any
 
+from app.core.dns_fallback import setup_dns_fallback
+
+setup_dns_fallback()
+
 from app.alpha.hybrid_decision_engine import HybridDecisionEngine
 from app.alpha.statistical_engine import StatisticalFeatureEngine
 from app.alpha.strategy_router import StrategyRouter
@@ -298,6 +302,12 @@ async def _on_signal_shadow(
             # Unavailable = hard reject
             if analyst_result:
                 if analyst_result.direction == signal.direction:
+                    # Enforce AI confidence threshold for RANGE regime setups
+                    if getattr(signal, "regime", None) and getattr(signal.regime, "value", "") == "RANGE" and analyst_result.ai_confidence < 60:
+                        logger.warning(
+                            f"AI RANGE LOW CONFIDENCE REJECT: {symbol} (conf={analyst_result.ai_confidence} < 60 in RANGE regime)"
+                        )
+                        return
                     # AI agrees: Boost confidence
                     new_score = signal.score + 10
                     object.__setattr__(signal, "score", new_score)

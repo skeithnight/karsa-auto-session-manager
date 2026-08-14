@@ -29,6 +29,8 @@ from app.bot.handlers.summary import summary_cmd
 from app.bot.handlers.callback_router import button_callback
 from app.bot.handlers._helpers import _is_authorized, build_main_keyboard
 
+from app.bot.handlers.defi import defi_cmd
+
 __all__ = [
     "start_cmd",
     "dashboard_cmd",
@@ -52,5 +54,6 @@ __all__ = [
     "repair_positions_cmd",
     "universe_cmd",
     "reconcile_cmd",
+    "defi_cmd",
     "_is_authorized",
 ]

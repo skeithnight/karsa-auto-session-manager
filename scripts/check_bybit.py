@@ -1,6 +1,9 @@
 import asyncio
 import logging
 
+from app.core.dns_fallback import setup_dns_fallback
+setup_dns_fallback()
+
 from app.execution.bybit_client import BybitClient
 
 logger = logging.getLogger(__name__)

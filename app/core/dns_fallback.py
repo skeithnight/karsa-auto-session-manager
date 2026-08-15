@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import logging
 import socket
+import ssl
 import time
 import urllib.request
 from typing import Any
@@ -26,12 +27,20 @@ _doh_cache: dict[str, tuple[float, list[str]]] = {}
 _DOH_CACHE_TTL = 300  # 5 minutes
 _in_fallback = False
 
+_DOH_ENDPOINTS = (
+    "https://dns.google/resolve?name={host}&type=A",
+    "https://cloudflare-dns.com/dns-query?name={host}&type=A",
+)
+
+_SSL_CTX = ssl.create_default_context()
+_SSL_CTX.check_hostname = False
+_SSL_CTX.verify_mode = ssl.CERT_NONE
+
 
 def _doh_resolve(hostname: str) -> list[str]:
-    """Resolve hostname via Cloudflare DNS-over-HTTPS.
+    """Resolve hostname via DNS-over-HTTPS (Google & Cloudflare).
 
-    Used as fallback when gluetun's DNS-over-TLS is transiently broken
-    (e.g., during WireGuard tunnel reconnect).
+    Used as fallback when local DNS is poisoned or broken.
     """
     now = time.time()
     if hostname in _doh_cache:
@@ -39,21 +48,29 @@ def _doh_resolve(hostname: str) -> list[str]:
         if now - ts < _DOH_CACHE_TTL:
             return cached_ips
 
-    url = f"https://1.1.1.1/dns-query?name={hostname}&type=A"
-    req = urllib.request.Request(url, headers={"accept": "application/dns-json"})
-    try:
-        with urllib.request.urlopen(req, timeout=3.0) as resp:
-            res = json.loads(resp.read().decode())
-            ips = [
-                ans.get("data")
-                for ans in res.get("Answer", [])
-                if ans.get("type") == 1 and ans.get("data")
-            ]
-            if ips:
-                _doh_cache[hostname] = (now, ips)
-                return ips
-    except Exception:
-        pass
+    for endpoint_tmpl in _DOH_ENDPOINTS:
+        url = endpoint_tmpl.format(host=hostname)
+        req = urllib.request.Request(
+            url,
+            headers={
+                "accept": "application/dns-json",
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, context=_SSL_CTX, timeout=3.5) as resp:
+                res = json.loads(resp.read().decode())
+                ips = [
+                    ans.get("data")
+                    for ans in res.get("Answer", [])
+                    if ans.get("type") == 1 and ans.get("data")
+                ]
+                if ips:
+                    _doh_cache[hostname] = (now, ips)
+                    return ips
+        except Exception as exc:
+            logger.debug("doh_endpoint_failed endpoint=%s host=%s error=%s", url, hostname, exc)
+
     return []
 
 
@@ -66,17 +83,29 @@ _SKIP_HOSTS = frozenset({
     "karsa-postgres", "karsa-redis",
 })
 
-
-_TELKOMSEL_BLOCK_PREFIXES = ("203.119.", "182.23.", "139.255.")
+# Indonesian ISP block page / redirect prefixes
+_ISP_BLOCK_PREFIXES = (
+    "202.169.",  # Biznet / CBN / Kominfo
+    "203.119.",  # Telkom / IndiHome
+    "182.23.",   # Indosat
+    "139.255.",  # XL Axiata
+    "103.28.",   # TrustPositif
+    "103.136.",  # TrustPositif
+    "118.98.",   # Telkom
+    "36.86.",    # Telkom
+    "36.88.",    # Telkom
+    "114.124.",  # Telkomsel
+    "114.125.",  # Telkomsel
+)
 
 _STATIC_HOST_MAP: dict[str, list[str]] = {
     "api.telegram.org": ["149.154.166.110", "149.154.167.220"],
-    "api.bybit.com": ["18.64.37.56", "18.64.37.123"],
-    "stream.bybit.com": ["18.64.37.56", "18.64.37.123"],
-    "api-testnet.bybit.com": ["18.64.37.56"],
-    "stream-testnet.bybit.com": ["18.64.37.56"],
-    "api.binance.com": ["18.64.37.56"],
-    "www.okx.com": ["18.64.37.56"],
+    "api.bybit.com": ["18.64.37.123", "18.64.37.129", "18.64.37.106", "18.64.37.56"],
+    "stream.bybit.com": ["18.64.37.123", "18.64.37.129", "18.64.37.106", "18.64.37.56"],
+    "api-testnet.bybit.com": ["18.64.37.123", "18.64.37.129"],
+    "stream-testnet.bybit.com": ["18.64.37.123", "18.64.37.129"],
+    "api.binance.com": ["18.64.37.123", "18.64.37.129"],
+    "www.okx.com": ["18.64.37.123", "18.64.37.129"],
 }
 
 
@@ -106,7 +135,7 @@ def _fallback_getaddrinfo(
     proto: int = 0,
     flags: int = 0,
 ) -> list[tuple[Any, ...]]:
-    """Try system resolver (gluetun), fall back to DoH on failure or ISP poisoning."""
+    """Try system resolver, fall back to DoH on failure or ISP poisoning."""
     global _in_fallback  # noqa: PLW0603
 
     # Skip fallback for internal/local hostnames and when already in fallback
@@ -120,12 +149,12 @@ def _fallback_getaddrinfo(
     ):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    # 1. Try system resolver (gluetun's DNS-over-TLS) — normal path
+    # 1. Try system resolver first
     try:
         res = _orig_getaddrinfo(host, port, family, type, proto, flags)
-        # Verify the returned IP is not an ISP Telkomsel/Indihome block page IP
+        # Verify the returned IP is not an ISP block page IP
         has_blocked_ip = any(
-            r[4][0].startswith(_TELKOMSEL_BLOCK_PREFIXES)
+            r[4][0].startswith(_ISP_BLOCK_PREFIXES)
             for r in res
             if len(r) > 4 and len(r[4]) > 0 and isinstance(r[4][0], str)
         )
@@ -135,7 +164,7 @@ def _fallback_getaddrinfo(
     except socket.gaierror:
         pass  # DNS resolution failed, try DoH fallback
 
-    # 2. Fallback to Cloudflare DoH (reached when gluetun DNS fails or is poisoned)
+    # 2. Fallback to DoH (Google & Cloudflare)
     try:
         _in_fallback = True
         ips = _doh_resolve(host)

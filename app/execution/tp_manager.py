@@ -174,8 +174,27 @@ class TakeProfitManager:
 
             await self._store.update_sl(symbol, api_side, sl_order_id, new_sl)  # type: ignore[attr-defined]
             self._log.info(f"APM: breakeven locked for {symbol} at {new_sl_str}")
+            if self._alert:
+                try:
+                    from app.bot.utils.formatters import format_breakeven_locked_alert
+
+                    initial_risk = Decimal(str(pos.get("initial_risk_per_unit", "0")))
+                    r_mult = 1.0
+                    if initial_risk > 0:
+                        r_mult = float(abs(new_sl - entry_price) / initial_risk)
+
+                    be_card = format_breakeven_locked_alert(
+                        symbol=symbol,
+                        side=side,
+                        entry_price=float(entry_price),
+                        new_sl=float(new_sl),
+                        r_multiple=r_mult,
+                    )
+                    asyncio.create_task(self._alert.send(be_card))  # type: ignore[attr-defined]
+                except Exception as alert_err:
+                    self._log.warning(f"APM: breakeven alert failed: {alert_err}")
 
         except Exception:
             self._log.exception(f"APM: breakeven CRITICAL failure for {symbol}")
             if self._alert:
-                await self._alert.send(f"APM breakeven FAILED for {symbol}")  # type: ignore[attr-defined]
+                await self._alert.send(f"⚠️ APM breakeven FAILED for {symbol}")  # type: ignore[attr-defined]

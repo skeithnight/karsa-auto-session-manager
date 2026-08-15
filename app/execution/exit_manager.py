@@ -538,34 +538,72 @@ class ExitManager:
                 except Exception as e:
                     self._log.warning(f"APM: failed to remove {symbol} from store: {e}")
 
-                self._log.warning(f"APM: force closed {symbol} -- {reason}")
+                # Compute trade exit economics
+                entry_price = Decimal(str(pos.get("entry_price", "0")))
+                pnl = Decimal("0")
+                pnl_pct = Decimal("0")
+                hold_min = 0
+
+                if fill_price > 0 and entry_price > 0 and qty > 0:
+                    pnl = (
+                        (fill_price - entry_price) * qty
+                        if side == "LONG"
+                        else (entry_price - fill_price) * qty
+                    )
+                    pnl_pct = (
+                        pnl / (entry_price * qty) * 100
+                        if entry_price * qty > 0
+                        else Decimal("0")
+                    )
+
+                entry_time_str = pos.get("entry_time", pos.get("entered_at", ""))
+                if entry_time_str:
+                    try:
+                        et = datetime.fromisoformat(entry_time_str)
+                        if et.tzinfo is None:
+                            et = et.replace(tzinfo=timezone.utc)
+                        hold_min = int((datetime.now(timezone.utc) - et).total_seconds() / 60)
+                    except Exception:
+                        pass
+
+                initial_risk = Decimal(str(pos.get("initial_risk_per_unit", "0")))
+                if initial_risk <= 0 and "stop_loss" in pos:
+                    sl_val = Decimal(str(pos.get("stop_loss", "0") or 0))
+                    if sl_val > 0 and entry_price > 0:
+                        initial_risk = abs(entry_price - sl_val)
+
+                r_mult = None
+                if initial_risk > 0 and fill_price > 0:
+                    r_mult = float(
+                        (fill_price - entry_price) / initial_risk
+                        if side == "LONG"
+                        else (entry_price - fill_price) / initial_risk
+                    )
+
+                self._log.warning(f"APM: force closed {symbol} -- {reason} (PnL: ${pnl:+,.2f}, {pnl_pct:+.2f}%)")
                 if self._alert:
-                    await self._alert.send(f"APM force closed {symbol}: {reason}")  # type: ignore[attr-defined]
+                    try:
+                        from app.bot.utils.formatters import format_apm_exit_alert
+                        exit_card = format_apm_exit_alert(
+                            symbol=symbol,
+                            side=side,
+                            entry_price=float(entry_price),
+                            exit_price=float(fill_price),
+                            pnl=float(pnl),
+                            pnl_pct=float(pnl_pct),
+                            reason=reason,
+                            r_multiple=r_mult,
+                            hold_duration_min=hold_min,
+                            sl_price=float(pos.get("stop_loss", 0) or 0),
+                        )
+                        await self._alert.send(exit_card)  # type: ignore[attr-defined]
+                    except Exception as alert_err:
+                        self._log.warning(f"APM: exit alert formatting failed: {alert_err}")
+                        await self._alert.send(f"🛑 APM force closed {symbol}: {reason} | PnL: ${pnl:+,.2f} ({pnl_pct:+.2f}%)")  # type: ignore[attr-defined]
 
                 # Record trade in memory for cooldown / AI context
-                entry_price = Decimal(str(pos.get("entry_price", "0")))
                 if self._trade_memory and fill_price > 0 and entry_price > 0:
                     try:
-                        pnl = (
-                            (fill_price - entry_price) * qty
-                            if side == "LONG"
-                            else (entry_price - fill_price) * qty
-                        )
-                        pnl_pct = (
-                            pnl / (entry_price * qty) * 100
-                            if entry_price * qty > 0
-                            else Decimal("0")
-                        )
-                        hold_min = 0
-                        entry_time_str = pos.get("entry_time", pos.get("entered_at", ""))
-                        if entry_time_str:
-                            try:
-                                et = datetime.fromisoformat(entry_time_str)
-                                if et.tzinfo is None:
-                                    et = et.replace(tzinfo=timezone.utc)
-                                hold_min = int((datetime.now(timezone.utc) - et).total_seconds() / 60)
-                            except Exception:
-                                pass
                         await self._trade_memory.store(
                             symbol=symbol,
                             pnl_pct=pnl_pct,

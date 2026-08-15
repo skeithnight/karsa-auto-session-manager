@@ -106,7 +106,10 @@ class MarketDataIngestor:
         )
         if self._testnet:
             self._session.set_sandbox_mode(True)
-        await self._session.load_markets()
+        try:
+            await asyncio.wait_for(self._session.load_markets(), timeout=5.0)
+        except Exception as e:
+            logger.warning(f"MarketDataIngestor: load_markets skipped or timed out ({e}), using direct symbol routing")
 
         logger.info(
             "MarketDataIngestor: starting poll loop symbols=%s interval=%ds",

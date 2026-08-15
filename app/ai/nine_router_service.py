@@ -84,7 +84,10 @@ class _ProviderConfig:
         extra_headers: dict[str, str] | None = None,
     ) -> None:
         self.name = name
-        self.base_url = base_url.rstrip("/")
+        url = base_url.rstrip("/")
+        if "127.0.0.1" in url or "localhost" in url:
+            url = url.replace("127.0.0.1", "9router").replace("localhost", "9router")
+        self.base_url = url
         self.api_key = api_key
         self.model = model
         self.headers: dict[str, str] = {
@@ -157,11 +160,11 @@ class NineRouterService(IAIService):
         circuit_breaker: AICircuitBreaker | None = None,
         redis_client: Any | None = None,
         provider_chain: list[_ProviderConfig] | None = None,
-        timeout_seconds: float = 10.0,
+        timeout_seconds: float = 45.0,
     ) -> None:
         self._owned_client = http_client is None
         self.client = http_client or httpx.AsyncClient(
-            timeout=httpx.Timeout(timeout_seconds),
+            timeout=httpx.Timeout(timeout_seconds, connect=10.0),
             verify=False,  # ponytail: internal network, no SSL needed
         )
         self.circuit_breaker = circuit_breaker or AICircuitBreaker()

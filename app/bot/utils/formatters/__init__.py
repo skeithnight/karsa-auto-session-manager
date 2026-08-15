@@ -345,6 +345,105 @@ def format_entry_alert(
     )
 
 
+def format_apm_exit_alert(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    exit_price: float,
+    pnl: float,
+    pnl_pct: float,
+    reason: str,
+    r_multiple: float | None = None,
+    hold_duration_min: int | None = None,
+    sl_price: float | None = None,
+) -> str:
+    """Format an institutional-grade APM position exit card with PnL, R-Multiple, and reason."""
+    _dash = "─"
+    _sep = _dash * 12 + _dash + _dash * 20
+
+    is_win = pnl > 0.001
+    is_be = abs(pnl) <= 0.01 or abs(pnl_pct) <= 0.05
+    if is_win:
+        header = f"🎯 POSITION CLOSED (PROFIT) 🟢 {symbol}"
+        footer = "🟢 Position closed with realized profit."
+    elif is_be:
+        header = f"⚖️ POSITION CLOSED (BREAKEVEN) 🟡 {symbol}"
+        footer = "🟡 Position closed at breakeven / flat."
+    else:
+        header = f"🛑 POSITION CLOSED (LOSS CUT) 🔴 {symbol}"
+        footer = "🔴 Position closed by risk management."
+
+    # Format human-friendly reason
+    friendly_reason = (
+        reason.replace("asymmetric_losing_exit_", "Asymmetric Loss Exit (")
+        .replace("asymmetric_be_exit_", "Asymmetric Breakeven Exit (")
+        .replace("stagnation_exit_", "Stagnation Exit (")
+        .replace("regime_shift_to_", "Regime Shift to ")
+    )
+    if any(k in friendly_reason for k in ("Asymmetric Loss Exit (", "Asymmetric Breakeven Exit (", "Stagnation Exit (")):
+        friendly_reason = friendly_reason + ")"
+
+    block_lines = [
+        f"{'Metric':<12} Value",
+        _sep,
+        f"{'Symbol':<12} {symbol} ({side})",
+        f"{'Entry Price':<12} ${format_price(entry_price)}",
+        f"{'Exit Price':<12} ${format_price(exit_price)}",
+        f"{'Realized PnL':<12} ${pnl:+,.2f} ({pnl_pct:+.2f}%)",
+    ]
+    if r_multiple is not None:
+        block_lines.append(f"{'R-Multiple':<12} {r_multiple:+.2f}R")
+    if sl_price and sl_price > 0:
+        block_lines.append(f"{'Initial SL':<12} ${format_price(sl_price)}")
+    if hold_duration_min is not None:
+        block_lines.append(f"{'Duration':<12} {hold_duration_min} min")
+    block_lines.append(f"{'Exit Reason':<12} {friendly_reason}")
+
+    block = "\n".join(block_lines)
+    return fmt(
+        bold(header),
+        "\n",
+        "━" * 32,
+        "\n\n",
+        pre(block),
+        "\n\n",
+        italic(footer),
+    )
+
+
+def format_breakeven_locked_alert(
+    symbol: str,
+    side: str,
+    entry_price: float,
+    new_sl: float,
+    r_multiple: float | None = None,
+) -> str:
+    """Format an alert when a trade achieves +1.0R and stop loss is moved to breakeven."""
+    _dash = "─"
+    _sep = _dash * 12 + _dash + _dash * 20
+    block_lines = [
+        f"{'Metric':<12} Value",
+        _sep,
+        f"{'Symbol':<12} {symbol} ({side})",
+        f"{'Entry Price':<12} ${format_price(entry_price)}",
+        f"{'New SL (BE)':<12} ${format_price(new_sl)} (Locked)",
+    ]
+    if r_multiple is not None:
+        block_lines.append(f"{'Trigger':<12} +{r_multiple:.2f}R Achieved")
+    block_lines.append(f"{'Risk Status':<12} 100% Risk-Free")
+
+    block = "\n".join(block_lines)
+    return fmt(
+        bold(f"⚖️ BREAKEVEN LOCKED 🟢 {symbol}"),
+        "\n",
+        "━" * 32,
+        "\n\n",
+        pre(block),
+        "\n\n",
+        italic("🛡️ Stop-Loss amended to entry + fee buffer on exchange. Capital is secured."),
+    )
+
+
 # Paginated trade history formatter
 try:
     from app.bot.utils.formatters.trade_history_formatter import TradeHistoryFormatter
@@ -362,6 +461,8 @@ __all__ = [
     "format_sl_alert",
     "format_breakeven_alert",
     "format_entry_alert",
+    "format_apm_exit_alert",
+    "format_breakeven_locked_alert",
     "TradeHistoryFormatter",
     "HTML",
     "code",

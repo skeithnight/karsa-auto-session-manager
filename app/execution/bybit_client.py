@@ -289,7 +289,7 @@ class BybitClient:
         return Decimal("0.0002")
 
     async def _fetch_placed_order_details(self, order_id: str, symbol: str) -> dict[str, Any]:
-        """Query order status with a quick retry to handle API propagation delay."""
+        """Query order status with retries and executions fallback to guarantee fill price."""
         for attempt in range(3):
             try:
                 order = await self.get_order_status(order_id, symbol)
@@ -305,14 +305,53 @@ class BybitClient:
                     else:
                         order["status"] = status_raw
 
-                    # Map avgPrice to average
-                    if "avgPrice" in order:
-                        order["average"] = order["avgPrice"]
-                    return order
+                    avg_p = _safe_decimal(order.get("avgPrice"))
+                    if avg_p > Decimal("0"):
+                        order["average"] = str(avg_p)
+                        order["price"] = str(avg_p)
+                        return order
             except Exception as e:
                 logger.debug(f"Fetch order status attempt {attempt+1} failed: {e}")
-            await asyncio.sleep(0.05 * (attempt + 1))
+            await asyncio.sleep(0.1 * (attempt + 1))
+
+        # Fallback: check recent executions/fills for matching orderId
+        try:
+            exec_data = await self.get_executions(symbol=symbol, limit=5)
+            for ex in exec_data.get("executions", []):
+                if ex.get("orderId") == order_id or not order_id:
+                    exec_price = _safe_decimal(ex.get("execPrice"))
+                    if exec_price > Decimal("0"):
+                        return {
+                            "orderId": order_id or ex.get("orderId", ""),
+                            "status": "closed",
+                            "average": str(exec_price),
+                            "avgPrice": str(exec_price),
+                            "price": str(exec_price),
+                            "amount": str(ex.get("execQty", "0")),
+                        }
+        except Exception as e:
+            logger.debug(f"Fetch executions fallback failed for {symbol}: {e}")
+
         return {}
+
+    async def fetch_my_trades(self, symbol: str, limit: int = 5) -> list[dict[str, Any]]:
+        """Fetch recent trades/executions formatted for CCXT / SOR compatibility."""
+        exec_data = await self.get_executions(symbol=symbol, limit=limit)
+        trades = []
+        for ex in exec_data.get("executions", []):
+            trades.append(
+                {
+                    "id": ex.get("execId", ""),
+                    "order": ex.get("orderId", ""),
+                    "symbol": symbol,
+                    "side": "buy" if ex.get("side") == "Buy" else "sell",
+                    "price": _safe_decimal(ex.get("execPrice")),
+                    "amount": _safe_decimal(ex.get("execQty")),
+                    "fee": _safe_decimal(ex.get("execFee")),
+                    "timestamp": ex.get("execTime"),
+                }
+            )
+        return trades
 
     async def create_limit_order(
         self,
@@ -321,12 +360,14 @@ class BybitClient:
         amount: Decimal,
         price: Decimal,
         params: dict[str, Any] | None = None,
+        stop_loss: Decimal | None = None,
+        take_profit: Decimal | None = None,
     ) -> dict[str, Any]:
-        """Place a limit order (Post-Only by default)."""
+        """Place a limit order (Post-Only by default) with optional atomic SL/TP."""
         logger.debug(f"create_limit_order: entering symbol={symbol} side={side}")
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
-        order_params = {
+        order_params: dict[str, Any] = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
             "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
@@ -337,6 +378,13 @@ class BybitClient:
             "price": str(self._round_price(symbol, price)),
             "timeInForce": "PostOnly",
         }
+        if stop_loss is not None and stop_loss > 0:
+            order_params["stopLoss"] = str(self._round_price(symbol, stop_loss))
+            order_params["tpslMode"] = "Full"
+            order_params["slOrderType"] = "Market"
+        if take_profit is not None and take_profit > 0:
+            order_params["takeProfit"] = str(self._round_price(symbol, take_profit))
+            order_params["tpOrderType"] = "Market"
         if params:
             order_params.update(params)
         result = await self._execute(self.session.place_order, **order_params)
@@ -357,12 +405,14 @@ class BybitClient:
         side: str,
         amount: Decimal,
         params: dict[str, Any] | None = None,
+        stop_loss: Decimal | None = None,
+        take_profit: Decimal | None = None,
     ) -> dict[str, Any]:
-        """Place a market order."""
+        """Place a market order with optional atomic SL/TP."""
         logger.debug(f"create_market_order: entering symbol={symbol} side={side}")
         if not self.connected or not self.session:
             raise RuntimeError("Bybit not connected")
-        order_params = {
+        order_params: dict[str, Any] = {
             "category": "linear",
             "symbol": self._to_bybit_symbol(symbol),
             "side": {"LONG": "Buy", "SHORT": "Sell"}.get(
@@ -371,6 +421,13 @@ class BybitClient:
             "orderType": "Market",
             "qty": str(self._round_qty(symbol, amount)),
         }
+        if stop_loss is not None and stop_loss > 0:
+            order_params["stopLoss"] = str(self._round_price(symbol, stop_loss))
+            order_params["tpslMode"] = "Full"
+            order_params["slOrderType"] = "Market"
+        if take_profit is not None and take_profit > 0:
+            order_params["takeProfit"] = str(self._round_price(symbol, take_profit))
+            order_params["tpOrderType"] = "Market"
         if params:
             order_params.update(params)
         result = await self._execute(self.session.place_order, **order_params)

@@ -303,8 +303,9 @@ class RiskChecksMixin:
         try:
             wallet = await self._bybit_client.get_wallet_balance()  # type: ignore[attr-defined]
             equity = Decimal(str(wallet.get("balance", wallet.get("available", "0"))))
-            if equity <= 0:
-                return CheckResult(passed=True)
+            if equity <= Decimal("0"):
+                logger.warning("PRM: Wallet equity is 0 or unavailable — BLOCKING trade (fail-safe)")
+                return CheckResult(passed=False, reason="Wallet equity unavailable (fail-safe BLOCK)")
 
             positions = await self._position_store.list_all()  # type: ignore[attr-defined]
             gross_notional = Decimal("0")

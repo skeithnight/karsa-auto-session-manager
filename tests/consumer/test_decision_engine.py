@@ -7,7 +7,7 @@ pipeline logic without real indicator math.
 from __future__ import annotations
 
 from decimal import Decimal
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import numpy as np
 import pytest
@@ -74,6 +74,8 @@ def _build_engine(
     )
     # Override the router that __init__ created with our mock
     engine._router = router
+    from unittest.mock import AsyncMock
+    engine._compute_ev_score = AsyncMock(return_value=(0.0, 0.55))
     return engine
 
 
@@ -234,3 +236,46 @@ class TestDipBuyerBoost:
             )
         result = await engine.evaluate("BTC/USDT", candles)
         assert result is None  # Score 70 < gate 75, no boost
+
+
+@pytest.mark.asyncio
+class TestDecisionEngineRiskPercentages:
+    @pytest.mark.parametrize("risk_int,expected_dec", [
+        (10, Decimal("0.10")),
+        (30, Decimal("0.30")),
+        (50, Decimal("0.50")),
+        (70, Decimal("0.70")),
+        (100, Decimal("1.00")),
+    ])
+    async def test_get_risk_pct_from_session_config(self, risk_int: int, expected_dec: Decimal) -> None:
+        import json
+        engine = _build_engine()
+        redis_mock = AsyncMock()
+        redis_mock.get.side_effect = lambda key: json.dumps({"risk_pct": risk_int}) if key == "karsa:auto:config" else None
+        engine._redis = redis_mock
+
+        risk_pct = await engine._get_risk_pct()
+        assert risk_pct == expected_dec
+
+    @pytest.mark.parametrize("risk_str,expected_dec", [
+        ("10", Decimal("0.10")),
+        ("30", Decimal("0.30")),
+        ("50", Decimal("0.50")),
+        ("70", Decimal("0.70")),
+        ("100", Decimal("1.00")),
+    ])
+    async def test_get_risk_pct_from_settings_store(self, risk_str: str, expected_dec: Decimal) -> None:
+        engine = _build_engine()
+        redis_mock = AsyncMock()
+        redis_mock.get.side_effect = lambda key: risk_str if key == "karsa:settings:risk_pct" else None
+        engine._redis = redis_mock
+
+        risk_pct = await engine._get_risk_pct()
+        assert risk_pct == expected_dec
+
+    async def test_get_risk_pct_fallback_to_settings(self) -> None:
+        engine = _build_engine()
+        engine._redis = None
+        risk_pct = await engine._get_risk_pct()
+        assert risk_pct == Decimal("0.10")
+

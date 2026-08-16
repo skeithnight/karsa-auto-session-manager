@@ -8,7 +8,7 @@ Affected API: SettingsStore.get_setting, set_setting, get_all_settings,
 Data schemas: user_settings table from alembic/versions/005_add_user_settings.py.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -390,3 +390,51 @@ def test_redis_settings_keys_match_handler_keys():
 def test_setting_defaults_cover_all_keys():
     """SETTING_DEFAULTS should have a default for every Redis key."""
     assert set(SETTING_DEFAULTS.keys()) == set(REDIS_SETTINGS_KEYS.keys())
+
+
+@pytest.mark.asyncio
+async def test_set_risk_pct_100_supported(store, mock_db_engine):
+    """Verify that 100% risk level can be saved and retrieved in settings store."""
+    _, conn = mock_db_engine
+    conn.execute.return_value = MagicMock()
+    await store.set_setting(user_id=1, key="risk_pct", value="100")
+
+    result_mock = MagicMock()
+    result_mock.fetchone.return_value = ("100",)
+    conn.execute.return_value = result_mock
+    val = await store.get_setting(user_id=1, key="risk_pct")
+    assert val == "100"
+
+
+@pytest.mark.asyncio
+async def test_settings_cmd_keyboard_has_all_risk_buttons():
+    """Verify that settings_cmd builds keyboard with 10%, 30%, 50%, 70%, and 100% buttons."""
+    from app.bot.handlers.settings import settings_cmd
+
+    mock_update = MagicMock()
+    mock_update.effective_user.id = 12345
+    mock_update.callback_query = None
+
+    mock_context = MagicMock()
+    mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value="100")
+    mock_context.bot_data = {"redis": mock_redis, "db_engine": None}
+
+    with patch("app.bot.handlers.settings._is_authorized", return_value=True), \
+         patch("app.bot.handlers.settings.send_or_edit_message") as mock_send:
+        await settings_cmd(mock_update, mock_context)
+        assert mock_send.called
+        call_kwargs = mock_send.call_args[1]
+        reply_markup = call_kwargs.get("reply_markup") or mock_send.call_args[0][2]
+        risk_row = reply_markup.inline_keyboard[0]
+        risk_callbacks = [btn.callback_data for btn in risk_row]
+        assert risk_callbacks == [
+            "settings:risk:10",
+            "settings:risk:30",
+            "settings:risk:50",
+            "settings:risk:70",
+            "settings:risk:100",
+        ]
+        risk_labels = [btn.text for btn in risk_row]
+        assert risk_labels == ["10%", "30%", "50%", "70%", "100%"]
+

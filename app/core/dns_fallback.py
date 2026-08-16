@@ -97,6 +97,7 @@ _ISP_BLOCK_PREFIXES = (
     "114.124.",  # Telkomsel
     "114.125.",  # Telkomsel
 )
+_TELKOMSEL_BLOCK_PREFIXES = _ISP_BLOCK_PREFIXES
 
 _STATIC_HOST_MAP: dict[str, list[str]] = {
     "api.telegram.org": ["149.154.166.110", "149.154.167.220"],

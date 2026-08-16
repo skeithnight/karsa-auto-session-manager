@@ -116,6 +116,15 @@ class SmartOrderRouter:
             )
             return None
 
+        # Precompute initial Stop-Loss price for zero-latency atomic exchange attachment
+        sl_distance = max_loss_usd / amount if amount > 0 else Decimal("0")
+        if side == "buy":
+            raw_sl_price = price - sl_distance
+        else:
+            raw_sl_price = price + sl_distance
+        effective_price_tick = price_tick if (isinstance(price_tick, Decimal) and price_tick > 0) else Decimal("0.01")
+        est_sl_price = (raw_sl_price / effective_price_tick).quantize(Decimal("1")) * effective_price_tick if effective_price_tick > 0 else raw_sl_price
+
         # Iceberg / TWAP Order Slicing
         if notional > Decimal("2000"):
             logger.info(
@@ -137,7 +146,7 @@ class SmartOrderRouter:
                         await asyncio.sleep(random.uniform(1.5, 3.5))
                     try:
                         last_order = await self.client.create_market_order(
-                            symbol, side, current_amount
+                            symbol, side, current_amount, stop_loss=est_sl_price
                         )
                         if last_order:
                             filled_amount += current_amount
@@ -165,7 +174,7 @@ class SmartOrderRouter:
             logger.info(f"SOR: latency mode — market order {side} {amount}")
             try:
                 market_order = await self.client.create_market_order(
-                    symbol, side, amount
+                    symbol, side, amount, stop_loss=est_sl_price
                 )
                 sl_id = await self._place_sl_after_fill(
                     symbol, side, price, amount, max_loss_usd, price_tick
@@ -187,7 +196,9 @@ class SmartOrderRouter:
         )
         metrics.sor_step_total.labels(symbol=symbol, step="post_only").inc()
         try:
-            order = await self.client.create_limit_order(symbol, side, amount, price)
+            order = await self.client.create_limit_order(
+                symbol, side, amount, price, stop_loss=est_sl_price
+            )
             if order.get("status") in ("open", "closed"):
                 logger.info(
                     "⚡ [STAGE 5: SMART ORDER ROUTER] Post-Only Maker Order Filled! OrderID: %s",
@@ -310,7 +321,7 @@ class SmartOrderRouter:
                     await self.client.cancel_order(order["id"], symbol)
 
                 order = await self.client.create_limit_order(
-                    symbol, side, amount, current_price
+                    symbol, side, amount, current_price, stop_loss=est_sl_price
                 )
                 if order.get("status") in ("open", "closed"):
                     logger.info(f"Reprice filled: {order['orderId']}")
@@ -365,7 +376,9 @@ class SmartOrderRouter:
             if order and order.get("id"):
                 await self.client.cancel_order(order["id"], symbol)
 
-            market_order = await self.client.create_market_order(symbol, side, amount)
+            market_order = await self.client.create_market_order(
+                symbol, side, amount, stop_loss=est_sl_price
+            )
             logger.info(f"Market fallback filled: {market_order['orderId']}")
             metrics.orders_placed.labels(symbol=symbol, side=side).inc()
             fill_price = Decimal(
@@ -808,7 +821,8 @@ class SmartOrderRouter:
                 raw_sl_price = fill_price + sl_distance
 
             # Round sl_price to price_tick to avoid Bybit precision errors
-            sl_price = (raw_sl_price / price_tick).quantize(Decimal("1")) * price_tick
+            eff_tick = price_tick if (isinstance(price_tick, Decimal) and price_tick > 0) else Decimal("0.01")
+            sl_price = (raw_sl_price / eff_tick).quantize(Decimal("1")) * eff_tick
 
             # Cancel stale conditional stop orders before placing new one
             try:

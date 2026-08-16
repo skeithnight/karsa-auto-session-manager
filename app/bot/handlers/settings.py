@@ -119,7 +119,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     settings_block = (
         f"{'Parameter':<22} {'Value':<5}  Options\n"
         f"{_sep}\n"
-        f"{'Risk per Trade':<22} {risk_pct}%    [10% · 30% · 50% · 70%]\n"
+        f"{'Risk per Trade':<22} {risk_pct}%    [10% · 30% · 50% · 70% · 100%]\n"
         f"{'Max Positions':<22} {max_pos:<5}  [3 · 5 · 7]\n"
         f"{'Trade Alerts':<22} {trade_icon:<5}  [ON · OFF]\n"
         f"{'Daily Summary':<22} {daily_icon:<5}  [ON · OFF]\n"
@@ -145,6 +145,7 @@ async def settings_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("30%", callback_data="settings:risk:30"),
             InlineKeyboardButton("50%", callback_data="settings:risk:50"),
             InlineKeyboardButton("70%", callback_data="settings:risk:70"),
+            InlineKeyboardButton("100%", callback_data="settings:risk:100"),
         ],
         # Max Positions — dedicated buttons
         [

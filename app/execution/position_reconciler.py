@@ -275,19 +275,32 @@ class PositionReconciler:
                 self._log.warning(f"APM reconcile: {symbol} exchange SL set to {sl_price}")
             except Exception as e:
                 if "10001" in str(e):
-                    # SL above/below price -- wrong direction, compute opposite
-                    if side == "LONG":
-                        sl_price = entry_price - initial_risk
-                    else:
-                        sl_price = entry_price + initial_risk
+                    # Bybit error 10001: stopLoss must be strictly lower than current market price for Buy,
+                    # or strictly higher than current market price for Sell.
+                    # If position is already in drawdown past entry - initial_risk, adjust SL relative to live ticker price.
                     try:
+                        ticker = None
+                        if hasattr(self._client, "fetch_ticker"):
+                            ticker = await self._client.fetch_ticker(symbol)
+                        if ticker and ticker.get("last", Decimal("0")) > Decimal("0"):
+                            last_price = Decimal(str(ticker["last"]))
+                            if side == "LONG":
+                                sl_price = min(sl_price, last_price * Decimal("0.995"))
+                            else:
+                                sl_price = max(sl_price, last_price * Decimal("1.005"))
+                        else:
+                            if side == "LONG":
+                                sl_price = entry_price * Decimal("0.95")
+                            else:
+                                sl_price = entry_price * Decimal("1.05")
+
                         await self._client.set_trading_stop(symbol, api_side, stop_loss=sl_price)
                         pos["current_sl"] = str(sl_price)
                         pos["stop_loss"] = str(sl_price)
                         changed = True
-                        self._log.warning(f"APM reconcile: {symbol} exchange SL corrected to {sl_price}")
-                    except Exception:
-                        self._log.debug(f"APM reconcile: SL placement failed for {symbol}")
+                        self._log.warning(f"APM reconcile: {symbol} exchange SL corrected to {sl_price} based on live price")
+                    except Exception as err2:
+                        self._log.warning(f"APM reconcile: Drawdown SL adjustment failed for {symbol}: {err2}")
                 else:
                     self._log.debug(f"APM reconcile: SL placement failed for {symbol}: {e}")
 

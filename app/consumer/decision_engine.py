@@ -216,20 +216,26 @@ class DecisionEngine:
         return 1500.0
 
     async def _get_risk_pct(self) -> Decimal:
-        """Read risk_pct from Redis karsa:auto:config. Default10%."""
-        if self._redis is None:
-            return Decimal("0.10")
-        try:
-            import json as _json
+        """Read risk_pct from Redis karsa:auto:config, karsa:settings:risk_pct, or Settings."""
+        if self._redis is not None:
+            try:
+                import json as _json
 
-            raw = await self._redis.get("karsa:auto:config")
-            if raw:
-                cfg = _json.loads(raw)
-                pct = cfg.get("risk_pct", 10)
-                return Decimal(str(pct)) / Decimal("100")
-        except Exception:
-            pass
-        return Decimal("0.10")
+                raw = await self._redis.get("karsa:auto:config")
+                if raw:
+                    cfg = _json.loads(raw)
+                    if "risk_pct" in cfg:
+                        return Decimal(str(cfg["risk_pct"])) / Decimal("100")
+
+                settings_risk = await self._redis.get("karsa:settings:risk_pct")
+                if settings_risk:
+                    return Decimal(str(settings_risk)) / Decimal("100")
+            except Exception:
+                pass
+        from app.core.config import get_settings
+
+        _s = get_settings()
+        return Decimal(str(getattr(_s, "risk_per_trade_pct", "0.10")))
 
     async def evaluate(
         self,
@@ -1481,8 +1487,12 @@ class DecisionEngine:
                 * Decimal(str(session_mult))
                 / risk_distance
             )
-            # Cap notional to 40% of equity (PRM single position limit)
-            max_notional = self._wallet_balance * Decimal("0.40")
+            # Cap notional to max_single_position_pct of equity (PRM single position limit)
+            from app.core.config import get_settings
+
+            _cfg = get_settings()
+            max_single_pct = Decimal(str(getattr(_cfg, "max_single_position_pct", "0.40")))
+            max_notional = self._wallet_balance * max_single_pct
             if entry_price > 0:
                 max_amount = max_notional / entry_price
                 amount = min(amount, max_amount)

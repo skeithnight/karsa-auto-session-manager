@@ -91,6 +91,22 @@ class HMMRegimeClassifier:
             )
             model.fit(X)
 
+            # Ensure valid stochastic transition matrix (every row sums to 1.0)
+            if hasattr(model, "transmat_"):
+                row_sums = model.transmat_.sum(axis=1, keepdims=True)
+                zero_rows = (row_sums == 0).ravel()
+                if np.any(zero_rows):
+                    model.transmat_[zero_rows] = 1.0 / n_states
+                    row_sums = model.transmat_.sum(axis=1, keepdims=True)
+                model.transmat_ /= row_sums
+
+            if hasattr(model, "startprob_"):
+                start_sum = model.startprob_.sum()
+                if start_sum > 0:
+                    model.startprob_ /= start_sum
+                else:
+                    model.startprob_ = np.ones(n_states) / n_states
+
             # Map states to canonical order: 0=LOW_VOL, 1=TRANSITION, 2=HIGH_VOL
             # by sorting states by their variance (lowest = LOW_VOL, highest = HIGH_VOL)
             # We store the mapping so classify() can translate.

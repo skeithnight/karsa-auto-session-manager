@@ -362,10 +362,22 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         logger.info("skip %s — position already open", symbol)
         return
 
-    # Slot checking
+    # Dual-Source Slot Verification (Redis + Bybit Exchange Ground Truth)
     open_positions = await position_store.list_all()
-    total_open = len(open_positions)
+    total_local = len(open_positions)
     hyper_open = sum(1 for p in open_positions if str(p.get("regime", "")).startswith("HYPER"))
+
+    total_exchange = 0
+    try:
+        bybit = getattr(executor, "client", None)
+        if bybit and hasattr(bybit, "fetch_positions"):
+            ex_positions = await bybit.fetch_positions()
+            total_exchange = len(ex_positions) if ex_positions is not None else 0
+    except Exception as e:
+        logger.debug("Exchange position count check failed for %s: %s", symbol, e)
+        total_exchange = total_local
+
+    total_open = max(total_local, total_exchange)
 
     try:
         max_pos = int(await position_store.redis.get("karsa:settings:max_positions") or 5)
@@ -382,12 +394,25 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
             return
     elif total_open >= max_pos:
         logger.info(
-            "skip %s — all slots full (%d/%d)",
+            "skip %s — all slots full (%d/%d) [local: %d, exchange: %d]",
             symbol,
             total_open,
             max_pos,
+            total_local,
+            total_exchange,
         )
         return
+
+    # Atomic In-Flight Reservation Lock (prevents concurrent signal race condition)
+    clean_sym = symbol.replace("/", "")
+    reservation_key = f"karsa:slot_reservation:{clean_sym}"
+    try:
+        reserved = await position_store.redis.set(reservation_key, "in_flight", ex=45, nx=True)
+        if not reserved:
+            logger.info("skip %s — entry already in flight (reservation locked)", symbol)
+            return
+    except Exception as e:
+        logger.debug("Reservation lock failed for %s: %s", symbol, e)
 
     # ML Prefilter Gate
     signal_features = {
@@ -616,23 +641,32 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
     # Bybit V5 returns avgPrice, SOR returns average or price
     fill_price = Decimal(str(result.get("average", result.get("avgPrice", result.get("price", 0)))))
 
-    # Guard: reject zero-price fill
+    # Guard: resolve fill price if 0 so position is ALWAYS tracked in position_store
     if fill_price <= 0:
-        logger.error("REJECTING trade %s — fill_price is 0, fetching from order history", symbol)
-        # Try to get actual fill price from Bybit
+        logger.warning("Trade %s fill_price is 0 from order result — fetching from exchange fills", symbol)
         try:
-            await asyncio.sleep(1.0)
-            if hasattr(executor, "client") and hasattr(executor.client, "fetch_my_trades"):
-                trades = await executor.client.fetch_my_trades(symbol, limit=1)
-                if trades:
-                    fill_price = Decimal(str(trades[-1].get("price", 0)))
-        except Exception:
-            pass
+            await asyncio.sleep(0.5)
+            if hasattr(executor, "client"):
+                if hasattr(executor.client, "fetch_my_trades"):
+                    trades = await executor.client.fetch_my_trades(symbol, limit=1)
+                    if trades:
+                        fill_price = Decimal(str(trades[-1].get("price", 0)))
+                if fill_price <= 0 and hasattr(executor.client, "fetch_positions"):
+                    pos_list = await executor.client.fetch_positions()
+                    for p in pos_list:
+                        sym_raw = str(p.get("symbol", ""))
+                        if sym_raw == symbol or sym_raw == symbol.replace("/", "") or sym_raw.replace("USDT", "/USDT") == symbol:
+                            entry_p = Decimal(str(p.get("entry_price", "0")))
+                            if entry_p > 0:
+                                fill_price = entry_p
+                                break
+        except Exception as e:
+            logger.warning(f"Failed to fetch fill price for {symbol}: {e}")
+
+        # Absolute fallback: use signal entry price to ensure position is NEVER dropped from position_store
         if fill_price <= 0:
-            logger.critical("ABORTING entry %s — cannot determine fill price", symbol)
-            # Cannot track without fill_price, bail out (ideally we should market close here too,
-            # but since we couldn't fetch order history, Bybit API is likely degraded)
-            return
+            fill_price = signal.entry_price if getattr(signal, "entry_price", Decimal("0")) > 0 else signal.current_price
+            logger.warning("Using signal entry price fallback %s for %s to ensure position is tracked", fill_price, symbol)
 
     # Compute initial_risk_per_unit from actual fill price and signal SL.
     # This is the CRITICAL field APM uses for breakeven/trailing/SL placement.
@@ -818,6 +852,37 @@ async def _position_exit_loop(
 
             # Get positions from Redis
             internal = await position_store.list_all()
+
+            # Forward self-healing: Auto-ingest any untracked exchange positions into Redis
+            internal_keys = {
+                f"{(p.get('symbol') or '').replace('/', '')}:{'buy' if p.get('side') == 'LONG' else 'sell'}"
+                for p in internal
+            }
+            for ex_key, ex_pos in exchange_map.items():
+                if ex_key not in internal_keys:
+                    ex_sym = ex_pos.get("symbol", "")
+                    ex_side = "LONG" if ex_pos.get("side") == "buy" else "SHORT"
+                    ex_entry = Decimal(str(ex_pos.get("entry_price", 0)))
+                    ex_size = Decimal(str(ex_pos.get("contracts", 0)))
+                    if ex_entry > 0 and ex_size > 0:
+                        logger.warning(
+                            "Auto-healing: Found untracked position %s %s on exchange. Ingesting to Redis.",
+                            ex_sym,
+                            ex_side,
+                        )
+                        from datetime import datetime, timezone
+                        await position_store.save({
+                            "symbol": ex_sym,
+                            "side": ex_side,
+                            "amount": str(ex_size),
+                            "entry_price": str(ex_entry),
+                            "stop_loss": str(ex_pos.get("stopLoss", "0")),
+                            "current_sl": str(ex_pos.get("stopLoss", "0")),
+                            "initial_risk_per_unit": str(ex_entry * Decimal("0.02")),
+                            "entry_time": datetime.now(timezone.utc).isoformat(),
+                            "regime": "RECONCILED",
+                        })
+
             for pos in internal:
                 symbol = pos.get("symbol", "")
                 side = pos.get("side", "LONG")

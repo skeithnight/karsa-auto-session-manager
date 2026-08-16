@@ -22,11 +22,7 @@ class BadTickFilter:
 
     def is_bad_tick(self, data: ExchangeData) -> bool:
         """Check if a tick is a bad tick (price spike >5% in <1s)."""
-        logger.debug(
-            f"is_bad_tick: entering exchange={data.exchange} symbol={data.symbol}"
-        )
         if data.last_price is None:
-            logger.debug("is_bad_tick: returning False (no last_price)")
             return False
 
         key = f"{data.exchange}:{data.symbol}"
@@ -37,7 +33,6 @@ class BadTickFilter:
             # First tick — record and accept
             self.last_prices[key] = data.last_price
             self.last_timestamps[key] = data.timestamp
-            logger.debug("is_bad_tick: returning False (first tick)")
             return False
 
         # Calculate price change percentage
@@ -49,18 +44,17 @@ class BadTickFilter:
             logger.warning(
                 f"Bad tick rejected: {key} price changed {price_change:.2%} in {time_delta:.3f}s"
             )
+            return True
+
         # Update tracking
         self.last_prices[key] = data.last_price
         self.last_timestamps[key] = data.timestamp
-        logger.debug("is_bad_tick: returning False (within threshold)")
         return False
 
     def filter_orderbook(self, data: ExchangeData) -> ExchangeData:
         """Filter orderbook data — mark as stale if bad tick detected."""
-        logger.debug(f"filter_orderbook: entering exchange={data.exchange}")
         if self.is_bad_tick(data):
             data.is_stale = True
-            logger.debug("filter_orderbook: returning ExchangeData (stale)")
         return data
 
 

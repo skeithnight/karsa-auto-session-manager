@@ -15,6 +15,7 @@ from typing import Any
 from loguru import logger
 
 from app.execution.constants import (
+    APM_BREAKEVEN_FEE_PCT,
     APM_BREAKEVEN_LOCK_R,
     APM_TREND_TRAIL_ACTIVATE_R,
     APM_TREND_TRAIL_ATR_MULT,
@@ -153,11 +154,7 @@ class ExitManager:
 
         # --- Profit Lock at 3R: move SL to breakeven ---
         if r_multiple >= PROFIT_LOCK_R:
-            fee_buffer = entry_price * APM_BREAKEVEN_FEE_PCT
-            if side == "LONG":
-                breakeven_sl = entry_price + fee_buffer
-            else:
-                breakeven_sl = entry_price - fee_buffer
+            breakeven_sl = entry_price
 
             if side == "LONG" and current_sl < breakeven_sl:
                 await self._amend_sl(pos, symbol, side, breakeven_sl)

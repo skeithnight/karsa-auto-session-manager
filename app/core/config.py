@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     evm_pools: list[dict[str, Any]] = Field(default_factory=list)
 
     # ── Portfolio Risk Limits ──────────────────────────────────
+    risk_per_trade_pct: str = "0.10"  # 10% default risk per trade (e.g. 0.10, 0.30, 0.50, 0.70, 1.00)
     max_gross_exposure_pct: str = "0.50"
     max_net_exposure_pct: str = "0.30"
     max_single_position_pct: str = "0.40"

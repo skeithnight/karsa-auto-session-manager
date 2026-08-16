@@ -15,8 +15,16 @@
 # 9router_data, gluetun_data. Plain `stop` / `start` (or just leave it
 # running) preserves everything.
 
+x-logging: &default-logging
+  logging:
+    driver: "json-file"
+    options:
+      max-size: "50m"
+      max-file: "3"
+
 services:
   postgres:
+    <<: *default-logging
     image: postgres:16-alpine
     container_name: karsa-postgres
     restart: unless-stopped
@@ -37,6 +45,7 @@ services:
       - karsa-backend
 
   redis:
+    <<: *default-logging
     image: redis:7-alpine
     container_name: karsa-redis
     restart: unless-stopped
@@ -55,6 +64,7 @@ services:
   # -- VPN (WireGuard via gluetun) --------------------------------
 
   gluetun:
+    <<: *default-logging
     image: qmcgaw/gluetun
     container_name: karsa-gluetun
     restart: unless-stopped
@@ -105,6 +115,7 @@ services:
   # only happens if you deliberately rebuild THIS file.
 
   9router:
+    <<: *default-logging
     image: decolua/9router:latest
     container_name: karsa-9router
     restart: unless-stopped
@@ -128,6 +139,7 @@ services:
   # -- Monitoring --------------------------------------------------
 
   prometheus:
+    <<: *default-logging
     image: prom/prometheus:latest
     container_name: karsa-prometheus
     restart: unless-stopped
@@ -143,6 +155,7 @@ services:
       - karsa-frontend
 
   grafana:
+    <<: *default-logging
     image: grafana/grafana:latest
     container_name: karsa-grafana
     restart: unless-stopped

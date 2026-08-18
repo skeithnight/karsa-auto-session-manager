@@ -410,9 +410,9 @@ class ExitManager:
         """Kill switch: force close if regime shifted N consecutive checks.
         Returns True if the position was closed, False otherwise.
         """
-        # UNKNOWN regime: orphan positions with lost historical context are exempt.
+        # UNKNOWN / empty regime: orphan positions or uninitialized context are exempt.
         # We don't have enough information to determine if a regime shift occurred.
-        if entry_regime == "UNKNOWN":
+        if not entry_regime or entry_regime in ("UNKNOWN", "", "None"):
             return False
 
         try:

@@ -179,11 +179,19 @@ class BybitClient:
         self._consecutive_failures += 1
         return False
 
-    async def _execute(self, func_or_name: Any, *args, **kwargs) -> dict:
+    async def _execute(
+        self,
+        func_or_name: Any,
+        *args,
+        max_retries: int | None = None,
+        call_timeout: float = 15.0,
+        **kwargs,
+    ) -> dict:
         """Run sync pybit call in thread with exponential backoff and session recovery."""
+        retries = max_retries if max_retries is not None else self._MAX_RETRIES
         async with self._lock:
             last_exc = None
-            for attempt in range(self._MAX_RETRIES):
+            for attempt in range(retries):
                 try:
                     # Auto-recover dead session
                     if not self.connected or self.session is None:
@@ -200,7 +208,7 @@ class BybitClient:
                     start = time.monotonic()
                     resp = await asyncio.wait_for(
                         asyncio.to_thread(target_func, *args, **kwargs),
-                        timeout=15,
+                        timeout=call_timeout,
                     )
                     elapsed_ms = (time.monotonic() - start) * 1000
                     metrics.proxy_latency.observe(elapsed_ms)
@@ -211,8 +219,15 @@ class BybitClient:
                         return resp.get("result", {})
                     ret_code = resp.get("retCode")
                     ret_msg = resp.get("retMsg", "")
+                    # Unrecoverable error codes that should fail fast without retrying
+                    # 110126: Requires manual web agreement signing
+                    # 10001, 10002, 10003: Auth errors
+                    # 110007: Insufficient margin
                     if ret_code in (10001, 10002, 10003):
                         raise RuntimeError(f"Bybit auth error: {ret_msg}")
+                    if ret_code in (110126, 110007, 110012, 110043, 110044):
+                        logger.warning(f"Bybit unrecoverable API error [{ret_code}]: {ret_msg}")
+                        raise RuntimeError(f"Bybit unrecoverable API error [{ret_code}]: {ret_msg}")
                     raise RuntimeError(f"Bybit API error [{ret_code}]: {ret_msg}")
                 except TimeoutError:
                     last_exc = RuntimeError(f"Bybit timeout on attempt {attempt + 1}")
@@ -480,12 +495,14 @@ class BybitClient:
         logger.info(f"Order amended: {order_id} -> {price}")
         return result
 
-    async def fetch_balance(self) -> dict[str, Any]:
+    async def fetch_balance(self, max_retries: int | None = None, call_timeout: float = 15.0) -> dict[str, Any]:
         """Fetch current USDT balance."""
         logger.debug("fetch_balance: entering")
         result = await self._execute(
             "get_wallet_balance",
             accountType="UNIFIED",
+            max_retries=max_retries,
+            call_timeout=call_timeout,
         )
         coins = result.get("list", [{}])[0].get("coin", [])
         usdt = next((c for c in coins if c.get("coin") == "USDT"), {})
@@ -500,11 +517,11 @@ class BybitClient:
         logger.debug("fetch_balance: returning dict")
         return balance
 
-    async def get_wallet_balance(self) -> dict:
+    async def get_wallet_balance(self, max_retries: int | None = None, call_timeout: float = 15.0) -> dict:
         """Get wallet balance — returns {balance, available, connected} for dashboard."""
         logger.debug("get_wallet_balance: entering")
         try:
-            balance_data = await self.fetch_balance()
+            balance_data = await self.fetch_balance(max_retries=max_retries, call_timeout=call_timeout)
             result = {
                 "balance": balance_data.get("total", Decimal("0")),
                 "available": balance_data.get("free", Decimal("0")),

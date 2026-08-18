@@ -58,8 +58,8 @@ class BadTickFilter:
         return data
 
 
-# Static/Dynamic asset blacklist for coins with persistent negative win rate / high slippage
-_DEFAULT_BLACKLIST = {"AEVO/USDT", "EPIC/USDT", "AEVOUSDT", "EPICUSDT"}
+# Static/Dynamic asset blacklist for coins with persistent negative win rate / high slippage / un-signed contract agreement
+_DEFAULT_BLACKLIST = {"AEVO/USDT", "EPIC/USDT", "AEVOUSDT", "EPICUSDT", "CXMT/USDT", "CXMTUSDT"}
 
 
 class AssetQualityFilter:

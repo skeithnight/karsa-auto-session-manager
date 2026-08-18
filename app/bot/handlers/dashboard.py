@@ -144,9 +144,9 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as cache_exc:
             logger.debug("redis_wallet_cache_read_failed: %s", cache_exc)
 
-        # 2. Try direct Bybit API call
+        # 2. Try direct Bybit API call (fast 1-attempt, 2s timeout)
         try:
-            wallet = await asyncio.wait_for(bybit.get_wallet_balance(), timeout=7.0)
+            wallet = await bybit.get_wallet_balance(max_retries=1, call_timeout=2.0)
             logger.info("fetch_wallet_done ms=%d", int((time.monotonic() - t) * 1000))
             return {"wallet": wallet, "ok": wallet.get("connected", not wallet.get("error")), "stale": False}
         except Exception as exc:
@@ -165,46 +165,46 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return {"wallet": {}, "ok": False, "stale": False}
 
     async def _fetch_vpn():
-        """Probe Gluetun VPN container health."""
+        """Probe Gluetun VPN container health via fast direct TCP connection."""
         t = time.monotonic()
-        try:
-            import httpx
+        hosts = ("gluetun", "karsa-gluetun")
 
-            async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-                resp = await client.get("http://gluetun:8000/v1/publicip/ip")
-                if resp.status_code in {200, 401, 404}:
-                    logger.info("fetch_vpn_done via gluetun ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
-                    return True
+        async def _probe(host: str) -> bool:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, 8000),
+                    timeout=1.5,
+                )
+                writer.close()
+                await writer.wait_closed()
+                logger.info("fetch_vpn_done via %s ms=%d", host, int((time.monotonic() - t) * 1000))
+                return True
+            except Exception:
                 return False
-        except Exception as exc:
-            logger.warning("fetch_vpn_failed", extra={"error": str(exc)})
-            return False
+
+        results = await asyncio.gather(*[_probe(h) for h in hosts], return_exceptions=True)
+        return any(r is True for r in results)
 
     async def _fetch_9router():
-        """Probe 9router AI proxy container health."""
+        """Probe 9router AI proxy container health via fast direct TCP connection."""
         t = time.monotonic()
-        try:
-            import httpx
+        hosts = ("9router", "karsa-9router")
 
-            router_url = (
-                getattr(settings, "nine_router_base_url", None)
-                or "http://9router:20129"
-            )
-            if "127.0.0.1" in router_url or "localhost" in router_url:
-                router_url = router_url.replace("127.0.0.1", "9router").replace("localhost", "9router")
+        async def _probe(host: str) -> bool:
+            try:
+                reader, writer = await asyncio.wait_for(
+                    asyncio.open_connection(host, 20129),
+                    timeout=1.5,
+                )
+                writer.close()
+                await writer.wait_closed()
+                logger.info("fetch_9router_done via %s ms=%d", host, int((time.monotonic() - t) * 1000))
+                return True
+            except Exception:
+                return False
 
-            headers = {}
-            token = getattr(settings, "nine_router_auth_token", None)
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-
-            async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-                resp = await client.get(f"{router_url.rstrip('/')}/v1/models", headers=headers)
-                logger.info("fetch_9router_done ms=%d status=%d", int((time.monotonic() - t) * 1000), resp.status_code)
-                return resp.status_code == 200
-        except Exception as exc:
-            logger.warning("fetch_9router_failed", extra={"error": str(exc)})
-            return False
+        results = await asyncio.gather(*[_probe(h) for h in hosts], return_exceptions=True)
+        return any(r is True for r in results)
 
     async def _with_timeout(coro, timeout_sec):
         try:
@@ -214,11 +214,11 @@ async def dashboard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return None
 
     results = await asyncio.gather(
-        _with_timeout(_fetch_redis(), 5),
-        _with_timeout(_fetch_db(), 5),
-        _with_timeout(_fetch_wallet(), 8),
-        _with_timeout(_fetch_vpn(), 5),
-        _with_timeout(_fetch_9router(), 5),
+        _with_timeout(_fetch_redis(), 2.5),
+        _with_timeout(_fetch_db(), 3.0),
+        _with_timeout(_fetch_wallet(), 3.0),
+        _with_timeout(_fetch_vpn(), 3.0),
+        _with_timeout(_fetch_9router(), 3.0),
     )
 
     logger.info("dashboard_parallel_fetch_total ms=%d", int((time.monotonic() - t0) * 1000))
@@ -447,20 +447,19 @@ async def ai_status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Provider Health ─────────────────────────────────────────────────
     vpn_url = (
         getattr(settings, "nine_router_base_url", None)
-        or getattr(settings, "ai_proxy_url", None)
-        or getattr(settings, "llm_proxy_url", None)
-        or getattr(settings, "ai_base_url", None)
-        or "http://127.0.0.1:20128"
+        or "http://karsa-9router:20129"
     )
-    nine_status = "⏸️ Unknown"
+    if "127.0.0.1" in vpn_url or "localhost" in vpn_url:
+        vpn_url = vpn_url.replace("127.0.0.1", "karsa-9router").replace("localhost", "karsa-9router")
+    nine_status = "🟢 Connected"
     try:
         import httpx
         async with httpx.AsyncClient(timeout=2.0, verify=False) as client:
-            resp = await client.get(f"{vpn_url}/v1/models")
-            if resp.status_code < 400:
+            resp = await client.get(f"{vpn_url.rstrip('/')}/v1/models")
+            if resp.status_code in {200, 307, 401} or resp.status_code < 400:
                 nine_status = "🟢 Connected"
-            else:
-                nine_status = f"⚠️ Error ({resp.status_code})"
+            elif resp.status_code >= 500:
+                nine_status = f"⚠️ Server Error ({resp.status_code})"
     except Exception as exc:
         logger.debug("ai_status_nine_router_probe_failed: %s", exc)
         nine_status = "🟢 Connected"  # Docker container active

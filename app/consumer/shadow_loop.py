@@ -38,6 +38,7 @@ logger = logging.getLogger("karsa.shadow")
 
 
 def _configure_logging() -> None:
+    from loguru import logger as _loguru_logger
     from app.core.context import TraceIdFilter
 
     handler = logging.StreamHandler(sys.stdout)
@@ -50,6 +51,9 @@ def _configure_logging() -> None:
     handler.addFilter(TraceIdFilter())
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
+
+    _loguru_logger.remove()
+    _loguru_logger.add(sys.stdout, level="INFO")
 
 
 async def _on_signal_shadow(

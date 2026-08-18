@@ -47,6 +47,8 @@ _HISTORICAL_DAYS = 90
 
 def _configure_logging() -> None:
     """Configure structured JSON logging for container output."""
+    from loguru import logger as _loguru_logger
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(
         logging.Formatter(
@@ -56,6 +58,9 @@ def _configure_logging() -> None:
     )
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
+
+    _loguru_logger.remove()
+    _loguru_logger.add(sys.stdout, level="INFO")
 
 
 async def _ingest_historical(

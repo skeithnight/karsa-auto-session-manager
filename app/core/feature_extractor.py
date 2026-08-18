@@ -41,6 +41,15 @@ class FeatureVector:
     noise_score: float | None = None
     liquidity_score: float | None = None
 
+    # Cross-Asset, Volume & Statistical Extension
+    beta_30d: float | None = None
+    correlation_24h: float | None = None
+    volume_spike_ratio: float | None = None
+    distance_from_ema50_pct: float | None = None
+    breakout_confirmed: bool | None = None
+    annualized_funding_cost_pct: float | None = None
+    ev_score: float | None = None
+
 
 class FeatureExtractor:
     """Extracts a standard FeatureVector from a FeatureStore."""

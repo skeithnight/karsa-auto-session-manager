@@ -24,25 +24,25 @@ fi
 
 case "$KARSA_ROLE" in
   data-engine)
-    exec python -m app.data_engine.main "$@"
+    exec python -u -m app.data_engine.main "$@"
     ;;
   live)
-    exec python -m app.consumer.live_loop "$@"
+    exec python -u -m app.consumer.live_loop "$@"
     ;;
   shadow)
-    exec python -m app.consumer.shadow_loop "$@"
+    exec python -u -m app.consumer.shadow_loop "$@"
     ;;
   9router)
-    exec python scripts/nine_router_proxy.py "$@"
+    exec python -u scripts/nine_router_proxy.py "$@"
     ;;
   backtest)
-    exec python -m app.backtest.worker "$@"
+    exec python -u -m app.backtest.worker "$@"
     ;;
   commander)
-    exec python -m app.commander.main "$@"
+    exec python -u -m app.commander.main "$@"
     ;;
   *)
     # Unknown roles fall through to app.main (legacy)
-    exec python -m app.main "$@"
+    exec python -u -m app.main "$@"
     ;;
 esac

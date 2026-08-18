@@ -38,14 +38,14 @@ class TestEVScorer:
         assert components.regime_alignment == 0.3
 
     def test_chop_regime_neutral(self):
-        """CHOP regime should produce moderate EV (not blocked)."""
+        """CHOP regime should produce 0.0 EV (strict zero-tolerance invariant)."""
         ev, components = self.scorer.score(
             regime="CHOP", direction="LONG",
             spread_pct=0.002, rsi=50.0, skew=0.0,
             regime_conviction=0.4, hour_utc=14,
         )
-        assert 0.2 < ev < 0.8, f"Expected moderate EV, got {ev}"
-        assert components.regime_alignment == 0.5
+        assert ev == 0.0, f"Expected 0.0 EV in CHOP, got {ev}"
+        assert components.regime_alignment == 0.0
 
     def test_spread_quality_soft_penalty(self):
         """Wide spread should reduce EV, not kill it."""

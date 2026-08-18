@@ -31,6 +31,9 @@
 x-karsa-app: &karsa-app
   build: .
   env_file: .env
+  dns:
+    - 1.1.1.1
+    - 8.8.8.8
   logging:
     driver: "json-file"
     options:

@@ -33,9 +33,9 @@ from app.core.feature_extractor import FeatureVector
 # ---------------------------------------------------------------------------
 
 # Hard Guardrails
-AI_CONFIDENCE_MIN = 60
+AI_CONFIDENCE_MIN = 70
 BTC_BETA_THRESHOLD = 1.2
-FUNDING_RATE_LONG_THRESHOLD = 0.0001  # 0.01% per 8h (as decimal)
+FUNDING_RATE_LONG_THRESHOLD = 0.0005  # 0.05% per 8h (as decimal, >54% annualized drag)
 BREAKOUT_VOLUME_MIN = 1.2
 EMA50_OVEREXTENSION_HARD_PCT = 10.0
 MAX_CONCURRENT_POSITIONS = 5
@@ -382,6 +382,13 @@ class HybridDecisionEngine:
             candle_quality_score=features.get("candle_quality_score"),
             noise_score=features.get("noise_score"),
             liquidity_score=features.get("liquidity_score"),
+            beta_30d=features.get("beta_30d"),
+            correlation_24h=features.get("correlation_24h"),
+            volume_spike_ratio=features.get("volume_spike_ratio"),
+            distance_from_ema50_pct=features.get("distance_from_ema50_pct"),
+            breakout_confirmed=features.get("breakout_confirmed"),
+            annualized_funding_cost_pct=features.get("annualized_funding_cost_pct"),
+            ev_score=features.get("ev_score"),
         )
 
     # ------------------------------------------------------------------

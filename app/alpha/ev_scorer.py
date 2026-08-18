@@ -47,7 +47,7 @@ _REGIME_ALIGN = {
     "HYPER_BULL": {"LONG": 0.9, "SHORT": 0.2},
     "HYPER_BEAR": {"LONG": 0.2, "SHORT": 0.9},
     "RANGE": {"LONG": 0.6, "SHORT": 0.6},
-    "CHOP": {"LONG": 0.5, "SHORT": 0.5},
+    "CHOP": {"LONG": 0.0, "SHORT": 0.0},
     "MEAN_REVERSION": {"LONG": 0.7, "SHORT": 0.7},
     "TRANSITION_BULL": {"LONG": 1.0, "SHORT": 0.1},
     "TRANSITION_BEAR": {"LONG": 0.1, "SHORT": 1.0},
@@ -192,8 +192,14 @@ class EVScorer:
             for k in weights
         )
 
-        # Session quality is a multiplier, not a component
-        final_ev = base_ev * components.session_quality
+        # Strict Invariant: CHOP regime mathematically guarantees EV = 0.0
+        if regime == "CHOP":
+            return 0.0, components
+
+        # Session quality should penalize low liquidity sessions (ASIA=0.7, PACIFIC=0.6)
+        # but must NOT artificially inflate sub-threshold signals in LDN/NY (sizing multiplier applies downstream)
+        session_mult = components.session_quality
+        final_ev = base_ev * session_mult if session_mult < 1.0 else base_ev
 
         logger.debug(
             "EVScorer: %s %s ev=%.3f base=%.3f session=%.2f regime_align=%.2f",

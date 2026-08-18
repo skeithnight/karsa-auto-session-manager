@@ -130,6 +130,13 @@ class StatisticalFeatureEngine:
             "ema_200": 0.0,
             "sma_20": 0.0,
             "hurst": 0.5,
+            "orderbook_delta": 0.0,
+            "cvd_slope": 0.0,
+            "spread_pct": 0.0001,
+            "liquidity_score": 75.0,
+            "market_quality_score": 75.0,
+            "oi_change": 0.0,
+            "ev_score": 0.65,
         }
 
         if ohlcv is None or btc_ohlcv is None:

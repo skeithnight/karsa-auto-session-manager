@@ -160,7 +160,7 @@ class NineRouterService(IAIService):
         circuit_breaker: AICircuitBreaker | None = None,
         redis_client: Any | None = None,
         provider_chain: list[_ProviderConfig] | None = None,
-        timeout_seconds: float = 45.0,
+        timeout_seconds: float = 60.0,
     ) -> None:
         self._owned_client = http_client is None
         self.client = http_client or httpx.AsyncClient(
@@ -277,7 +277,7 @@ class NineRouterService(IAIService):
         payload = {
             "model": provider.model,
             "messages": messages,
-            "max_tokens": 2048,
+            "max_tokens": 4096,
             "temperature": 0.1,
             "stream": False,
         }
@@ -299,14 +299,33 @@ class NineRouterService(IAIService):
             )
 
         resp.raise_for_status()
-        data = resp.json()
+        raw_text = resp.text.strip()
+        # 9router sometimes appends trailing SSE markers (e.g. 'data: [DONE]\n\n')
+        if "data: [DONE]" in raw_text:
+            raw_text = raw_text.split("data: [DONE]")[0].strip()
+
+        try:
+            data = json.loads(raw_text)
+        except Exception:
+            data = resp.json()
 
         choices = data.get("choices", [])
         if not choices:
             raise ParseError(f"{provider.name}: empty choices in response")
 
-        content = choices[0].get("message", {}).get("content", "")
-        if not content:
+        message = choices[0].get("message", {})
+        content = message.get("content") or ""
+        reasoning = message.get("reasoning_content") or ""
+
+        # For reasoning models (e.g. MiMo/DeepSeek), if content is empty or lacks JSON, fallback to reasoning text
+        if content and '"confidence_score"' in content:
+            result_text = content
+        elif reasoning and '"confidence_score"' in reasoning:
+            result_text = reasoning
+        else:
+            result_text = f"{content}\n{reasoning}".strip() or choices[0].get("text") or ""
+
+        if not result_text:
             raise ParseError(f"{provider.name}: empty content in response")
 
         # Track cost (approximate tokens)
@@ -317,7 +336,7 @@ class NineRouterService(IAIService):
             prompt_tokens + completion_tokens
         )
 
-        return content
+        return str(result_text)
 
     # ------------------------------------------------------------------
     # Caching

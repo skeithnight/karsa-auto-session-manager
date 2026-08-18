@@ -81,6 +81,47 @@ class RiskChecksMixin:
             return CheckResult(passed=False, reason="Layer 3 MTF Mismatch: Internal error (fail-safe BLOCK)")
 
     # ------------------------------------------------------------------
+    # Check 0.5: Global Slot Cap & Burst Limiter
+    # ------------------------------------------------------------------
+
+    async def _check_max_active_positions(self, signal: object) -> CheckResult:
+        """Hard constraint: Max 5 concurrent open positions across portfolio."""
+        try:
+            positions = await self._position_store.list_all()  # type: ignore[attr-defined]
+            if len(positions) >= 5:
+                return CheckResult(
+                    passed=False,
+                    reason=f"Maximum portfolio slots full ({len(positions)}/5 active positions)",
+                )
+            return CheckResult(passed=True)
+        except Exception:
+            logger.exception("PRM: max active positions check failed — BLOCKING")
+            return CheckResult(passed=False, reason="position store unavailable")
+
+    async def _check_entry_burst_limiter(self, signal: object) -> CheckResult:
+        """Limit new entries to max 2 in any rolling 15-minute window to stop flash churn."""
+        if self._redis is None:
+            return CheckResult(passed=True)
+        try:
+            import time
+            now_ts = time.time()
+            window_start = now_ts - 900.0  # 15 minutes
+            key = "karsa:risk:recent_entry_timestamps"
+
+            # Purge entries older than 15 minutes
+            await self._redis.zremrangebyscore(key, "-inf", window_start)  # type: ignore[attr-defined]
+            recent_count = await self._redis.zcard(key)  # type: ignore[attr-defined]
+
+            if recent_count >= 2:
+                return CheckResult(
+                    passed=False,
+                    reason=f"Entry burst rate limit: {recent_count}/2 positions opened in last 15m",
+                )
+            return CheckResult(passed=True)
+        except Exception:
+            return CheckResult(passed=True)
+
+    # ------------------------------------------------------------------
     # Check 1: Correlation trap
     # ------------------------------------------------------------------
 
@@ -95,10 +136,6 @@ class RiskChecksMixin:
 
         try:
             sector = await self._sector_mapping.get_sector(symbol)  # type: ignore[attr-defined]
-
-            # If the sector is unknown (e.g. micro-caps), they are idiosyncratic. Don't block.
-            if sector == "UNKNOWN":
-                return CheckResult(passed=True)
 
             positions = await self._position_store.list_all()  # type: ignore[attr-defined]
             sector_count = 0

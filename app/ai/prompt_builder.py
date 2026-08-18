@@ -15,13 +15,36 @@ from app.core.decision_context import DecisionContext
 # System prompt — locked to JSON output, conservative stance
 # ---------------------------------------------------------------------------
 SYSTEM_PROMPT = """\
-You are a senior crypto-derivatives analyst embedded in an automated trading system.
-Your role is to evaluate a potential LONG or SHORT entry on a perpetual-futures market.
+You are the Lead Quantitative Derivatives Risk & Context Evaluator for an institutional automated crypto trading desk.
+A deterministic statistical engine has already generated and pre-screened this trade setup based on mathematical edge.
+Your mission is to evaluate structural market health, orderbook microstructure, derivatives dynamics, and assign a calibrated position size and confidence score.
 
-RULES:
-1. Be conservative.  Default to BLOCK (no entry) unless the evidence is compelling.
-2. Always justify your decision with concrete feature readings.
-3. Return ONLY a JSON object matching the schema below — no markdown, no commentary.
+CORE EVALUATION PRINCIPLES:
+1. Objectively weigh confirmed technical alignment (trend continuation, volume expansion, low funding drag) against structural risk (severe overbought/oversold exhaustion, extreme funding drag, illiquid orderbooks).
+2. Avoid passive hedging (do not default to 50%). Actively separate high-conviction momentum from genuine fakeouts.
+3. Return ONLY a valid JSON object matching the exact schema below — no markdown formatting, no conversational commentary.
+
+CALIBRATED SCORING & SIZING RUBRIC:
+- 80-100 (HIGH CONVICTION → position_size: FULL, risk_level: LOW):
+  * Clean trend alignment (price respecting EMA20/EMA200).
+  * Strong volume confirmation (volume spike > 1.3x) without extreme parabolic overextension.
+  * Favorable derivatives backdrop (funding rate neutral or negative for Longs, positive for Shorts).
+  * High market quality / liquidity score.
+
+- 65-79 (SOLID CONVICTION → position_size: HALF, risk_level: MEDIUM):
+  * Established trend with standard indicators.
+  * Moderate volume expansion (1.1x - 1.3x).
+  * Normal funding drag (under 0.03% / 8h).
+  * Safe distance from EMA50 (< 7%).
+
+- 45-64 (SPECULATIVE / RANGE → position_size: QUARTER, risk_level: MEDIUM):
+  * Choppy/rangebound context or mixed momentum signals.
+  * Minor indicator divergence or moderate stretch from moving averages.
+
+- 0-44 (TOXIC / FAKEOUT → position_size: BLOCK, risk_level: HIGH):
+  * Parabolic exhaustion (RSI > 80 into major resistance for Longs, or RSI < 20 into support for Shorts).
+  * Severe funding cost drag (> 0.05% / 8h) indicating crowded retail leverage squeeze.
+  * Negative volume trend on breakout attempt.
 
 REQUIRED JSON SCHEMA:
 {
@@ -30,57 +53,48 @@ REQUIRED JSON SCHEMA:
   "position_size": "<BLOCK | QUARTER | HALF | FULL>",
   "entry_strategy": "<MARKET | LIMIT_RETEST | WAIT_PULLBACK>",
   "stop_loss_strategy": "<TIGHT | NORMAL | WIDE>",
-  "reasoning": "<2-4 sentence thesis>",
-  "key_risks": ["<risk 1>", "<risk 2>", ...],
-  "key_opportunities": ["<opp 1>", "<opp 2>", ...],
+  "reasoning": "<2-3 sentence crisp market thesis citing key metrics>",
+  "key_risks": ["<primary risk factor>", "<secondary risk factor>"],
+  "key_opportunities": ["<primary edge/catalyst>", "<secondary edge>"],
   "bullish_probability": <float 0-100>,
   "bearish_probability": <float 0-100>,
   "summary": "<one-line executive summary>"
 }
-
-CONFIDENCE GUIDELINES:
-- 0-30:  Very low conviction — BLOCK
-- 31-50: Weak signal — QUARTER at most
-- 51-70: Moderate conviction — HALF possible
-- 71-100: Strong conviction — FULL possible (still requires LOW risk_level)
-
-SIZING RULES:
-- risk_level=HIGH → position_size must be BLOCK or QUARTER.
-- risk_level=MEDIUM → position_size must be BLOCK, QUARTER, or HALF.
-- risk_level=LOW → any size allowed.
 """
 
 # ---------------------------------------------------------------------------
-# User prompt template — injects feature values
+# User prompt template — injects rich feature values
 # ---------------------------------------------------------------------------
 _USER_TEMPLATE = """\
-Analyze the following market snapshot and decide on a {direction} entry for {symbol}.
+Analyze the following live market state and provide your institutional sizing verdict for a {direction} entry on {symbol}.
 
-### Market Context
-- Current regime: {regime}
-- Proposed direction: {direction}
-
-### Price & Volatility
-- Last close: {close}
-- ATR (14) %: {atr_pct}
-- Hurst exponent: {hurst}
-
-### Trend
-- EMA 20: {ema_20}
-- EMA 200: {ema_200}
-- SMA 20: {sma_20}
-- RSI (14): {rsi_14}
-- ADX (14): {adx_14}
+### 1. Market Regime & Higher-Timeframe Trend
+- Market Regime: {regime}
+- Proposed Direction: {direction}
+- Last Close Price: {close}
+- EMA 20: {ema_20} | SMA 20: {sma_20} | EMA 200: {ema_200}
 - Distance from EMA50: {distance_from_ema50_pct}%
 
-### Cross-Asset & Regime
-- BTC correlation (30d): {correlation_24h}
-- Beta to BTC (30d): {beta_30d}
+### 2. Momentum & Volatility
+- RSI (14): {rsi_14}
+- ADX (14): {adx_14}
+- Hurst Exponent (Trend Persistence): {hurst}
+- ATR (14) %: {atr_pct}%
 
-### Derivatives & Microstructure
-- Funding rate: {funding_rate}
-- Volume spike ratio: {volume_spike_ratio}x
-- Breakout confirmed: {breakout_confirmed}
+### 3. Volume & Microstructure
+- Volume Spike Ratio: {volume_spike_ratio}x
+- Breakout Confirmed: {breakout_confirmed}
+- Orderbook Delta / Imbalance: {orderbook_delta}
+- CVD Slope: {cvd_slope}
+- Spread Bps: {spread_pct}
+- Liquidity Score: {liquidity_score} | Market Quality Score: {market_quality_score}
+
+### 4. Derivatives & Cross-Asset Dynamics
+- Funding Rate: {funding_rate} (Annualized Cost: {annualized_funding_cost_pct}%)
+- Open Interest 1H Change: {oi_change}
+- BTC 30D Correlation: {correlation_24h}
+- Beta to BTC (30D): {beta_30d}
+- Statistical EV Score: {ev_score}
 
 Respond with the JSON decision object only.
 """
@@ -105,13 +119,19 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         "rsi_14": _fmt(fv.rsi_14),
         "adx_14": _fmt(fv.adx_14),
         "funding_rate": _fmt(fv.funding_rate),
-        # Cross-asset & regime features — use defaults if not in FeatureVector
-        # These are computed by StatisticalFeatureEngine but not in FeatureVector
-        "distance_from_ema50_pct": "N/A",
-        "correlation_24h": "N/A",
-        "beta_30d": "N/A",
-        "volume_spike_ratio": "N/A",
-        "breakout_confirmed": "N/A",
+        "distance_from_ema50_pct": _fmt(fv.distance_from_ema50_pct),
+        "correlation_24h": _fmt(fv.correlation_24h),
+        "beta_30d": _fmt(fv.beta_30d),
+        "volume_spike_ratio": _fmt(fv.volume_spike_ratio),
+        "breakout_confirmed": "YES" if fv.breakout_confirmed is True else "NO",
+        "orderbook_delta": _fmt(fv.orderbook_delta),
+        "cvd_slope": _fmt(fv.cvd_slope),
+        "spread_pct": _fmt(fv.spread_pct),
+        "liquidity_score": _fmt(fv.liquidity_score),
+        "market_quality_score": _fmt(fv.market_quality_score),
+        "annualized_funding_cost_pct": _fmt(fv.annualized_funding_cost_pct),
+        "oi_change": _fmt(fv.oi_change),
+        "ev_score": _fmt(fv.ev_score),
     }
 
     user_prompt = _USER_TEMPLATE.format(
@@ -119,16 +139,6 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
         direction=context.direction,
         regime=context.regime.value,
         **feature_map,
-    )
-
-    # DEBUG: log features being sent to AI
-    import logging
-    logger = logging.getLogger("karsa.ai.prompt")
-    logger.debug(
-        f"PromptBuilder: features for {context.symbol} — "
-        f"close={feature_map.get('close')} rsi={feature_map.get('rsi_14')} "
-        f"atr={feature_map.get('atr')} adx={feature_map.get('adx_14')} "
-        f"regime={context.regime.value} direction={context.direction}"
     )
 
     messages = [
@@ -144,8 +154,10 @@ def build_prompts(context: DecisionContext) -> dict[str, Any]:
     }
 
 
-def _fmt(value: float | None) -> str:
-    """Format a nullable float for prompt injection."""
+def _fmt(value: float | int | None) -> str:
+    """Format a nullable number for prompt injection."""
     if value is None:
-        return "N/A"
-    return f"{value:.6f}"
+        return "0.0000"
+    if isinstance(value, int):
+        return str(value)
+    return f"{value:.4f}"

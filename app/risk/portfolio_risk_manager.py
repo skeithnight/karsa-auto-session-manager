@@ -76,7 +76,19 @@ class PortfolioRiskManager(RiskChecksMixin):
         try:
             checks: list[CheckResult] = []
 
-            # 0. MTF Regime Alignment (Layer 3)
+            # 0. Global Max Positions Cap (5 Slots)
+            c = await self._check_max_active_positions(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
+            # 0.1 Entry Burst Rate Limiter (Max 2 per 15m window)
+            c = await self._check_entry_burst_limiter(signal)
+            checks.append(c)
+            if not c.passed:
+                return PRMResult(approved=False, reason=c.reason, checks=checks)
+
+            # 0.2 MTF Regime Alignment (Layer 3)
             c = await self._check_mtf_regime_alignment(signal)
             checks.append(c)
             if not c.passed:
@@ -131,7 +143,19 @@ class PortfolioRiskManager(RiskChecksMixin):
                 logger.warning("🛡️ [STAGE 3: PORTFOLIO RISK MANAGER] REJECTED %s — Reason: %s", getattr(signal, 'symbol', 'UNKNOWN'), c.reason)
                 return PRMResult(approved=False, reason=c.reason, checks=checks)
 
-            logger.info("🛡️ [STAGE 3: PORTFOLIO RISK MANAGER] APPROVED %s — Passed all 6 pre-trade risk gates (Sector, Exposure, CB, Velocity, Macro)", getattr(signal, 'symbol', 'UNKNOWN'))
+            # Record entry timestamp in burst limiter set
+            if self._redis is not None:
+                try:
+                    import time
+                    now_ts = time.time()
+                    sym = getattr(signal, "symbol", "UNKNOWN")
+                    key = "karsa:risk:recent_entry_timestamps"
+                    await self._redis.zadd(key, {f"{sym}:{now_ts}": now_ts})  # type: ignore[attr-defined]
+                    await self._redis.expire(key, 3600)  # type: ignore[attr-defined]
+                except Exception:
+                    pass
+
+            logger.info("🛡️ [STAGE 3: PORTFOLIO RISK MANAGER] APPROVED %s — Passed all 8 pre-trade risk gates (Slots, Burst, Sector, Exposure, CB, Velocity, Macro)", getattr(signal, 'symbol', 'UNKNOWN'))
             return PRMResult(approved=True, checks=checks)
 
         except Exception:

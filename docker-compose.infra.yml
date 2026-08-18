@@ -87,11 +87,13 @@ services:
       - WIREGUARD_MTU=1420
       - PUBLICIP_ENABLED=no
       - HEALTHCHECK_VPN=off
+      - HEALTH_RESTART_VPN=off
+      - HEALTH_VPN_DURATION_INITIAL=0s
       - DNS_SERVER=on
-      - DNS_TYPE=dot
-      - DOT_PROVIDERS=cloudflare
-      - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16,172.17.0.0/16,172.18.0.0/16,172.28.0.0/16
-      - FIREWALL_INPUT_SUBNETS=172.16.0.0/12,192.168.0.0/16,172.17.0.0/16,172.18.0.0/16,172.28.0.0/16
+      - DNS_TYPE=plain
+      - DNS_PLAINTEXT_VALIDATION=off
+      - FIREWALL_OUTBOUND_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,172.17.0.0/16,172.18.0.0/16,172.28.0.0/16
+      - FIREWALL_INPUT_SUBNETS=172.16.0.0/12,192.168.0.0/16,10.0.0.0/8,172.17.0.0/16,172.18.0.0/16,172.28.0.0/16
       - FIREWALL_INPUT_PORTS=9999,20128,20129,20219
       - FIREWALL_VPN_INPUT_PORTS=9999,20128,20129,20219
     volumes:
@@ -106,7 +108,10 @@ services:
       - "20128:20129"
       - "20219:20129"
     networks:
-      - karsa-backend
+      karsa-backend:
+        aliases:
+          - gluetun
+          - karsa-gluetun
 
   # -- 9router (AI proxy) -----------------------------------------
   # Pre-built image, no `build:` here — compose has no reason to touch
@@ -124,7 +129,10 @@ services:
       - DATA_DIR=/app/data
       - PORT=20129
     networks:
-      - karsa-backend
+      karsa-backend:
+        aliases:
+          - 9router
+          - karsa-9router
     dns:
       - 1.1.1.1
       - 8.8.8.8

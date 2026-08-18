@@ -28,6 +28,8 @@ _DOH_CACHE_TTL = 300  # 5 minutes
 _in_fallback = False
 
 _DOH_ENDPOINTS = (
+    "https://8.8.8.8/resolve?name={host}&type=A",
+    "https://1.1.1.1/dns-query?name={host}&type=A",
     "https://dns.google/resolve?name={host}&type=A",
     "https://cloudflare-dns.com/dns-query?name={host}&type=A",
 )
@@ -80,7 +82,7 @@ _SKIP_HOSTS = frozenset({
     "postgres", "redis", "gluetun", "localhost",
     "127.0.0.1", "0.0.0.0", "1.1.1.1", "8.8.8.8",
     "9router", "prometheus", "grafana", "db",
-    "karsa-postgres", "karsa-redis",
+    "karsa-postgres", "karsa-redis", "karsa-gluetun", "karsa-9router",
 })
 
 # Indonesian ISP block page / redirect prefixes
@@ -162,10 +164,10 @@ def _fallback_getaddrinfo(
         if not has_blocked_ip:
             return res
         logger.warning("dns_fallback: ISP DNS poisoning detected for host=%s (returned blocked IP), switching to DoH", host)
-    except socket.gaierror:
+    except (socket.gaierror, Exception):
         pass  # DNS resolution failed, try DoH fallback
 
-    # 2. Fallback to DoH (Google & Cloudflare)
+    # 2. Fallback to DoH (Google & Cloudflare direct IPs)
     try:
         _in_fallback = True
         ips = _doh_resolve(host)
@@ -179,11 +181,17 @@ def _fallback_getaddrinfo(
     if ips:
         logger.info("dns_fallback_used host=%s ips=%s", host, ips[0])
         port_num = _parse_port(port)
-        af = socket.AF_INET6 if ":" in ips[0] else socket.AF_INET
-        return [
-            (af, socket.SOCK_STREAM, 0, "", (ip, port_num))
-            for ip in ips
-        ]
+        sock_type = type if type != 0 else socket.SOCK_STREAM
+        proto_num = proto if proto != 0 else (socket.IPPROTO_TCP if sock_type == socket.SOCK_STREAM else socket.IPPROTO_UDP)
+        results = []
+        for ip in ips:
+            af = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            if family != 0 and family != af:
+                continue
+            sockaddr = (ip, port_num, 0, 0) if af == socket.AF_INET6 else (ip, port_num)
+            results.append((af, sock_type, proto_num, "", sockaddr))
+        if results:
+            return results
 
     # Neither worked — raise the original error
     return _orig_getaddrinfo(host, port, family, type, proto, flags)

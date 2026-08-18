@@ -93,15 +93,25 @@ def _strip_fences(text: str) -> str:
 
 
 def _load_json(text: str) -> dict[str, Any]:
-    """Parse JSON, raising ParseError on failure."""
+    """Parse JSON, raising ParseError on failure with fallback regex extraction."""
     try:
         data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ParseError(f"Invalid JSON: {exc}") from exc
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
 
-    if not isinstance(data, dict):
-        raise ParseError(f"Expected JSON object, got {type(data).__name__}")
-    return data
+    # Regex extraction fallback for markdown blocks or embedded JSON in reasoning content
+    matches = re.findall(r'(\{[\s\S]*?"confidence_score"[\s\S]*?\})', text)
+    for candidate in reversed(matches):
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict) and "confidence_score" in data:
+                return data
+        except Exception:
+            continue
+
+    raise ParseError("Invalid JSON: could not parse decision object")
 
 
 def _validate_required_fields(data: dict[str, Any]) -> None:

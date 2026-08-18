@@ -78,8 +78,8 @@ async def scheduled_bulk_backtest_task(
 
     orch = BacktestOrchestrator(redis_client, db_engine)
 
-    # Wait initially before starting the first run
-    await asyncio.sleep(5)
+    # Initial delay before first background bulk backtest (4 hours to prevent startup CPU spikes)
+    await asyncio.sleep(14400)
 
     while not kill_switch.is_set():
         try:

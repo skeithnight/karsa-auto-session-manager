@@ -434,9 +434,11 @@ class StrategyRouter:
 
         # Wire regime conviction to score (prevents boundary whipsaw)
         # Conviction is 0.0-1.0 from classify_with_conviction(), written to Redis
-        if context.regime_conviction < 1.0:
-            context.total_confidence *= context.regime_conviction
-            logger.debug(f"StrategyRouter: score weighted by conviction={context.regime_conviction:.3f}")
+        # Only damp score if conviction is borderline (< 0.6) to avoid halving scores
+        if context.regime_conviction < 0.6:
+            damping = 0.8 + 0.2 * (context.regime_conviction / 0.6)
+            context.total_confidence *= damping
+            logger.debug(f"StrategyRouter: score damped by low conviction={context.regime_conviction:.3f} damping={damping:.2f}")
 
         atr_pct = features.atr_pct or VOLATILITY_REFERENCE_ATR_PCT
         vol_factor = (

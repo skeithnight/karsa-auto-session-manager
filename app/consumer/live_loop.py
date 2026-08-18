@@ -42,6 +42,7 @@ ml_prefilter = MLPrefilter()
 
 
 def _configure_logging() -> None:
+    from loguru import logger as _loguru_logger
     from app.core.context import TraceIdFilter
 
     handler = logging.StreamHandler(sys.stdout)
@@ -55,6 +56,9 @@ def _configure_logging() -> None:
     logging.root.handlers = [handler]
     logging.root.setLevel(logging.INFO)
 
+    _loguru_logger.remove()
+    _loguru_logger.add(sys.stdout, level="INFO")
+
 
 async def _on_candle(_symbol: str, _candle: list) -> None:
     """Per-candle callback — extend with Prometheus metrics if needed."""
@@ -66,7 +70,7 @@ async def _wallet_metrics_loop(
     position_store: PositionStore,
     redis: Any,
     shutdown_event: asyncio.Event,
-    interval_s: int = 30,
+    interval_s: int = 10,
 ) -> None:
     """Periodically publish wallet balance, position metrics, and max positions to Prometheus."""
     from app.core import metrics

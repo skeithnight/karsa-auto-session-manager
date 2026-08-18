@@ -93,16 +93,20 @@ class HMMRegimeClassifier:
 
             # Ensure valid stochastic transition matrix (every row sums to 1.0)
             if hasattr(model, "transmat_"):
+                if not np.all(np.isfinite(model.transmat_)):
+                    model.transmat_ = np.full((n_states, n_states), 1.0 / n_states)
                 row_sums = model.transmat_.sum(axis=1, keepdims=True)
-                zero_rows = (row_sums == 0).ravel()
-                if np.any(zero_rows):
-                    model.transmat_[zero_rows] = 1.0 / n_states
+                invalid_rows = ((row_sums == 0) | ~np.isfinite(row_sums)).ravel()
+                if np.any(invalid_rows):
+                    model.transmat_[invalid_rows] = 1.0 / n_states
                     row_sums = model.transmat_.sum(axis=1, keepdims=True)
                 model.transmat_ /= row_sums
 
             if hasattr(model, "startprob_"):
+                if not np.all(np.isfinite(model.startprob_)):
+                    model.startprob_ = np.ones(n_states) / n_states
                 start_sum = model.startprob_.sum()
-                if start_sum > 0:
+                if start_sum > 0 and np.isfinite(start_sum):
                     model.startprob_ /= start_sum
                 else:
                     model.startprob_ = np.ones(n_states) / n_states

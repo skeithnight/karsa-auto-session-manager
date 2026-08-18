@@ -552,7 +552,7 @@ class DecisionEngine:
 
             t_score = time.perf_counter()
             # Fetch regime conviction from Redis (written by classification loop)
-            conviction = 0.5
+            conviction = 1.0
             if self._redis is not None:
                 try:
                     _conv_key = f"system:regime:{symbol.replace('/', ':')}:conviction"
@@ -629,18 +629,6 @@ class DecisionEngine:
                     vol_factor,
                 )
                 vol_factor = 1.0
-
-                # If StrategyRouter scored it low (e.g. 0) because the explosive move happened a few hours ago,
-                # we force the score up to the base gate so it reaches the AI Analyst.
-                if score < float(self._gate):
-                    logger.info(
-                        "evaluate: %s %s momentum exemption forcing score %.1f -> %.1f for AI Analyst review",
-                        symbol,
-                        direction,
-                        score,
-                        float(self._gate),
-                    )
-                    score = float(self._gate)
 
             # Apply Macro Penalty (e.g. 0.8x if fighting macro trend)
             score = score * macro_penalty
@@ -861,34 +849,40 @@ class DecisionEngine:
                 dip_buy_boost,
             )
 
-            # ─── EV-DRIVEN DECISION (primary path) ──────────────────────
-            # Use EV score as primary decision metric, old gate as fallback
+            # ─── DUAL-GATE CONFLUENCE (StrategyRouter + EVScorer) ───────────
+            # High-conviction entry requires BOTH:
+            # 1. Deterministic StrategyRouter score >= effective_gate (>= 70 default)
+            # 2. Statistical EV score >= ev_threshold
             ev_score, ev_threshold = ev_scores.get(direction, (0.0, 0.55))
-            ev_passed = ev_score >= ev_threshold
-            old_gate_passed = score >= effective_gate
+            ev_passed = ev_score >= ev_threshold if ev_scores else True
+            strategy_passed = score >= effective_gate
 
-            # Decision: EV score if available, fallback to old gate
-            if ev_scores and ev_passed:
-                decision_source = "ev_scorer"
+            # Overextension Guard: Reject parabolic chase at exhaustion
+            rsi_val = features.rsi_14 if features.rsi_14 is not None else 50.0
+            is_overextended = False
+            if direction == "LONG" and rsi_val > 78.0 and regime == MarketRegime.TREND_BULL:
+                is_overextended = True
+                logger.warning("evaluate: %s LONG rejected — overextended RSI(14)=%.1f > 78.0", symbol, rsi_val)
+            elif direction == "SHORT" and rsi_val < 22.0 and regime == MarketRegime.TREND_BEAR:
+                is_overextended = True
+                logger.warning("evaluate: %s SHORT rejected — overextended RSI(14)=%.1f < 22.0", symbol, rsi_val)
+
+            if is_overextended:
+                await self._track_rejection(symbol, direction, "overextended_rsi", regime=regime, price=Decimal(str(arr[-1][4])))
+                continue
+
+            if strategy_passed and ev_passed:
+                decision_source = "dual_confluence"
                 logger.info(
-                    "evaluate: %s %s EV PASSED ev=%.3f >= threshold=%.3f (old gate=%.1f score=%.1f)",
-                    symbol, direction, ev_score, ev_threshold, effective_gate, score,
-                )
-            elif old_gate_passed:
-                # Fallback: old gate when EV scoring failed or returned no data
-                decision_source = "legacy_gate"
-                logger.info(
-                    "evaluate: %s %s LEGACY GATE PASSED score=%.1f >= gate=%.1f (ev=%.3f)",
-                    symbol, direction, score, effective_gate, ev_score,
+                    "evaluate: %s %s DUAL CONFLUENCE PASSED: score=%.1f >= gate=%.1f AND ev=%.3f >= threshold=%.3f",
+                    symbol, direction, score, effective_gate, ev_score, ev_threshold,
                 )
             else:
-                # Both failed — reject
                 decision_source = "rejected"
                 logger.info(
-                    "evaluate: %s %s REJECTED ev=%.3f < threshold=%.3f AND score=%.1f < gate=%.1f",
-                    symbol, direction, ev_score, ev_threshold, score, effective_gate,
+                    "evaluate: %s %s REJECTED: score=%.1f (gate=%.1f passed=%s), ev=%.3f (threshold=%.3f passed=%s)",
+                    symbol, direction, score, effective_gate, strategy_passed, ev_score, ev_threshold, ev_passed,
                 )
-                # Track rejection with EV for post-hoc analysis
                 await self._track_rejection(
                     symbol, direction, "low_score",
                     regime=regime, price=Decimal(str(arr[-1][4])),
@@ -1528,10 +1522,11 @@ class DecisionEngine:
                 reward_dist = abs(float(tp_price - entry_price))
             else:
                 reward_dist = float(atr) * 2.0  # TRAILING: assume 2x ATR target
-            avg_win = reward_dist / entry_price if entry_price > 0 else 0.0
-            avg_loss = risk_dist / entry_price if entry_price > 0 else 0.0
+            avg_win = reward_dist / float(entry_price) if entry_price > 0 else 0.0
+            avg_loss = risk_dist / float(entry_price) if entry_price > 0 else 0.0
             ev = (p_win * avg_win) - (p_loss * avg_loss)
-        except Exception:
+        except Exception as e:
+            logger.debug(f"_build_signal EV calculation error: {e}")
             ev = 0.0
 
         return TradeSignal(

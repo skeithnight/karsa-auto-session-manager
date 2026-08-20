@@ -12,8 +12,8 @@ Refinements applied:
 from __future__ import annotations
 
 import json as _json
+import time
 import uuid
-from datetime import datetime, timezone
 from decimal import ROUND_DOWN, Decimal
 from typing import Any
 
@@ -182,6 +182,8 @@ class ShadowExecutor:
             "fee_type": "maker" if is_post_only else "taker",
             "is_shadow": True,
         }
+        if is_post_only:
+            result["pending_since"] = time.time()
 
         return result
 

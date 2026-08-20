@@ -218,15 +218,15 @@ class RegimeClassifier:
             # Fallback to global BTC regime
             raw = await self._redis.get("system:config:regime")  # type: ignore[attr-defined]
             if raw is None:
-                logger.warning("RegimeClassifier: no regime in Redis, returning RANGE")
-                return MarketRegime.RANGE
+                logger.warning("RegimeClassifier: no regime in Redis, returning CHOP")
+                return MarketRegime.CHOP
             raw_s = raw.decode() if isinstance(raw, bytes) else str(raw)
             data = json.loads(raw_s)
-            reg_str = data.get("regime", "RANGE") if isinstance(data, dict) else raw_s
+            reg_str = data.get("regime", "CHOP") if isinstance(data, dict) else raw_s
             return MarketRegime(reg_str)
         except Exception:
-            logger.exception("RegimeClassifier: Redis read failed, returning RANGE")
-            return MarketRegime.RANGE
+            logger.exception("RegimeClassifier: Redis read failed, returning CHOP")
+            return MarketRegime.CHOP
 
     async def run_classification_loop(
         self,

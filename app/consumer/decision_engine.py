@@ -9,17 +9,18 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 
 import numpy as np
 
-from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.ev_scorer import EVScorer
 from app.alpha.ev_threshold import DynamicThreshold
-from app.alpha.rejected_signal_tracker import RejectedSignalTracker
-from app.alpha.regime_classifier import MarketRegime
+from app.alpha.evidence_collector import EvidenceCollector
 from app.alpha.market_analyzer import MarketAnalyzer
+from app.alpha.regime_classifier import MarketRegime
+from app.alpha.rejected_signal_tracker import RejectedSignalTracker
+from app.alpha.sector_filter import SectorRotationFilter
 from app.alpha.strategy_router import StrategyRouter
 from app.core.decision_context import DecisionContext
 from app.core.feature_extractor import FeatureExtractor
@@ -29,7 +30,6 @@ from app.core.observability import ObservabilityLogger
 from app.learning.expected_edge import ExpectedEdgeCalculator
 from app.learning.similarity_engine import SimilarityEngine
 from app.learning.statistical_learning import StatisticalLearning
-from app.alpha.sector_filter import SectorRotationFilter
 from app.risk.dynamic_risk_gate import DynamicRiskGate, RiskProfile
 from app.risk.kelly_sizer import KellySizer
 
@@ -323,7 +323,7 @@ class DecisionEngine:
         # ─── SESSION HARD-BLOCK (Asian Dead Zone) ────────────────────────
         # Block altcoin entries during low-liquidity Asian session.
         # Cash is a position — the system should sleep during dead zones.
-        now_utc = datetime.now(timezone.utc)
+        now_utc = datetime.now(UTC)
         current_hour = now_utc.hour
         try:
             from app.core.config import get_settings
@@ -485,8 +485,8 @@ class DecisionEngine:
             sector_score = self._sector_filter.get_sector_score(symbol, direction)
             if sector_score != 1.0:
                 logger.info(
-                    "evaluate: %s %s SECTOR_SCORE %.2fx (sector=%s) → score %.1f",
-                    symbol, direction, sector_score, sec_res.get("sector"), score * sector_score,
+                    "evaluate: %s %s SECTOR_SCORE %.2fx (sector=%s)",
+                    symbol, direction, sector_score, sec_res.get("sector"),
                 )
 
             # Extreme Funding Rate Block
@@ -570,6 +570,9 @@ class DecisionEngine:
             )
             stage_timings["strategy_scoring"] = time.perf_counter() - t_score
             metrics.pipeline_stage_latency_seconds.labels(stage="strategy_scoring").observe(stage_timings["strategy_scoring"])
+
+            if context is None:
+                continue
 
             # Apply Statistical Learning (Fatigue & Calibration)
             t_stat = time.perf_counter()
@@ -788,7 +791,7 @@ class DecisionEngine:
                     logger.debug(f"evaluate: HMM signal check failed for {symbol}: {e}")
 
             # Session / Time-of-Day Volatility Filtering
-            now_utc = datetime.now(timezone.utc)
+            now_utc = datetime.now(UTC)
             hour = now_utc.hour
             if 0 <= hour < 7:
                 session_mult, session_name = 0.7, "ASIA"
@@ -1050,8 +1053,9 @@ class DecisionEngine:
             return 0
 
         try:
+            from datetime import datetime, timedelta
+
             from app.core.config import get_settings
-            from datetime import datetime, timedelta, timezone
 
             settings = get_settings()
             unlock_window = timedelta(hours=settings.unlock_window_hours)
@@ -1076,8 +1080,8 @@ class DecisionEngine:
             unlock_time = datetime.fromisoformat(unlock_time_str)
             # Make timezone-aware if naive
             if unlock_time.tzinfo is None:
-                unlock_time = unlock_time.replace(tzinfo=timezone.utc)
-            now = datetime.now(timezone.utc)
+                unlock_time = unlock_time.replace(tzinfo=UTC)
+            now = datetime.now(UTC)
 
             # Check if unlock is within window
             time_to_unlock = unlock_time - now
@@ -1121,7 +1125,6 @@ class DecisionEngine:
         Returns:
             (ev_score, threshold) — both floats for comparison with existing score.
         """
-        import numpy as np
 
         # Extract feature values
         rsi = float(features.rsi) if hasattr(features, 'rsi') and features.rsi is not None else 50.0
@@ -1148,7 +1151,6 @@ class DecisionEngine:
         drawdown_pct = 0.0
         if self._redis is not None:
             try:
-                import json as _json
                 raw_peak = await self._redis.get("global:state:equity_peak")
                 if raw_peak and self._wallet_balance > 0:
                     equity_peak = float(raw_peak)
@@ -1157,7 +1159,7 @@ class DecisionEngine:
             except Exception:
                 pass
 
-        hour_utc = datetime.now(timezone.utc).hour
+        hour_utc = datetime.now(UTC).hour
         threshold = await self._ev_threshold.get_threshold(
             redis_client=self._redis,
             drawdown_pct=drawdown_pct,
@@ -1280,7 +1282,7 @@ class DecisionEngine:
 
             # Dynamic TP at Liquidity Walls: front-run large orderbook walls
             if context and hasattr(context, "features") and getattr(context.features, "liquidity_walls", None):
-                walls = getattr(context.features, "liquidity_walls") or {}
+                walls = context.features.liquidity_walls or {}
                 wall_above = walls.get("wall_above")
                 wall_below = walls.get("wall_below")
 
@@ -1481,11 +1483,17 @@ class DecisionEngine:
                 * Decimal(str(session_mult))
                 / risk_distance
             )
+            # Rational minimum position floor ($45 USDT) for small accounts so fee drag does not dominate
+            min_notional_floor = min(Decimal("45.0"), self._wallet_balance * Decimal("0.55"))
+            if entry_price > 0:
+                min_amount = min_notional_floor / entry_price
+                amount = max(amount, min_amount)
+
             # Cap notional to max_single_position_pct of equity (PRM single position limit)
             from app.core.config import get_settings
 
             _cfg = get_settings()
-            max_single_pct = Decimal(str(getattr(_cfg, "max_single_position_pct", "0.40")))
+            max_single_pct = Decimal(str(getattr(_cfg, "max_single_position_pct", "0.60")))
             max_notional = self._wallet_balance * max_single_pct
             if entry_price > 0:
                 max_amount = max_notional / entry_price

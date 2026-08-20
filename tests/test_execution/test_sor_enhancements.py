@@ -590,8 +590,8 @@ class TestProfitLock:
         )
 
         assert should_close is False
-        assert pos["current_sl"] == "64000"
-        assert pos["stop_loss"] == "64000"
+        assert pos["current_sl"] == "64128.0000"
+        assert pos["stop_loss"] == "64128.0000"
 
     @pytest.mark.asyncio
     async def test_profit_lock_moves_sl_to_breakeven_short(self, exit_manager, mock_bybit):
@@ -616,8 +616,8 @@ class TestProfitLock:
         )
 
         assert should_close is False
-        assert pos["current_sl"] == "64000"
-        assert pos["stop_loss"] == "64000"
+        assert pos["current_sl"] == "63872.0000"
+        assert pos["stop_loss"] == "63872.0000"
 
     @pytest.mark.asyncio
     async def test_profit_lock_no_move_if_already_at_breakeven(self, exit_manager, mock_bybit):
@@ -628,7 +628,7 @@ class TestProfitLock:
             "entry_price": "64000",
             "amount": "0.001",
             "atr": "500",
-            "current_sl": "64000",
+            "current_sl": "64128.0000",
             "sl_order_id": "sl1",
         }
 
@@ -637,12 +637,12 @@ class TestProfitLock:
             live_price=Decimal("67000"),
             r_multiple=Decimal("3.5"),
             side="LONG",
-            current_sl=Decimal("64000"),
+            current_sl=Decimal("64128.0000"),
             candle_close=Decimal("67000"),
         )
 
         assert should_close is False
-        # Trailing stop still amends SL upward (64000 -> 66000) since that's more protective
+        # Trailing stop still amends SL upward (64128 -> 66000) since that's more protective
         assert Decimal(pos["current_sl"]) == Decimal("66000")
 
     @pytest.mark.asyncio
@@ -667,7 +667,7 @@ class TestProfitLock:
             candle_close=Decimal("67000"),
         )
 
-        assert pos["current_sl"] == "64000"
+        assert pos["current_sl"] == "64128.0000"
 
 
 # ---------------------------------------------------------------------------

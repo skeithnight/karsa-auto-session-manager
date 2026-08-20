@@ -667,10 +667,10 @@ async def _on_signal_live(  # noqa: PLR0913  # noqa: PLR0913
         except Exception as e:
             logger.warning(f"Failed to fetch fill price for {symbol}: {e}")
 
-        # Absolute fallback: use signal entry price to ensure position is NEVER dropped from position_store
+        # Guard: If order was not filled, do NOT create a phantom position in Redis
         if fill_price <= 0:
-            fill_price = signal.entry_price if getattr(signal, "entry_price", Decimal("0")) > 0 else signal.current_price
-            logger.warning("Using signal entry price fallback %s for %s to ensure position is tracked", fill_price, symbol)
+            logger.info("Order for %s was not filled / canceled — skipping position_store write", symbol)
+            return
 
     # Compute initial_risk_per_unit from actual fill price and signal SL.
     # This is the CRITICAL field APM uses for breakeven/trailing/SL placement.
@@ -1748,6 +1748,8 @@ async def main() -> None:  # noqa: PLR0915
         await db_engine.connect(settings.postgres_url)
         trade_store = _TradeStore(db_engine)
         engine._trade_store = trade_store
+        if apm:
+            apm.set_trade_store(trade_store)
 
         # Sync user settings from DB to Redis on startup (survives Redis restarts)
         try:

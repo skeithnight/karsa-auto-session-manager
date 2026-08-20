@@ -212,8 +212,17 @@ class SymbolRotator:
                     if atr_pct < 0.5:
                         continue
 
-                    # Filter: minimum volume
-                    if vol_usd < 100_000:
+                    # Filter: minimum volume ($10M minimum)
+                    if vol_usd < 10_000_000:
+                        continue
+
+                    name = sym.split(":")[0]
+                    toxic_tickers = {
+                        "PORTAL/USDT", "DOLO/USDT", "BEAT/USDT", "PRL/USDT", "OPN/USDT", "FHE/USDT",
+                        "CAP/USDT", "HEMI/USDT", "BANK/USDT", "ZEST/USDT", "ACE/USDT", "M/USDT", "1000TAG/USDT",
+                        "PIEVERSE/USDT", "PTB/USDT", "PEOPLE/USDT", "UB/USDT", "USELESS/USDT", "VVV/USDT"
+                    }
+                    if name in toxic_tickers or f"{name}/USDT" in toxic_tickers:
                         continue
 
                     direction = "TREND_BULL" if trend_pct > 0 else "TREND_BEAR"
@@ -221,7 +230,6 @@ class SymbolRotator:
                     # Composite score: trend strength + momentum + volume
                     score = abs(trend_pct) * 0.4 + abs(mom_pct) * 0.3 + min(vol_usd / 1_000_000, 10) * 0.3
 
-                    name = sym.split(":")[0]
                     candidates.append(
                         SymbolCandidate(
                             symbol=name,

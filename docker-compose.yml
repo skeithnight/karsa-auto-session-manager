@@ -82,8 +82,9 @@ services:
       - WIREGUARD_ENDPOINT_IP=${WIREGUARD_ENDPOINT_IP}
       - WIREGUARD_ENDPOINT_PORT=${WIREGUARD_ENDPOINT_PORT:-51820}
       - PUBLICIP_ENABLED=no
-      - HEALTHCHECK_VPN=off
-      - HEALTH_RESTART_VPN=off
+      - HEALTHCHECK_VPN=small
+      - HEALTH_RESTART_VPN=on
+      - WIREGUARD_PERSISTENT_KEEPALIVE_INTERVAL=25s
       - DNS_SERVER=on
       - DNS_TYPE=plain
       - DNS_PLAINTEXT_VALIDATION=off
@@ -94,11 +95,11 @@ services:
     volumes:
       - gluetun_data:/gluetun
     healthcheck:
-      test: ["CMD-SHELL", "ip link show dev tun0"]
-      interval: 5s
+      test: ["CMD-SHELL", "wget -T 3 -qO- https://1.1.1.1 || exit 1"]
+      interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 5s
+      retries: 3
+      start_period: 10s
     ports:
       - "20128:20128"
       - "20219:20128"
@@ -158,6 +159,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
+      - ./tests:/app/tests
 
   # -- Karsa Live (real trades) ----------------------------------
 
@@ -190,6 +192,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
+      - ./tests:/app/tests
 
   # -- Karsa Shadow (virtual trades) ------------------------------
 
@@ -220,6 +223,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
+      - ./tests:/app/tests
 
   # -- Karsa Backtest (historical worker) -------------------------
 
@@ -240,6 +244,7 @@ services:
     volumes:
       - ./app:/app/app
       - ./scripts:/app/scripts
+      - ./tests:/app/tests
     networks:
       - karsa-backend
 
@@ -311,8 +316,10 @@ services:
 
 networks:
   karsa-backend:
+    name: karsa-backend
     driver: bridge
   karsa-frontend:
+    name: karsa-frontend
     driver: bridge
 
 # -- Volumes --------------------------------------------------------

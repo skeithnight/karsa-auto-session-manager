@@ -13,28 +13,28 @@ logger = logging.getLogger(__name__)
 
 # Bounds
 _MIN_THRESHOLD = 0.40
-_MAX_THRESHOLD = 0.85
-_BASE_THRESHOLD = 0.55  # Much lower than current 75.0 effective gate
+_MAX_THRESHOLD = 0.65  # Calibrated realistic ceiling for top-decile edge
+_BASE_THRESHOLD = 0.50  # Balanced base threshold
 
 # Drawdown adjustments
 _DD_SEVERE_PCT = 0.10   # >10% drawdown
 _DD_MODERATE_PCT = 0.05  # >5% drawdown
-_DD_SEVERE_ADD = 0.15
-_DD_MODERATE_ADD = 0.08
+_DD_SEVERE_ADD = 0.08
+_DD_MODERATE_ADD = 0.04
 
 # Session adjustments
 _SESSION_ADJUSTMENTS = {
     "LDN_NY_OVERLAP": -0.03,  # Best liquidity → more aggressive
     "LDN": 0.0,
     "NY": 0.0,
-    "ASIA": 0.05,             # Thin liquidity → more selective
-    "PACIFIC": 0.08,          # Dead zone → most selective
+    "ASIA": 0.04,             # Thin liquidity → more selective
+    "PACIFIC": 0.06,          # Dead zone → more selective
     "DEFAULT": 0.0,
 }
 
 # Cold streak
 _COLD_STREAK_THRESHOLD = 0.35  # Win rate below this → raise threshold
-_COLD_STREAK_ADD = 0.10
+_COLD_STREAK_ADD = 0.05
 
 
 def _get_session_label(hour_utc: int) -> str:
@@ -80,11 +80,11 @@ class DynamicThreshold:
         # Regime adjustment (Higher selective threshold for CHOP and RANGE)
         reg_upper = regime.upper()
         if "CHOP" in reg_upper or "VOLATILITY" in reg_upper:
-            threshold += 0.20
-            logger.info("Threshold: CHOP regime (%s) → +0.20", regime)
+            threshold += 0.12
+            logger.info("Threshold: CHOP regime (%s) → +0.12", regime)
         elif "RANGE" in reg_upper:
-            threshold += 0.20
-            logger.info("Threshold: RANGE regime (%s) → +0.20", regime)
+            threshold += 0.08
+            logger.info("Threshold: RANGE regime (%s) → +0.08", regime)
 
         # Drawdown adjustment
         if drawdown_pct > _DD_SEVERE_PCT:

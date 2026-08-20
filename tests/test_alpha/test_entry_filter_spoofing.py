@@ -27,11 +27,13 @@ def test_entry_filter_rejects_ask_spoofing_for_short():
 
 
 def test_entry_filter_passes_when_no_spoofing():
+    from datetime import datetime, timezone
     ef = EntryFilter()
     passed, reason = ef.check(
         direction="LONG",
         is_spoofing_bid=False,
         is_spoofing_ask=False,
+        now_utc=datetime(2026, 8, 19, 14, 0, tzinfo=timezone.utc),
     )
     assert passed is True
     assert reason == "passed"

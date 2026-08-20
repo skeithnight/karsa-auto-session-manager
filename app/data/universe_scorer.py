@@ -6,9 +6,9 @@ Refreshes every 4 hours. Falls back to static config list if empty.
 
 from __future__ import annotations
 
-import json
 import asyncio
-from datetime import datetime, timezone
+import json
+from datetime import UTC, datetime
 from decimal import Decimal
 
 from loguru import logger
@@ -68,7 +68,8 @@ class UniverseScorer:
         # ─── PROFITABILITY FIX: TOXIC TICKER BLACKLIST ───
         toxic_tickers = {
             "HEMI/USDT", "BANK/USDT", "ZEST/USDT", "ACE/USDT",
-            "CAP/USDT", "M/USDT", "1000TAG/USDT"
+            "CAP/USDT", "M/USDT", "1000TAG/USDT", "PORTAL/USDT",
+            "DOLO/USDT", "BEAT/USDT", "PRL/USDT", "OPN/USDT", "FHE/USDT"
         }
         if symbol in toxic_tickers:
             return None
@@ -105,7 +106,7 @@ class UniverseScorer:
             return None
 
         closes = [Decimal(str(c[4])) for c in candles]
-        
+
         # Dynamic Toxicity Check 1: Death Spiral / Rug-Pull (>60% drop from 7d high)
         if len(closes) > 0:
             max_7d = max(closes)
@@ -113,7 +114,7 @@ class UniverseScorer:
             if max_7d > 0 and current_price < max_7d * Decimal("0.40"):
                 logger.debug(f"{symbol} dynamically blacklisted: Down >60% from 7d high (max={max_7d}, now={current_price})")
                 return None
-        
+
         # Dynamic Toxicity Check 2: Zombie / Flatline (no price movement in 24h)
         if len(closes) >= 24:
             last_24h = closes[-24:]
@@ -262,7 +263,7 @@ class UniverseScorer:
         payload = {
             "symbols": symbols,
             "scores": {s["symbol"]: s["total_score"] for s in selected},
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         try:
             await self.redis.set(

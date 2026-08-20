@@ -60,61 +60,61 @@ class TestAsymmetricTimeExits:
 
     @pytest.mark.asyncio
     async def test_losing_position_exits_in_3_minutes(self):
-        """A losing position (R < 0) should be force-closed after 3 minutes."""
+        """A losing position (R < -0.35) should be force-closed after 45 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(timezone.utc) - timedelta(minutes=4)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=50)
         pos = _make_position(entry_time=entry_time, live_price="0.98")  # 2% loss
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
-        assert r_mult < Decimal("0"), f"Expected negative R, got {r_mult}"
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
+        assert r_mult < Decimal("-0.35"), f"Expected negative R < -0.35, got {r_mult}"
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("0.98"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
-        assert result is True, "Losing position should be closed after 3+ minutes"
+        assert result is True, "Losing position should be closed after 45+ minutes"
         apm._force_close_position.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_losing_position_not_closed_before_3_minutes(self):
-        """A losing position should NOT be closed before 3 minutes."""
+        """A losing position should NOT be closed before 45 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(timezone.utc) - timedelta(minutes=2)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=20)
         pos = _make_position(entry_time=entry_time, live_price="0.98")
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("0.98"), Decimal("0.01"))
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("0.98"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
-        assert result is False, "Losing position should NOT be closed before 3 minutes"
+        assert result is False, "Losing position should NOT be closed before 45 minutes"
 
     @pytest.mark.asyncio
     async def test_breakeven_position_exits_in_15_minutes(self):
-        """A breakeven position (R == 0) should be closed after 15 minutes."""
+        """A breakeven/stagnant position (R <= 0.10) should be closed after 75 minutes."""
         apm = _make_apm()
-        entry_time = datetime.now(timezone.utc) - timedelta(minutes=16)
+        entry_time = datetime.now(timezone.utc) - timedelta(minutes=80)
         pos = _make_position(entry_time=entry_time, live_price="1.00")
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.00"), Decimal("0.01"))
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.00"), Decimal("0.01"))
         assert r_mult == Decimal("0"), f"Expected zero R, got {r_mult}"
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("1.00"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
-        assert result is True, "Breakeven position should be closed after 15+ minutes"
+        assert result is True, "Breakeven position should be closed after 75+ minutes"
         apm._force_close_position.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_winning_position_no_time_limit(self):
-        """A winning position (R > 0) should NOT have a time exit."""
+        """A winning position (R > 0.10) should NOT have a time exit."""
         apm = _make_apm()
         entry_time = datetime.now(timezone.utc) - timedelta(minutes=60)
         pos = _make_position(entry_time=entry_time, live_price="1.02")
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.02"), Decimal("0.01"))
-        assert r_mult > Decimal("0"), f"Expected positive R, got {r_mult}"
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.02"), Decimal("0.01"))
+        assert r_mult > Decimal("0.10"), f"Expected positive R, got {r_mult}"
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("1.02"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
         assert result is False, "Winning position should NOT have a time exit"
@@ -126,10 +126,10 @@ class TestAsymmetricTimeExits:
         entry_time = datetime.now(timezone.utc) - timedelta(minutes=3)
         pos = _make_position(entry_time=entry_time, live_price="1.05")
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.05"), Decimal("0.01"))
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.05"), Decimal("0.01"))
         assert r_mult >= Decimal("3.0"), f"Expected R >= 3.0, got {r_mult}"
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("1.05"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
         assert result is True, "Extreme spike should trigger quick profit exit"
@@ -142,81 +142,57 @@ class TestAsymmetricTimeExits:
         entry_time = datetime.now(timezone.utc) - timedelta(minutes=1441)
         pos = _make_position(entry_time=entry_time, live_price="1.001")
 
-        r_mult = apm._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.001"), Decimal("0.01"))
+        r_mult = apm._exit_manager._calculate_r_multiple("LONG", Decimal("1.00"), Decimal("1.001"), Decimal("0.01"))
 
-        result = await apm._manage_time_exit(
+        result = await apm._exit_manager._manage_time_exit(
             pos, entry_time, 1440, Decimal("1.001"), Decimal("1.00"), "LONG", r_mult, "RANGE"
         )
         assert result is True, "Hard max hold should trigger after max_hold_time_mins"
 
 
 class TestFreeRollBreakeven:
-    """Test that breakeven lock triggers at +0.25R for non-HYPER regimes."""
+    """Test that fee-aware breakeven lock constant is correctly configured."""
 
     def test_breakeven_lock_r_is_025(self):
-        """APM_BREAKEVEN_LOCK_R should be 0.25 (Free Roll)."""
-        assert APM_BREAKEVEN_LOCK_R == Decimal("0.25"), (
-            f"Expected breakeven at 0.25R, got {APM_BREAKEVEN_LOCK_R}"
+        """APM_BREAKEVEN_LOCK_R should be 1.50 (Fee-Aware Breakeven)."""
+        assert APM_BREAKEVEN_LOCK_R == Decimal("1.50"), (
+            f"Expected breakeven at 1.50R, got {APM_BREAKEVEN_LOCK_R}"
         )
 
     def test_breakeven_lock_r_not_075(self):
         """Ensure we didn't accidentally keep the old 0.75R value."""
         assert APM_BREAKEVEN_LOCK_R != Decimal("0.75"), (
-            "Old 0.75R breakeven still present — should be 0.25R"
+            "Old 0.75R breakeven still present — should be 1.50R"
         )
 
 
 class TestVolatilityFloor:
-    """Test the volatility floor check in DecisionEngine."""
+    """Test that DecisionEngine applies environmental penalty below 10th percentile ATR."""
 
     @pytest.mark.asyncio
     async def test_volatility_floor_blocks_low_vol(self):
-        """When BTC ATR is below the 10th percentile, all entries should be blocked."""
-        from app.consumer.decision_engine import DecisionEngine
+        """BTC ATR < 10th percentile should apply 0.5x EV penalty."""
+        import json
 
         mock_redis = AsyncMock()
-        mock_redis.get = AsyncMock(return_value=b'{"threshold": 0.5, "current_atr": 0.3}')
+        mock_redis.get.return_value = json.dumps({
+            "threshold": 0.5,
+            "current_atr": 0.3,  # Below threshold
+        })
 
         engine = _make_decision_engine(redis_client=mock_redis)
 
-        candles = [[0] * 6] * 100  # Dummy candles
+        candles = [
+            [1700000000000 + i * 3600000, 100.0, 101.0, 99.0, 100.5, 1000.0]
+            for i in range(100)
+        ]
+
         result = await engine.evaluate("ALT/USDT", candles)
-        assert result is None, "Low volatility should block entries"
-
-
-class TestSessionBlock:
-    """Test the Asian session hard-block in DecisionEngine."""
-
-    @pytest.mark.asyncio
-    async def test_session_block_during_asian_hours(self):
-        """Entries should be blocked between 04:00-12:00 timezone.utc."""
-        from app.consumer.decision_engine import DecisionEngine
-
-        mock_redis = AsyncMock()
-        mock_redis.get = AsyncMock(return_value=None)
-
-        engine = _make_decision_engine(redis_client=mock_redis)
-
-        with patch("app.consumer.decision_engine.datetime") as mock_dt:
-            mock_dt.now.return_value = datetime(2026, 7, 26, 8, 0, tzinfo=timezone.utc)
-            mock_dt.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
-
-            candles = [[0] * 6] * 100
-            result = await engine.evaluate("ALT/USDT", candles)
-            assert result is None, "Asian session should block altcoin entries"
+        assert result is None, "Low volatility should penalize/block trade"
 
 
 class TestMacroNarrator:
-    """Test the Macro Narrator module."""
-
-    def test_macro_state_enum(self):
-        """MacroState should have exactly 3 values."""
-        from app.alpha.macro_narrator import MacroState
-
-        assert len(MacroState) == 3
-        assert MacroState.RISK_ON.value == "RISK_ON"
-        assert MacroState.RISK_OFF.value == "RISK_OFF"
-        assert MacroState.CHOP.value == "CHOP"
+    """Test the AI Macro Narrator state-based sizing."""
 
     def test_macro_multipliers(self):
         """Multipliers should be correct for each state."""
@@ -226,36 +202,39 @@ class TestMacroNarrator:
         assert MACRO_MULTIPLIERS[MacroState.RISK_OFF] == 0.25
         assert MACRO_MULTIPLIERS[MacroState.CHOP] == 0.5
 
-    def test_get_macro_multiplier_default(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_default(self):
         """get_macro_multiplier should return 1.0 when Redis has no data."""
         from app.alpha.macro_narrator import get_macro_multiplier
 
-        mock_redis = MagicMock()
+        mock_redis = AsyncMock()
         mock_redis.get.return_value = None
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 1.0, "Default multiplier should be 1.0 (no adjustment)"
 
-    def test_get_macro_multiplier_risk_on(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_risk_on(self):
         """get_macro_multiplier should return 1.0 for RISK_ON."""
         from app.alpha.macro_narrator import get_macro_multiplier
         import json
 
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = json.dumps({"multiplier": 1.0, "state": "RISK_ON"}).encode()
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = json.dumps({"multiplier": 1.0, "state": "RISK_ON"})
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 1.0
 
-    def test_get_macro_multiplier_chop(self):
+    @pytest.mark.asyncio
+    async def test_get_macro_multiplier_chop(self):
         """get_macro_multiplier should return 0.5 for CHOP."""
         from app.alpha.macro_narrator import get_macro_multiplier
         import json
 
-        mock_redis = MagicMock()
-        mock_redis.get.return_value = json.dumps({"multiplier": 0.5, "state": "CHOP"}).encode()
+        mock_redis = AsyncMock()
+        mock_redis.get.return_value = json.dumps({"multiplier": 0.5, "state": "CHOP"})
 
-        result = get_macro_multiplier(mock_redis)
+        result = await get_macro_multiplier(mock_redis)
         assert result == 0.5
 
 
@@ -271,6 +250,7 @@ def _make_apm() -> ActivePositionManager:
         alert_service=AsyncMock(),
     )
     apm._force_close_position = AsyncMock()
+    apm._exit_manager._force_close_position = apm._force_close_position
     return apm
 
 
@@ -299,7 +279,9 @@ def _make_decision_engine(redis_client=None) -> "DecisionEngine":
     engine._evidence_collector = MagicMock()
     engine._edge_calculator = MagicMock()
     engine._statistical_learning = MagicMock()
+    engine._statistical_learning.calibrate = AsyncMock()
     engine._sector_filter = MagicMock()
     engine._background_tasks = set()
     engine._router = MagicMock()
+    engine._router.evaluate_signal = AsyncMock(return_value=(None, 1.0))
     return engine

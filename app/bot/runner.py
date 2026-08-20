@@ -11,6 +11,7 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from loguru import logger
+from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
     CallbackQueryHandler,
@@ -36,6 +37,9 @@ async def run_bot(  # noqa: PLR0913
     """Callers: main.py. alert_service gets bot registered after PTB init. No schema change."""
     """Build, start, and run PTB until kill_switch fires."""
     logger.debug("run_bot: entering")
+    from app.core.dns_fallback import setup_dns_fallback
+
+    setup_dns_fallback()
     from app.bot.handlers import (
         activity_cmd,
         ai_status_cmd,
@@ -83,17 +87,16 @@ async def run_bot(  # noqa: PLR0913
         app.bot_data["emitter"] = emitter
         app.bot_data["trade_reconciler"] = trade_reconciler
 
-        from telegram import Update as _Update
         from telegram.ext import TypeHandler
 
-        async def _log_update(u: _Update, c):
+        async def _log_update(u: Update, c):
             user_id = u.effective_user.id if u.effective_user else "unknown"
             txt = u.effective_message.text if u.effective_message else (u.callback_query.data if u.callback_query else "non-text")
             logger.info(f"📩 TELEGRAM INCOMING UPDATE: user={user_id} payload={txt!r}")
 
-        app.add_handler(TypeHandler(_Update, _log_update), group=-1)
+        app.add_handler(TypeHandler(Update, _log_update, block=False), group=-1)
 
-        app.add_handler(CommandHandler("start", start_cmd))
+        app.add_handler(CommandHandler(["start", "dashboard"], start_cmd))
         app.add_handler(CommandHandler("dashboard", dashboard_cmd))
         app.add_handler(CommandHandler("activity", activity_cmd))
         app.add_handler(CommandHandler("portfolio", portfolio_cmd))
@@ -118,7 +121,7 @@ async def run_bot(  # noqa: PLR0913
 
         async def _plain_text_handler(update, context):
             text = (update.message.text or "").strip().lower() if update.message else ""
-            logger.info(f"Telegram update received: '{text}' from user {update.effective_user.id if update.effective_user else 'unknown'}")
+            logger.info(f"Telegram text update received: '{text}' from user {update.effective_user.id if update.effective_user else 'unknown'}")
             if text in {"start", "dashboard", "/start", "/dashboard"}:
                 await start_cmd(update, context)
 
@@ -148,14 +151,18 @@ async def run_bot(  # noqa: PLR0913
                 alert_service.register_bot(application.bot)
 
             logger.info("run_bot: calling updater.start_polling()")
-            await application.updater.start_polling(drop_pending_updates=True)
-            logger.info("bot_polling_started")
+            await application.updater.start_polling(
+                allowed_updates=list(Update.ALL_TYPES),
+                drop_pending_updates=False,
+                bootstrap_retries=-1,
+            )
+            logger.info("bot_polling_started (allowed_updates=ALL_TYPES)")
             started = True
             break
         except Exception as exc:
             logger.warning(f"run_bot startup attempt {attempt}/{max_retries} failed: {exc}")
             with contextlib.suppress(Exception):
-                await application.shutdown()
+                await asyncio.wait_for(application.shutdown(), timeout=3.0)
             if attempt < max_retries:
                 await asyncio.sleep(min(2 ** (attempt - 1), 15))
                 application = _build_app()
@@ -164,8 +171,20 @@ async def run_bot(  # noqa: PLR0913
         logger.critical("run_bot failed to start after %d attempts", max_retries)
         return
 
-    # ── Wait for kill switch ────────────────────────────────────────────
-    await kill_switch.wait()
+    # ── Wait for kill switch / monitor polling status ──
+    while not kill_switch.is_set():
+        if application.updater and not application.updater.running:
+            logger.warning("run_bot: updater is not running, restarting polling...")
+            try:
+                await application.updater.start_polling(
+                    allowed_updates=list(Update.ALL_TYPES),
+                    drop_pending_updates=False,
+                    bootstrap_retries=-1,
+                )
+            except Exception as poll_exc:
+                logger.error("run_bot: restart polling failed: %s", poll_exc)
+        await asyncio.sleep(5)
+
     logger.info("kill_switch_received_shutting_down_bot")
 
     # ── Graceful shutdown (must complete within 5s per spec) ────────────

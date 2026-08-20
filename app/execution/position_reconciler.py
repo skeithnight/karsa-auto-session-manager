@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 
@@ -17,7 +17,6 @@ from loguru import logger
 
 from app.execution.constants import (
     APM_ERROR_BACKOFF_S,
-    APM_RECONCILE_INTERVAL_S,
     ORPHAN_RE_ENTRY_GRACE_S,
     _safe_dec,
 )
@@ -55,15 +54,21 @@ class PositionReconciler:
             internal = await self._store.list_all()  # type: ignore[attr-defined]
             external = await self._client.fetch_positions()  # type: ignore[attr-defined]
             external_symbols = {p.get("symbol", "").replace("/", "") for p in external}
-
             for pos in internal:
                 symbol = pos.get("symbol", "")
                 if symbol.replace("/", "") not in external_symbols:
-                    self._log.warning(f"APM: ghost position detected -- {symbol} not on Bybit, removing")
+                    missing_count = int(pos.get("_ghost_missing_count", 0)) + 1
+                    pos["_ghost_missing_count"] = missing_count
+                    if missing_count < 3:
+                        self._log.debug(f"APM: position {symbol} missing on Bybit ({missing_count}/3) -- pending verification")
+                        continue
+                    self._log.warning(f"APM: ghost position confirmed -- {symbol} not on Bybit after 3 checks, removing")
                     raw_side = pos.get("side", "buy")
                     api_side = "buy" if raw_side in ("buy", "LONG") else "sell"
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
                     continue
+                else:
+                    pos["_ghost_missing_count"] = 0
 
                 # Verify SL is attached to the position -- ONLY re-place if missing
                 # NEVER overwrite an existing SL (breakeven/trailing would be lost)
@@ -114,7 +119,7 @@ class PositionReconciler:
             exchange_pos = None
             for p in exchange_positions:
                 p_sym = (p.get("symbol") or "").replace("/", "")
-                p_side = "LONG" if p.get("side") == "buy" else "SHORT"
+                p_side = "LONG" if str(p.get("side", "")).lower() in ("buy", "long") else "SHORT"
                 if p_sym == bybit_symbol and p_side == side:
                     exchange_pos = p
                     break
@@ -128,7 +133,7 @@ class PositionReconciler:
                     api_side = "buy" if side == "LONG" else "sell"
                     await self._store.remove(symbol, api_side)  # type: ignore[attr-defined]
                     # FIX: Mark as recently force-closed to prevent orphan re-sync loop.
-                    self._recently_force_closed[symbol] = datetime.now(timezone.utc).timestamp()
+                    self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
                     self._log.warning(f"APM: phantom {symbol} {side} purged from Redis (grace={ORPHAN_RE_ENTRY_GRACE_S}s)")
                 except Exception as e:
                     self._log.error(f"APM: failed to purge phantom {symbol}: {e}")
@@ -153,32 +158,18 @@ class PositionReconciler:
                         changed = True
 
                 # SL from exchange -- validate direction
-                exch_sl = exchange_pos.get("stopLoss")
+                exch_sl = exchange_pos.get("stopLoss") or exchange_pos.get("stop_loss")
                 if exch_sl and str(exch_sl) not in ("0", "None", ""):
-                    sl_val = Decimal(str(exch_sl))
-                    entry_val = Decimal(str(pos.get("entry_price", 0)))
-                    # SL must be below entry for LONG, above for SHORT
-                    if entry_val > 0:
-                        if side == "LONG" and sl_val >= entry_val:
-                            self._log.warning(
-                                f"APM reconcile: {symbol} SL {sl_val} >= entry {entry_val} for LONG -- skipping"
-                            )
-                        elif side == "SHORT" and sl_val <= entry_val:
-                            self._log.warning(
-                                f"APM reconcile: {symbol} SL {sl_val} <= entry {entry_val} for SHORT -- skipping"
-                            )
-                        else:
-                            pos["current_sl"] = str(exch_sl)
-                            pos["stop_loss"] = str(exch_sl)
-                else:
-                    if pos.get("current_sl") and str(pos.get("current_sl")) != "0":
-                        self._log.critical(f"APM reconcile: {symbol} SL missing on exchange! Clearing local SL to trigger emergency replacement.")
-                        pos["current_sl"] = "0"
-                        pos["stop_loss"] = "0"
-                        changed = True
+                    pos["current_sl"] = str(exch_sl)
+                    pos["stop_loss"] = str(exch_sl)
+                elif pos.get("current_sl") and str(pos.get("current_sl")) != "0":
+                    self._log.critical(f"APM reconcile: {symbol} SL missing on exchange! Clearing local SL to trigger emergency replacement.")
+                    pos["current_sl"] = "0"
+                    pos["stop_loss"] = "0"
+                    changed = True
 
                 # TP from exchange
-                exch_tp = exchange_pos.get("takeProfit")
+                exch_tp = exchange_pos.get("takeProfit") or exchange_pos.get("take_profit")
                 if exch_tp and str(exch_tp) not in ("0", "None", ""):
                     pos["take_profit"] = str(exch_tp)
         except Exception:
@@ -288,11 +279,10 @@ class PositionReconciler:
                                 sl_price = min(sl_price, last_price * Decimal("0.995"))
                             else:
                                 sl_price = max(sl_price, last_price * Decimal("1.005"))
+                        elif side == "LONG":
+                            sl_price = entry_price * Decimal("0.95")
                         else:
-                            if side == "LONG":
-                                sl_price = entry_price * Decimal("0.95")
-                            else:
-                                sl_price = entry_price * Decimal("1.05")
+                            sl_price = entry_price * Decimal("1.05")
 
                         await self._client.set_trading_stop(symbol, api_side, stop_loss=sl_price)
                         pos["current_sl"] = str(sl_price)

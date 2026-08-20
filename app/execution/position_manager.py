@@ -20,8 +20,8 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-from datetime import datetime, timezone
-from decimal import Decimal, DivisionByZero, InvalidOperation
+from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
 
 from loguru import logger
@@ -44,11 +44,11 @@ from app.execution.constants import (  # noqa: E402,F401
     TRAILING_LIMIT_TIMEOUT_S,
     _safe_dec,
 )
+from app.execution.exit_manager import ExitManager  # noqa: E402,F401
+from app.execution.position_reconciler import PositionReconciler  # noqa: E402,F401
 
 # --- Re-export extracted classes for backward compatibility ---
 from app.execution.tp_manager import TakeProfitManager  # noqa: E402,F401
-from app.execution.exit_manager import ExitManager  # noqa: E402,F401
-from app.execution.position_reconciler import PositionReconciler  # noqa: E402,F401
 
 
 class ActivePositionManager:
@@ -63,6 +63,7 @@ class ActivePositionManager:
         alert_service: object,
         trade_memory: object | None = None,
         logger_: Any | None = None,
+        trade_store: object | None = None,
     ) -> None:
         self._client = bybit_client
         self._store = position_store
@@ -88,6 +89,7 @@ class ActivePositionManager:
             alert_service=alert_service,
             trade_memory=trade_memory,
             logger_=self._log,
+            trade_store=trade_store,
         )
         self._reconciler = PositionReconciler(
             bybit_client=bybit_client,
@@ -97,6 +99,10 @@ class ActivePositionManager:
             recently_force_closed=self._recently_force_closed,
             logger_=self._log,
         )
+
+    def set_trade_store(self, trade_store: object) -> None:
+        """Set or update Postgres trade store instance."""
+        self._exit_manager.set_trade_store(trade_store)
 
     # ------------------------------------------------------------------
     # Main loop
@@ -111,7 +117,7 @@ class ActivePositionManager:
 
         while True:
             try:
-                now = datetime.now(timezone.utc).timestamp()
+                now = datetime.now(UTC).timestamp()
 
                 positions = await self._store.list_all()  # type: ignore[attr-defined]
 
@@ -180,7 +186,6 @@ class ActivePositionManager:
                         sym = pos.get("symbol", "")
                         if not sym:
                             continue
-                        import json as _json
                         raw = await self.redis_client.get(f"global:state:{sym}")
                         state = _json.loads(raw) if raw else None
                         if state and state.get("best_bid") and state.get("best_ask"):
@@ -364,7 +369,7 @@ class ActivePositionManager:
 
         # Skip if force-close failed recently -- retry cooldown (5 min)
         retry_at = pos.get("force_close_retry_at", 0)
-        if retry_at and datetime.now(timezone.utc).timestamp() < retry_at:
+        if retry_at and datetime.now(UTC).timestamp() < retry_at:
             return
 
         # Reconcile ALL missing fields from Bybit + candles
@@ -622,10 +627,11 @@ class ActivePositionManager:
                     highest = live_price
                     pos["highest_since_partial"] = str(highest)
 
+                current_moon_bag_sl = _safe_dec(pos.get("moon_bag_sl", "0"))
                 # Moon bag trailing: 5x ATR from highest since partial close
                 if side == "LONG":
                     new_sl = highest - (atr * Decimal("5"))
-                    if new_sl > sl_price:
+                    if new_sl > sl_price and new_sl > current_moon_bag_sl:
                         sl_price = new_sl
                         try:
                             api_side = "buy" if side == "LONG" else "sell"
@@ -639,7 +645,7 @@ class ActivePositionManager:
                             self._log.debug(f"APM MOON BAG: trailing amend failed for {symbol}: {e}")
                 else:
                     new_sl = highest + (atr * Decimal("5"))
-                    if new_sl < sl_price:
+                    if (sl_price == 0 or new_sl < sl_price) and (current_moon_bag_sl == 0 or new_sl < current_moon_bag_sl):
                         sl_price = new_sl
                         try:
                             api_side = "buy" if side == "LONG" else "sell"
@@ -662,7 +668,7 @@ class ActivePositionManager:
         if tl_state == "INACTIVE" and r_mult >= TRAILING_LIMIT_ACTIVATE_R:
             # Activate trailing limit exit
             pos["trailing_limit_state"] = "TRAILING_LIMIT_ACTIVE"
-            pos["trailing_limit_placed_at"] = str(datetime.now(timezone.utc).timestamp())
+            pos["trailing_limit_placed_at"] = str(datetime.now(UTC).timestamp())
             tl_state = "TRAILING_LIMIT_ACTIVE"
             self._log.info(
                 f"APM TRAILING LIMIT: Activating for {symbol} {side} at +{r_mult:.2f}R"
@@ -859,7 +865,7 @@ class ActivePositionManager:
         if closed:
             return
 
-        pos["last_check_at"] = datetime.now(timezone.utc).isoformat()
+        pos["last_check_at"] = datetime.now(UTC).isoformat()
         try:
             from app.core.position_store import _normalize_side
 

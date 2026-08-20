@@ -42,6 +42,7 @@ class TestPositionJudge:
             entry_price=Decimal("50000"), current_price=Decimal("51000"),
             peak_price=Decimal("51500"), atr=Decimal("500"),
             regime="TREND_BULL", elapsed_seconds=3600,
+            is_checkpoint_review=True,
         )
         assert result is not None
         assert result.action == "HOLD"
@@ -56,6 +57,7 @@ class TestPositionJudge:
             entry_price=Decimal("3000"), current_price=Decimal("2900"),
             peak_price=Decimal("3100"), atr=Decimal("50"),
             regime="TREND_BEAR", elapsed_seconds=7200,
+            is_checkpoint_review=True,
         )
         assert result is not None
         assert result.action == "EXIT"
@@ -72,6 +74,7 @@ class TestPositionJudge:
             entry_price=Decimal("50000"), current_price=Decimal("49000"),
             peak_price=Decimal("50500"), atr=Decimal("500"),
             regime="CHOP", elapsed_seconds=10800,
+            is_checkpoint_review=True,
         )
         assert result is not None
         assert result.action == "EXIT"
@@ -87,6 +90,7 @@ class TestPositionJudge:
             entry_price=Decimal("100"), current_price=Decimal("98"),
             peak_price=Decimal("102"), atr=Decimal("2"),
             regime="MEAN_REVERSION", elapsed_seconds=3600,
+            is_checkpoint_review=True,
         )
         assert judge._hold_counters.get("SOL/USDT:buy") == 1
 
@@ -101,6 +105,7 @@ class TestPositionJudge:
             entry_price=Decimal("50000"), current_price=Decimal("49000"),
             peak_price=Decimal("50500"), atr=Decimal("500"),
             regime="TREND_BEAR", elapsed_seconds=3600,
+            is_checkpoint_review=True,
         )
         assert judge._hold_counters.get("BTC/USDT:buy") == 0
 
@@ -112,6 +117,7 @@ class TestPositionJudge:
             entry_price=Decimal("50000"), current_price=Decimal("49000"),
             peak_price=Decimal("50500"), atr=Decimal("500"),
             regime="TREND_BEAR", elapsed_seconds=3600,
+            is_checkpoint_review=True,
         )
         assert result is not None
         assert result.action == "HOLD"

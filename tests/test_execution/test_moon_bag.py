@@ -10,6 +10,9 @@ import pytest
 from app.execution.position_manager import ActivePositionManager
 
 
+from app.execution.constants import APM_BREAKEVEN_FEE_PCT
+
+
 def _make_position(
     symbol: str = "BTC/USDT",
     side: str = "LONG",
@@ -43,14 +46,18 @@ def _make_position(
 def _make_apm() -> ActivePositionManager:
     """Build an APM with mocked dependencies."""
     client = MagicMock()
+    client.reduce_position = AsyncMock()
+    client.place_stop_loss = AsyncMock()
     client.create_order = AsyncMock()
     client.set_stop_loss = AsyncMock()
     client.amend_stop_loss = AsyncMock()
-    client.fetch_positions = AsyncMock(return_value=[])
+    client.fetch_positions = AsyncMock(
+        return_value=[{"symbol": "BTCUSDT", "size": "1.0", "side": "buy", "entry_price": 100.0, "stop_loss": 95.0, "take_profit": 115.0}]
+    )
 
     store = MagicMock()
     store.list_all = AsyncMock(return_value=[])
-    store.redis = MagicMock()
+    store.redis = AsyncMock()
     store.redis.get = AsyncMock(return_value=None)
     store.redis.set = AsyncMock()
     store.update_sl = AsyncMock()
@@ -73,23 +80,24 @@ def _make_apm() -> ActivePositionManager:
 
 
 class TestMoonBagTrigger:
-    """Test moon bag trigger at +1.5R."""
+    """Test moon bag trigger at +2.0R."""
 
     @pytest.mark.asyncio
     async def test_moon_bag_triggers_at_1_5r(self):
-        """Position at +1.5R should trigger 80/20 split."""
+        """Position at +2.0R should trigger 80/20 split."""
         apm = _make_apm()
-        pos = _make_position(entry_price=100.0, live_price=107.5, initial_risk=5.0)
-        # +7.5 / 5.0 = +1.5R
+        pos = _make_position(entry_price=100.0, live_price=110.0, initial_risk=5.0)
+        # +10.0 / 5.0 = +2.0R
 
         await apm._manage_single_position(pos)
 
         assert pos["tranche_state"] == "MOON_BAG_ACTIVE"
         assert Decimal(pos["amount"]) == Decimal("0.2")  # 20% of 1.0
         assert Decimal(pos["moon_bag_amount"]) == Decimal("0.2")
-        assert Decimal(pos["moon_bag_sl"]) == Decimal("100.0")  # Breakeven
-        apm._client.create_order.assert_called_once()
-        apm._client.set_stop_loss.assert_called_once()
+        expected_sl = Decimal("100.0") + Decimal("100.0") * APM_BREAKEVEN_FEE_PCT
+        assert Decimal(pos["moon_bag_sl"]) == expected_sl  # Breakeven with fee
+        apm._client.reduce_position.assert_called_once()
+        apm._client.place_stop_loss.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_moon_bag_no_trigger_below_1_5r(self):
@@ -115,8 +123,8 @@ class TestMoonBagTrigger:
 
         await apm._manage_single_position(pos)
 
-        # Should not call create_order again
-        apm._client.create_order.assert_not_called()
+        # Should not call reduce_position again
+        apm._client.reduce_position.assert_not_called()
 
 
 class TestMoonBagFailSafe:
@@ -126,14 +134,14 @@ class TestMoonBagFailSafe:
     async def test_emergency_close_on_sl_failure(self):
         """If SL placement fails, remaining 20% should be emergency closed."""
         apm = _make_apm()
-        apm._client.set_stop_loss = AsyncMock(side_effect=Exception("SL failed"))
+        apm._client.place_stop_loss = AsyncMock(side_effect=Exception("SL failed"))
 
-        pos = _make_position(entry_price=100.0, live_price=107.5, initial_risk=5.0)
+        pos = _make_position(entry_price=100.0, live_price=110.0, initial_risk=5.0)
 
         await apm._manage_single_position(pos)
 
-        # Should have called create_order twice: once for 80% close, once for emergency 20%
-        assert apm._client.create_order.call_count == 2
+        # Should have called reduce_position twice: once for 80% close, once for emergency 20%
+        assert apm._client.reduce_position.call_count == 2
         # Amount should be 0 after emergency close
         assert pos["amount"] == "0"
 
@@ -166,7 +174,7 @@ class TestMoonBagTrailing:
         """Moon bag trailing should never move SL below current moon_bag_sl."""
         apm = _make_apm()
         pos = _make_position(
-            entry_price=100.0, live_price=115.0, initial_risk=5.0,
+            entry_price=100.0, live_price=106.0, initial_risk=5.0,
             tranche_state="MOON_BAG_ACTIVE", amount=0.2, atr=2.0,
         )
         pos["moon_bag_sl"] = "108.0"  # Already higher than 5x ATR would set

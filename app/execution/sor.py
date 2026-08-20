@@ -67,7 +67,7 @@ class SmartOrderRouter:
             await self.redis.setex(f"karsa:blocked_symbol:{symbol}", 86400, "unsigned_agreement")
             from app.core import metrics
             metrics.execution_blocked_unauthorized_total.inc()
-            
+
             if self.alert_service:
                 await self.alert_service.send(
                     f"🚨 **ACTION REQUIRED: Bybit Agreement**\n"
@@ -235,10 +235,15 @@ class SmartOrderRouter:
         # Step 2: Reprice attempts
         current_price = price
         # Derive effective_tick from actual exchange price_tick (or symbol precision)
-        effective_tick = price_tick if (price_tick and price_tick > Decimal("0")) else self.client._price_ticks.get(symbol, Decimal("0.0001"))
+        if isinstance(price_tick, Decimal) and price_tick > Decimal("0"):
+            effective_tick = price_tick
+        else:
+            _ticks = getattr(self.client, "_price_ticks", {})
+            raw_tick = _ticks.get(symbol, Decimal("0.0001")) if isinstance(_ticks, dict) else Decimal("0.0001")
+            effective_tick = raw_tick if isinstance(raw_tick, Decimal) and raw_tick > Decimal("0") else Decimal("0.0001")
 
         def _quantize_to_tick(p: Decimal, tick: Decimal) -> Decimal:
-            if tick <= Decimal("0"):
+            if not isinstance(tick, Decimal) or tick <= Decimal("0"):
                 return p
             return (p / tick).quantize(Decimal("1")) * tick
 
@@ -556,11 +561,7 @@ class SmartOrderRouter:
             return await self._execute_strategy_market(
                 symbol, side, adjusted_size, price_tick, max_loss_usd,
             )
-        elif strategy == "LIMIT_RETEST":
-            return await self._execute_strategy_limit(
-                symbol, side, adjusted_size, limit_price, ttl_candles, price_tick, max_loss_usd,
-            )
-        elif strategy == "WAIT_PULLBACK":
+        elif strategy in ("LIMIT_RETEST", "WAIT_PULLBACK"):
             return await self._execute_strategy_limit(
                 symbol, side, adjusted_size, limit_price, ttl_candles, price_tick, max_loss_usd,
             )
@@ -724,7 +725,6 @@ class SmartOrderRouter:
         Uses Bybit's get_orderbook REST endpoint.
         """
         try:
-            from app.execution.bybit_client import BybitClient as _BC
 
             if not self.client.session:
                 return None

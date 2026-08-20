@@ -11,7 +11,7 @@ from decimal import Decimal
 APM_MONITOR_INTERVAL_S: int = 2
 APM_ERROR_BACKOFF_S: int = 5
 APM_RECONCILE_INTERVAL_S: int = 300
-APM_BREAKEVEN_FEE_PCT = Decimal("0.0015")  # 0.15% -- covers 0.11% round-trip fees + locks net profit
+APM_BREAKEVEN_FEE_PCT = Decimal("0.0020")  # 0.20% -- safely covers 0.11% round-trip taker fees + funding rate buffer + locks net profit
 APM_TREND_TRAIL_ATR_MULT = Decimal("2.5")
 APM_TREND_TRAIL_ACTIVATE_R = Decimal("1.80")  # Trailing activates at +1.80R (after breakeven at +1.50R)
 APM_BREAKEVEN_LOCK_R = Decimal("1.50")  # Fee-aware Breakeven Lock trigger: requires +1.50R raw move
@@ -23,7 +23,11 @@ TRAILING_LIMIT_TIMEOUT_S: int = 60  # 60s before market fallback
 TRAILING_LIMIT_ACTIVATE_R = Decimal("1.5")  # Activate at +1.5R profit
 
 # Regime shift hysteresis: require N consecutive shifted checks
-REGIME_SHIFT_CONFIRM_COUNT: int = 5
+REGIME_SHIFT_CONFIRM_COUNT: int = 10
+
+# Grace period after position entry before regime shift kill switch can trigger (minutes)
+# Prevents entries from being instantly closed on entry noise / short-term candle fluctuations
+APM_REGIME_SHIFT_GRACE_MINUTES: int = 10
 
 # Regime family mapping -- shifts within the same family are noise, not real regime changes.
 # RANGE->RANGE_LOW_VOL or RANGE->RANGE_HIGH_VOL should NOT trigger the kill switch.

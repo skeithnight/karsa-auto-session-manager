@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal, DivisionByZero, InvalidOperation
 from typing import Any
 
@@ -16,9 +16,8 @@ from loguru import logger
 
 from app.execution.constants import (
     APM_BREAKEVEN_FEE_PCT,
-    APM_BREAKEVEN_LOCK_R,
+    APM_REGIME_SHIFT_GRACE_MINUTES,
     APM_TREND_TRAIL_ACTIVATE_R,
-    APM_TREND_TRAIL_ATR_MULT,
     REGIME_FAMILY,
     REGIME_SHIFT_CONFIRM_COUNT,
 )
@@ -40,6 +39,7 @@ class ExitManager:
         trade_memory: object | None = None,
         logger_: Any | None = None,
         ai_exit_brain: object | None = None,
+        trade_store: object | None = None,
     ) -> None:
         self._client = bybit_client
         self._store = position_store
@@ -50,6 +50,11 @@ class ExitManager:
         self._regime_shift_counts: dict[str, int] = {}
         self._recently_force_closed: dict[str, float] = {}
         self._ai_exit_brain = ai_exit_brain
+        self._trade_store = trade_store
+
+    def set_trade_store(self, trade_store: object) -> None:
+        """Set or update Postgres trade store instance."""
+        self._trade_store = trade_store
 
     # ------------------------------------------------------------------
     # R-multiple calculation
@@ -111,9 +116,7 @@ class ExitManager:
 
                         current_rsi = rsi[-1]
 
-                        if side == "LONG" and current_rsi > 80.0:
-                            return True
-                        elif side == "SHORT" and current_rsi < 20.0:
+                        if side == "LONG" and current_rsi > 80.0 or side == "SHORT" and current_rsi < 20.0:
                             return True
         except Exception as e:
             self._log.debug(f"APM SNIPER: momentum exhaustion check failed for {symbol}: {e}")
@@ -152,30 +155,31 @@ class ExitManager:
         if entry_price <= 0 or atr <= 0:
             return False
 
-        # --- Profit Lock at 3R: move SL to breakeven ---
+        # --- Profit Lock at 3R: move SL to fee-aware breakeven ---
         if r_multiple >= PROFIT_LOCK_R:
-            breakeven_sl = entry_price
-
-            if side == "LONG" and current_sl < breakeven_sl:
-                await self._amend_sl(pos, symbol, side, breakeven_sl)
-                self._log.info(
-                    f"APM: PROFIT LOCK {symbol} {side} — R={r_multiple:.2f} >= {PROFIT_LOCK_R}, "
-                    f"SL moved to breakeven {breakeven_sl}"
-                )
-                return False
-            elif side == "SHORT" and current_sl > breakeven_sl:
-                await self._amend_sl(pos, symbol, side, breakeven_sl)
-                self._log.info(
-                    f"APM: PROFIT LOCK {symbol} {side} — R={r_multiple:.2f} >= {PROFIT_LOCK_R}, "
-                    f"SL moved to breakeven {breakeven_sl}"
-                )
-                return False
+            if side == "LONG":
+                breakeven_sl = entry_price + (entry_price * APM_BREAKEVEN_FEE_PCT)
+                if current_sl < breakeven_sl:
+                    await self._amend_sl(pos, symbol, side, breakeven_sl)
+                    self._log.info(
+                        f"APM: PROFIT LOCK {symbol} {side} — R={r_multiple:.2f} >= {PROFIT_LOCK_R}, "
+                        f"SL moved to fee-aware breakeven {breakeven_sl}"
+                    )
+                    return False
+            elif side == "SHORT":
+                breakeven_sl = entry_price - (entry_price * APM_BREAKEVEN_FEE_PCT)
+                if current_sl > breakeven_sl:
+                    await self._amend_sl(pos, symbol, side, breakeven_sl)
+                    self._log.info(
+                        f"APM: PROFIT LOCK {symbol} {side} — R={r_multiple:.2f} >= {PROFIT_LOCK_R}, "
+                        f"SL moved to fee-aware breakeven {breakeven_sl}"
+                    )
+                    return False
 
         # --- AI Exit Brain (ambiguous zone: +0.3R to +2.0R) ---
         if self._ai_exit_brain is not None:
-            from decimal import Decimal as D
             r_float = float(r_multiple)
-            if D("0.3") <= r_multiple <= D("2.0"):
+            if Decimal("0.3") <= r_multiple <= Decimal("2.0"):
                 try:
                     from app.alpha.ai_exit_brain import AIExitBrain
                     if isinstance(self._ai_exit_brain, AIExitBrain):
@@ -214,9 +218,7 @@ class ExitManager:
                         elif exit_decision and exit_decision.action == "TIGHTEN_TRAIL":
                             if exit_decision.suggested_sl:
                                 new_ai_sl = D(str(exit_decision.suggested_sl))
-                                if side == "LONG" and new_ai_sl > current_sl:
-                                    await self._amend_sl(pos, symbol, side, new_ai_sl)
-                                elif side == "SHORT" and new_ai_sl < current_sl:
+                                if side == "LONG" and new_ai_sl > current_sl or side == "SHORT" and new_ai_sl < current_sl:
                                     await self._amend_sl(pos, symbol, side, new_ai_sl)
                             self._log.info(
                                 f"APM: AI EXIT BRAIN {symbol} {side} — TIGHTEN_TRAIL "
@@ -324,7 +326,7 @@ class ExitManager:
             try:
                 entry_time = datetime.fromisoformat(entry_time)
                 if entry_time.tzinfo is None:
-                    entry_time = entry_time.replace(tzinfo=timezone.utc)
+                    entry_time = entry_time.replace(tzinfo=UTC)
             except Exception:
                 self._log.debug("APM: could not parse entry_time=%r for time-exit", entry_time)
                 return False
@@ -332,7 +334,7 @@ class ExitManager:
         if not isinstance(entry_time, datetime):
             return False
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         held_mins = (now - entry_time).total_seconds() / 60.0
 
         is_hyper = str(entry_regime).startswith("HYPER")
@@ -343,9 +345,9 @@ class ExitManager:
         # Losers get cut fast. Winners are allowed to run.
         symbol = pos.get("symbol", "")
 
-        if r_mult < Decimal("0"):
-            # -- LOSING: Allow 25 minutes of normal candle pullback before time exit --
-            losing_max_mins = 25
+        if r_mult < Decimal("-0.35"):
+            # -- ADVERSE BREAK / LOSING: Allow 45 minutes before time exit --
+            losing_max_mins = 45
             if held_mins >= losing_max_mins:
                 self._log.warning(
                     f"APM: ASYMMETRIC LOSING EXIT {symbol} {side} -- "
@@ -354,15 +356,15 @@ class ExitManager:
                 await self._force_close_position(pos, f"asymmetric_losing_exit_{held_mins:.0f}min")
                 return True
 
-        elif r_mult == Decimal("0"):
-            # -- BREAKEVEN: Kill in 25 minutes --
-            be_max_mins = 25
-            if held_mins >= be_max_mins:
+        elif r_mult <= Decimal("0.10"):
+            # -- STAGNANT / FLAT (-0.35R <= R <= +0.10R): Allow 75 minutes for 1H candle to develop --
+            stagnant_max_mins = 75
+            if held_mins >= stagnant_max_mins:
                 self._log.warning(
-                    f"APM: ASYMMETRIC BREAKEVEN EXIT {symbol} {side} -- "
-                    f"held {held_mins:.0f}min (>{be_max_mins}min), R={r_mult:.2f}"
+                    f"APM: ASYMMETRIC STAGNANT EXIT {symbol} {side} -- "
+                    f"held {held_mins:.0f}min (>{stagnant_max_mins}min), R={r_mult:.2f}"
                 )
-                await self._force_close_position(pos, f"asymmetric_be_exit_{held_mins:.0f}min")
+                await self._force_close_position(pos, f"asymmetric_stagnant_exit_{held_mins:.0f}min")
                 return True
 
         else:
@@ -381,11 +383,11 @@ class ExitManager:
             peak_r = Decimal(str(pos.get("peak_r_multiple", str(r_mult))))
             if r_mult > peak_r:
                 pos["peak_r_multiple"] = str(r_mult)
-                pos["peak_r_ts"] = str(datetime.now(timezone.utc).timestamp())
+                pos["peak_r_ts"] = str(datetime.now(UTC).timestamp())
                 peak_r = r_mult
             elif r_mult > Decimal("0"):
                 peak_r_ts = float(pos.get("peak_r_ts", "0") or "0")
-                stale_mins = (datetime.now(timezone.utc).timestamp() - peak_r_ts) / 60.0
+                stale_mins = (datetime.now(UTC).timestamp() - peak_r_ts) / 60.0
                 if stale_mins >= 15 and r_mult < peak_r * Decimal("0.7"):
                     self._log.warning(
                         f"APM: MOMENTUM DECAY EXIT {symbol} -- R stalled at {r_mult:.2f} "
@@ -414,6 +416,24 @@ class ExitManager:
         # We don't have enough information to determine if a regime shift occurred.
         if not entry_regime or entry_regime in ("UNKNOWN", "", "None"):
             return False
+
+        # Check holding duration -- give newly opened positions a grace period
+        _raw_time = pos.get("entry_time") or pos.get("entered_at")
+        if _raw_time:
+            try:
+                et = datetime.fromisoformat(str(_raw_time))
+                if et.tzinfo is None:
+                    et = et.replace(tzinfo=UTC)
+                held_mins = (datetime.now(UTC) - et).total_seconds() / 60.0
+                if held_mins < APM_REGIME_SHIFT_GRACE_MINUTES:
+                    self._log.debug(
+                        f"APM: regime shift grace period active for {symbol} "
+                        f"(held {held_mins:.1f}m < {APM_REGIME_SHIFT_GRACE_MINUTES}m). "
+                        f"Bypassing regime kill switch."
+                    )
+                    return False
+            except Exception:
+                pass
 
         try:
             current_regime = await self._regime.get_current_regime(symbol)  # type: ignore[attr-defined]
@@ -487,7 +507,7 @@ class ExitManager:
 
             exchange_closed = True
             # Track force-close timestamp for orphan sync grace period (prevents phantom loop)
-            self._recently_force_closed[symbol] = datetime.now(timezone.utc).timestamp()
+            self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
 
         except Exception as e:
             err_str = str(e)
@@ -495,12 +515,12 @@ class ExitManager:
                 exchange_closed = True
                 fill_price = Decimal("0")
                 # Track force-close timestamp even for "already closed" (prevents phantom re-sync)
-                self._recently_force_closed[symbol] = datetime.now(timezone.utc).timestamp()
+                self._recently_force_closed[symbol] = datetime.now(UTC).timestamp()
                 self._log.warning(f"APM: {symbol} already closed on exchange (handled in phase 1)")
             else:
                 self._log.exception(f"APM: CRITICAL force close failed for {symbol}")
                 # Set 5-min retry cooldown to prevent 2s spam-loop (same fail every cycle)
-                pos["force_close_retry_at"] = datetime.now(timezone.utc).timestamp() + 300
+                pos["force_close_retry_at"] = datetime.now(UTC).timestamp() + 300
                 try:
                     from app.core.position_store import _normalize_side
                     side_key = _normalize_side(side)
@@ -520,7 +540,7 @@ class ExitManager:
                 if fill_price > 0:
                     pos["exit_price"] = str(fill_price)
                     pos["exit_reason"] = reason
-                    pos["closed_at"] = datetime.now(timezone.utc).isoformat()
+                    pos["closed_at"] = datetime.now(UTC).isoformat()
                     try:
                         from app.core.position_store import _normalize_side
                         side_key = _normalize_side(side)
@@ -558,8 +578,8 @@ class ExitManager:
                     try:
                         et = datetime.fromisoformat(entry_time_str)
                         if et.tzinfo is None:
-                            et = et.replace(tzinfo=timezone.utc)
-                        hold_min = int((datetime.now(timezone.utc) - et).total_seconds() / 60)
+                            et = et.replace(tzinfo=UTC)
+                        hold_min = int((datetime.now(UTC) - et).total_seconds() / 60)
                     except Exception:
                         pass
 
@@ -612,6 +632,24 @@ class ExitManager:
                         self._log.info(f"APM: trade_memory stored {symbol} pnl={pnl_pct:.2f}% reason={reason}")
                     except Exception as e:
                         self._log.warning(f"APM: trade_memory store failed for {symbol}: {e}")
+
+                # Record trade exit in Postgres trade_store
+                if self._trade_store and fill_price > 0 and entry_price > 0:
+                    try:
+                        peak_r_dec = Decimal(str(r_mult)) if r_mult is not None else None
+                        await self._trade_store.close_trade(
+                            symbol=symbol,
+                            exit_price=fill_price,
+                            pnl=pnl,
+                            exit_reason=reason,
+                            regime=pos.get("entry_regime") or pos.get("regime"),
+                            peak_r_multiple=peak_r_dec,
+                        )
+                        self._log.info(
+                            f"APM: trade_store recorded exit for {symbol} pnl=${pnl:+,.2f} reason={reason}"
+                        )
+                    except Exception as e:
+                        self._log.warning(f"APM: trade_store close_trade failed for {symbol}: {e}")
 
             except Exception as e:
                 self._log.error(f"APM: post-close cleanup failed for {symbol}: {e}")

@@ -16,7 +16,7 @@ import contextlib
 import json
 import math
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -28,11 +28,17 @@ REDIS_UNIVERSE_KEY = "system:universe:symbols"
 REDIS_SCANNER_STATUS_KEY = "system:universe:scanner:status"
 
 DEFAULT_TOP_N = 40
-DEFAULT_MIN_VOLUME_USD = 500_000.0
+DEFAULT_MIN_VOLUME_USD = 10_000_000.0  # $10M minimum 24h volume (eliminates illiquid micro-caps)
 DEFAULT_REFRESH_INTERVAL_S = 10 * 60  # 10 minutes
 ATR_PERIOD = 14
 ATR_CANDLE_LIMIT = 50
 ATR_CAP_CANDIDATES = 150  # max symbols to fetch OHLCV for
+
+TOXIC_TICKERS: set[str] = {
+    "PORTAL/USDT", "DOLO/USDT", "BEAT/USDT", "PRL/USDT", "OPN/USDT", "FHE/USDT",
+    "CAP/USDT", "HEMI/USDT", "BANK/USDT", "ZEST/USDT", "ACE/USDT", "M/USDT", "1000TAG/USDT",
+    "PIEVERSE/USDT", "PTB/USDT", "PEOPLE/USDT", "UB/USDT", "USELESS/USDT", "VVV/USDT"
+}
 
 
 def compute_atr(
@@ -161,6 +167,15 @@ class DynamicUniverseScanner:
             if vol_usd < self._min_vol:
                 continue
             base = symbol.split(":")[0]
+            if base in TOXIC_TICKERS or f"{base}/USDT" in TOXIC_TICKERS:
+                continue
+
+            # Spread filter: reject wide spread tickers (>0.15% spread)
+            bid = float(ticker.get("bid") or 0)
+            ask = float(ticker.get("ask") or 0)
+            if bid > 0 and ask > 0 and ((ask - bid) / bid) > 0.0015:
+                continue
+
             percentage = float(ticker.get("percentage") or 0)
             candidates.append(
                 {
@@ -274,10 +289,10 @@ class DynamicUniverseScanner:
             "symbols": self.symbols,
             "scores": self.scores,
             "categories": getattr(self, "categories", {}),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(UTC).isoformat(),
         }
         status_data = {
-            "last_refresh": datetime.now(timezone.utc).isoformat(),
+            "last_refresh": datetime.now(UTC).isoformat(),
             "symbol_count": len(self.symbols),
             "top_symbol": self.symbols[0] if self.symbols else "",
         }

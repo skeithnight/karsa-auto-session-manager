@@ -158,11 +158,13 @@ class TestClassifyWithConviction:
         assert abs(conv_25 - 0.0) < 0.01
 
         # ADX=32.5 → conviction=0.5
+        rc._adx_history.clear()
         features = _make_features(adx_14=32.5, hurst=0.5, sma_20=95.0)
         _, conv_32 = rc.classify_with_conviction(features, snapshot)
         assert abs(conv_32 - 0.5) < 0.05
 
         # ADX=40 → conviction=1.0
+        rc._adx_history.clear()
         features = _make_features(adx_14=40.0, hurst=0.5, sma_20=95.0)
         _, conv_40 = rc.classify_with_conviction(features, snapshot)
         assert abs(conv_40 - 1.0) < 0.01

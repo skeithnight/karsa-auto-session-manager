@@ -53,9 +53,9 @@ class Settings(BaseSettings):
 
     # ── Portfolio Risk Limits ──────────────────────────────────
     risk_per_trade_pct: str = "0.10"  # 10% default risk per trade (e.g. 0.10, 0.30, 0.50, 0.70, 1.00)
-    max_gross_exposure_pct: str = "0.50"
-    max_net_exposure_pct: str = "0.30"
-    max_single_position_pct: str = "0.40"
+    max_gross_exposure_pct: str = "1.50"
+    max_net_exposure_pct: str = "1.20"
+    max_single_position_pct: str = "0.60"
 
     # ── PostgreSQL ─────────────────────────────────────────────
     postgres_url: str = "postgresql+asyncpg://karsa:karsa@db:5432/karsa"

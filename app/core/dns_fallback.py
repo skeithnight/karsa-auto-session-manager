@@ -141,6 +141,13 @@ def _fallback_getaddrinfo(
     """Try system resolver, fall back to DoH on failure or ISP poisoning."""
     global _in_fallback  # noqa: PLW0603
 
+    # Handle bytes / bytearray hostname passed by anyio / httpcore
+    if isinstance(host, (bytes, bytearray)):
+        try:
+            host = host.decode("utf-8", errors="ignore")
+        except Exception:
+            return _orig_getaddrinfo(host, port, family, type, proto, flags)
+
     # Skip fallback for internal/local hostnames and when already in fallback
     if (
         _in_fallback
@@ -152,7 +159,30 @@ def _fallback_getaddrinfo(
     ):
         return _orig_getaddrinfo(host, port, family, type, proto, flags)
 
-    # 1. Try system resolver first
+    # 1. Fast Path: Static host mapping (instant zero-latency resolution for critical APIs)
+    if host in _STATIC_HOST_MAP:
+        ips = _STATIC_HOST_MAP[host]
+        port_num = _parse_port(port)
+        sock_type = type if type != 0 else socket.SOCK_STREAM
+        proto_num = proto if proto != 0 else (socket.IPPROTO_TCP if sock_type == socket.SOCK_STREAM else socket.IPPROTO_UDP)
+        results = []
+        for ip in ips:
+            af = socket.AF_INET6 if ":" in ip else socket.AF_INET
+            if family != 0 and family != af:
+                continue
+            sockaddr = (ip, port_num, 0, 0) if af == socket.AF_INET6 else (ip, port_num)
+            results.append((af, sock_type, proto_num, "", sockaddr))
+
+        if not results:
+            for ip in ips:
+                af = socket.AF_INET6 if ":" in ip else socket.AF_INET
+                sockaddr = (ip, port_num, 0, 0) if af == socket.AF_INET6 else (ip, port_num)
+                results.append((af, sock_type, proto_num, "", sockaddr))
+
+        if results:
+            return results
+
+    # 2. Try system resolver
     try:
         res = _orig_getaddrinfo(host, port, family, type, proto, flags)
         # Verify the returned IP is not an ISP block page IP
@@ -167,7 +197,7 @@ def _fallback_getaddrinfo(
     except (socket.gaierror, Exception):
         pass  # DNS resolution failed, try DoH fallback
 
-    # 2. Fallback to DoH (Google & Cloudflare direct IPs)
+    # 3. Fallback to DoH (Google & Cloudflare direct IPs)
     try:
         _in_fallback = True
         ips = _doh_resolve(host)
@@ -190,6 +220,15 @@ def _fallback_getaddrinfo(
                 continue
             sockaddr = (ip, port_num, 0, 0) if af == socket.AF_INET6 else (ip, port_num)
             results.append((af, sock_type, proto_num, "", sockaddr))
+
+        # If family filter yielded nothing (e.g. AF_INET6 requested but only IPv4 IPs available),
+        # return available IPv4 endpoints so async transports (anyio/httpx) don't crash
+        if not results:
+            for ip in ips:
+                af = socket.AF_INET6 if ":" in ip else socket.AF_INET
+                sockaddr = (ip, port_num, 0, 0) if af == socket.AF_INET6 else (ip, port_num)
+                results.append((af, sock_type, proto_num, "", sockaddr))
+
         if results:
             return results
 

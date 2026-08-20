@@ -25,8 +25,8 @@ class TestRiskGate:
         assert self.gate.check_liquidity(Decimal("500000")) is False
 
     def test_spread_pass(self):
-        # 0.3% spread
-        assert self.gate.check_spread_health(Decimal("64000"), Decimal("64192")) is True
+        # 0.1% spread
+        assert self.gate.check_spread_health(Decimal("64000"), Decimal("64064")) is True
 
     def test_spread_fail(self):
         # 1% spread
@@ -43,7 +43,7 @@ class TestRiskGate:
         assert self.gate.check_circuit_breaker() is False
 
     def test_evaluate_all_pass(self):
-        result = self.gate.evaluate(Decimal("2000000"), Decimal("64000"), Decimal("64192"))
+        result = self.gate.evaluate(Decimal("2000000"), Decimal("64000"), Decimal("64064"))
         assert result["passed"] is True
         assert result["failed_gate"] is None
 

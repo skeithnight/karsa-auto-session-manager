@@ -97,36 +97,45 @@ class ShadowAPM:
             await self._close_shadow_position(pos, live_price, f"time_exit_{held_mins:.0f}min")
             return True
 
-        is_hyper = str(pos.get("regime", "")).startswith("HYPER")
-        quick_profit_mins = 3 if is_hyper else 5
-        quick_profit_r = Decimal("1.0") if is_hyper else Decimal("2.0")
-        stag_mins = 15 if is_hyper else 25  # Extended to 15m/25m minimum to allow noise resolution
-        stag_r = Decimal("0.5") if is_hyper else Decimal("0.2")
+        # --- ASYMMETRIC TIME EXITS ---
+        # State-dependent time limits based on unrealized PnL.
+        # Losers get cut at 45m. Stagnant/flat get 75m to allow 1H candle development.
+        # Winners are allowed to run (handled by trailing stop / TP).
+        symbol = pos.get("symbol", "")
 
-        # Quick Profit Exit
-        if held_mins <= quick_profit_mins and r_mult >= quick_profit_r:
-            symbol = pos.get("symbol", "")
-            self._log.warning(f"ShadowAPM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})")
-            await self._close_shadow_position(pos, live_price, f"quick_profit_exit_R{r_mult:.1f}")
-            return True
-
-        # Stagnation Exit
-        if held_mins >= stag_mins and r_mult < stag_r:
-            symbol = pos.get("symbol", "")
-            self._log.warning(
-                f"🛡️ [STAGE 6: ACTIVE POSITION MANAGER] STAGNATION CUT {symbol} — Held: {held_mins:.0f}m >= {stag_mins}m cutoff (R={r_mult:.2f} < {stag_r}R)"
-            )
-            await self._close_shadow_position(pos, live_price, f"stagnation_exit_{held_mins:.0f}min")
-            return True
-
-        # Underwater Stale Exit (25 mins)
-        if held_mins >= 25:
-            is_underwater = (side == "LONG" and live_price <= entry_price) or (side == "SHORT" and live_price >= entry_price)
-            if is_underwater:
-                symbol = pos.get("symbol", "")
-                self._log.warning(f"ShadowAPM: stale underwater exit {symbol} after {held_mins:.0f}min")
-                await self._close_shadow_position(pos, live_price, f"stale_exit_{held_mins:.0f}min")
+        if r_mult < Decimal("-0.35"):
+            # Adverse / losing break: allow 45 minutes before time exit
+            losing_max_mins = 45
+            if held_mins >= losing_max_mins:
+                self._log.warning(
+                    f"ShadowAPM: ASYMMETRIC LOSING EXIT {symbol} {side} -- "
+                    f"held {held_mins:.0f}min (>{losing_max_mins}min), R={r_mult:.2f}"
+                )
+                await self._close_shadow_position(pos, live_price, f"asymmetric_losing_exit_{held_mins:.0f}min")
                 return True
+
+        elif r_mult <= Decimal("0.10"):
+            # Stagnant / flat (-0.35R <= R <= +0.10R): allow 75 minutes for 1H candle to develop
+            stagnant_max_mins = 75
+            if held_mins >= stagnant_max_mins:
+                self._log.warning(
+                    f"ShadowAPM: ASYMMETRIC STAGNANT EXIT {symbol} {side} -- "
+                    f"held {held_mins:.0f}min (>{stagnant_max_mins}min), R={r_mult:.2f}"
+                )
+                await self._close_shadow_position(pos, live_price, f"asymmetric_stagnant_exit_{held_mins:.0f}min")
+                return True
+
+        else:
+            # Winning: Quick profit exit for extreme spikes (safety net)
+            quick_profit_mins = 3 if is_hyper else 5
+            quick_profit_r = Decimal("1.0") if is_hyper else Decimal("3.0")
+            if held_mins <= quick_profit_mins and r_mult >= quick_profit_r:
+                self._log.warning(
+                    f"ShadowAPM: QUICK PROFIT exit {symbol} after {held_mins:.0f}min (R={r_mult:.2f})"
+                )
+                await self._close_shadow_position(pos, live_price, f"quick_profit_exit_R{r_mult:.1f}")
+                return True
+
         return False
 
     async def _manage_shadow_position(self, pos: dict) -> None:

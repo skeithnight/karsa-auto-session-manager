@@ -1019,7 +1019,6 @@ async def main() -> None:
         for wt in worker_tasks:
             wt.cancel()
         ingestor_task.cancel()
-        universe_task.cancel()
         consumer_task.cancel()
         apm_task.cancel()
         orphan_task.cancel()
@@ -1036,7 +1035,9 @@ async def main() -> None:
         with contextlib.suppress(asyncio.CancelledError):
             await ingestor_task
         with contextlib.suppress(asyncio.CancelledError):
-            await universe_task
+            await rotator_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await rotator_sync_task
         with contextlib.suppress(asyncio.CancelledError):
             await apm_task
         with contextlib.suppress(asyncio.CancelledError):

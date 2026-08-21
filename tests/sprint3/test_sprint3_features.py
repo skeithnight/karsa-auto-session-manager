@@ -232,17 +232,17 @@ class TestKellyVolatilityTargeting:
 
     def test_volatility_targeting_low_vol(self, kelly):
         """Low forecasted vol increases Kelly by 1.2x."""
-        base = Decimal("0.010")
+        base = Decimal("0.007")
         result = kelly.apply_volatility_targeting(
             base_risk_pct=base,
             forecasted_vol=0.30,
             historical_vol=0.50,
         )
-        assert result == Decimal("0.0120")
+        assert result == Decimal("0.0084")
 
     def test_volatility_targeting_normal_vol(self, kelly):
         """Normal vol ratio leaves Kelly unchanged."""
-        base = Decimal("0.010")
+        base = Decimal("0.007")
         result = kelly.apply_volatility_targeting(
             base_risk_pct=base,
             forecasted_vol=0.60,
@@ -252,7 +252,7 @@ class TestKellyVolatilityTargeting:
 
     def test_volatility_targeting_no_forecast(self, kelly):
         """No forecast data → unchanged (fail-closed)."""
-        base = Decimal("0.010")
+        base = Decimal("0.007")
         result = kelly.apply_volatility_targeting(
             base_risk_pct=base,
             forecasted_vol=None,
@@ -262,23 +262,23 @@ class TestKellyVolatilityTargeting:
 
     def test_volatility_targeting_clamps_min(self, kelly):
         """Result is clamped to MIN_RISK_PCT floor."""
-        base = Decimal("0.006")
+        base = Decimal("0.004")
         result = kelly.apply_volatility_targeting(
             base_risk_pct=base,
             forecasted_vol=0.90,
-            historical_vol=0.50,  # 0.5x → 0.003, but floor is 0.005
+            historical_vol=0.50,  # 0.5x → 0.002, but floor is 0.003
         )
-        assert result >= Decimal("0.005")
+        assert result >= Decimal("0.003")
 
     def test_volatility_targeting_clamps_max(self, kelly):
         """Result is clamped to MAX_RISK_PCT ceiling."""
-        base = Decimal("0.018")
+        base = Decimal("0.009")
         result = kelly.apply_volatility_targeting(
             base_risk_pct=base,
             forecasted_vol=0.30,
-            historical_vol=0.50,  # 1.2x → 0.0216, but cap is 0.020
+            historical_vol=0.50,  # 1.2x → 0.0108, but cap is 0.010
         )
-        assert result <= Decimal("0.020")
+        assert result <= Decimal("0.010")
 
     def test_volatility_targeting_exception(self, kelly):
         """Exception during targeting returns base unchanged."""

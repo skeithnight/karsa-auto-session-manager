@@ -19,8 +19,8 @@ logger = logging.getLogger(__name__)
 
 KELLY_FRACTION = Decimal("0.25")  # 25% of full Kelly
 MIN_TRADES = 15  # Minimum sample size
-MIN_RISK_PCT = Decimal("0.005")  # 0.5% floor
-MAX_RISK_PCT = Decimal("0.020")  # 2.0% ceiling
+MIN_RISK_PCT = Decimal("0.003")  # 0.3% floor
+MAX_RISK_PCT = Decimal("0.010")  # 1.0% ceiling
 
 # Sprint 1: Drawdown-Adaptive thresholds and multipliers
 DD_SEVERE_THRESHOLD = Decimal("0.10")   # >10% drawdown
@@ -75,16 +75,16 @@ class KellySizer:
             fallback_score: Strategy score for tiered fallback if sample size is small.
 
         Returns:
-            Decimal risk percentage (e.g., Decimal("0.012") for 1.2%).
+            Decimal risk percentage (e.g., Decimal("0.007") for 0.7%).
         """
         total = wins + losses
         if total < MIN_TRADES or avg_loss_usd <= 0 or avg_win_usd <= 0:
             # Fallback to confidence-tiered sizing
             if fallback_score >= 90:
-                return Decimal("0.015")
-            if fallback_score >= 80:
                 return Decimal("0.010")
-            return Decimal("0.005")
+            if fallback_score >= 80:
+                return Decimal("0.007")
+            return Decimal("0.003")
 
         win_rate = Decimal(str(wins / total))
         loss_rate = Decimal("1.0") - win_rate

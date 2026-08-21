@@ -85,13 +85,13 @@ class RiskChecksMixin:
     # ------------------------------------------------------------------
 
     async def _check_max_active_positions(self, signal: object) -> CheckResult:
-        """Hard constraint: Max 5 concurrent open positions across portfolio."""
+        """Hard constraint: Max 3 concurrent open positions across portfolio."""
         try:
             positions = await self._position_store.list_all()  # type: ignore[attr-defined]
-            if len(positions) >= 5:
+            if len(positions) >= 3:
                 return CheckResult(
                     passed=False,
-                    reason=f"Maximum portfolio slots full ({len(positions)}/5 active positions)",
+                    reason=f"Maximum portfolio slots full ({len(positions)}/3 active positions)",
                 )
             return CheckResult(passed=True)
         except Exception:

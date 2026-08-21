@@ -235,7 +235,7 @@ class DecisionEngine:
         from app.core.config import get_settings
 
         _s = get_settings()
-        return Decimal(str(getattr(_s, "risk_per_trade_pct", "0.10")))
+        return Decimal(str(getattr(_s, "risk_per_trade_pct", "0.02")))
 
     async def evaluate(
         self,
@@ -897,7 +897,7 @@ class DecisionEngine:
                 if self._crypto_analyst is not None and self._trade_store is not None:
                     import asyncio
 
-                    async def _shadow_score_and_record():
+                    async def _shadow_score_and_record(direction=direction, score=score):
                         try:
                             spread_pct = float(features.spread) if getattr(features, 'spread', None) is not None else 0.0
                             funding_rate = float(features.funding_rate) if getattr(features, 'funding_rate', None) is not None else 0.0
@@ -1378,7 +1378,7 @@ class DecisionEngine:
                             multiplier = Decimal("1.0")
 
                         scaled_risk_pct = (scaled_risk_pct * multiplier).quantize(Decimal("0.0001"))
-                        scaled_risk_pct = max(Decimal("0.005"), min(Decimal("0.020"), scaled_risk_pct))
+                        scaled_risk_pct = max(Decimal("0.003"), min(Decimal("0.010"), scaled_risk_pct))
             except Exception as e:
                 logger.debug(f"DD-ADAPTIVE: failed for {symbol}: {e}")
 
@@ -1483,18 +1483,20 @@ class DecisionEngine:
                 * Decimal(str(session_mult))
                 / risk_distance
             )
-            # Rational minimum position floor ($45 USDT) for small accounts so fee drag does not dominate
-            min_notional_floor = min(Decimal("45.0"), self._wallet_balance * Decimal("0.55"))
-            if entry_price > 0:
-                min_amount = min_notional_floor / entry_price
-                amount = max(amount, min_amount)
-
             # Cap notional to max_single_position_pct of equity (PRM single position limit)
             from app.core.config import get_settings
 
             _cfg = get_settings()
-            max_single_pct = Decimal(str(getattr(_cfg, "max_single_position_pct", "0.60")))
+            max_single_pct = Decimal(str(getattr(_cfg, "max_single_position_pct", "0.20")))
             max_notional = self._wallet_balance * max_single_pct
+
+            # Dynamic minimum: 8% of wallet (was hardcoded $45 — too big for small accounts)
+            # On $100: min = $8, ensures fee drag < 3% of trade while keeping within max single limit
+            min_notional_floor = min(max_notional, max(Decimal("5.0"), self._wallet_balance * Decimal("0.08")))
+            if entry_price > 0:
+                min_amount = min_notional_floor / entry_price
+                amount = max(amount, min_amount)
+
             if entry_price > 0:
                 max_amount = max_notional / entry_price
                 amount = min(amount, max_amount)

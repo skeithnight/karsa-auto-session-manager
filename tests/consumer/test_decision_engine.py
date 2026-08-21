@@ -17,12 +17,21 @@ from app.consumer.decision_engine import DecisionEngine, TradeSignal
 
 
 def _make_candles(n: int = 100, start: float = 1000.0) -> list[list]:
-    """Generate n candles starting at a given price, uptrend."""
-    return [
-        [1700000000000 + i * 3600000, start + i * 0.5, start + i * 0.5 + 2.0,
-         start + i * 0.5 - 1.0, start + i * 0.5 + 1.0, 1000.0 + i]
-        for i in range(n)
-    ]
+    """Generate n candles starting at a given price, realistic oscillation."""
+    candles = []
+    price = start
+    for i in range(n):
+        delta = 0.5 if i % 2 == 0 else -0.3
+        price += delta
+        candles.append([
+            1700000000000 + i * 3600000,
+            price - 0.2,
+            price + 1.0,
+            price - 1.0,
+            price,
+            1000.0 + i
+        ])
+    return candles
 
 
 def _build_engine(
@@ -75,7 +84,7 @@ def _build_engine(
     # Override the router that __init__ created with our mock
     engine._router = router
     from unittest.mock import AsyncMock
-    engine._compute_ev_score = AsyncMock(return_value=(0.0, 0.55))
+    engine._compute_ev_score = AsyncMock(return_value=(0.70, 0.55))
     return engine
 
 
@@ -277,5 +286,5 @@ class TestDecisionEngineRiskPercentages:
         engine = _build_engine()
         engine._redis = None
         risk_pct = await engine._get_risk_pct()
-        assert risk_pct == Decimal("0.10")
+        assert risk_pct == Decimal("0.02")
 

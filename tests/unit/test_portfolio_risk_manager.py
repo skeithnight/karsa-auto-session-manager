@@ -24,11 +24,17 @@ def _make_prm(
     positions: list[dict] | None = None,
     sector_map: dict[str, str] | None = None,
 ) -> PortfolioRiskManager:
+    import json
     redis = AsyncMock()
-    redis.get = AsyncMock(return_value=None)
+    async def _mock_redis_get(k):
+        if k == "system:config:market_state":
+            return json.dumps({"regime": "RANGE"})
+        return None
+    redis.get.side_effect = _mock_redis_get
     position_store = AsyncMock()
     position_store.list_all.return_value = positions or []
     trade_store = AsyncMock()
+    trade_store.get_recent_trades = AsyncMock(return_value=[])
     sector_mapping = AsyncMock()
     if sector_map:
         sector_mapping.get_sector.side_effect = lambda s: sector_map.get(s, "unknown")
@@ -36,6 +42,7 @@ def _make_prm(
         sector_mapping.get_sector.return_value = "L1"
     bybit_client = AsyncMock()
     bybit_client.get_wallet_balance.return_value = {
+        "balance": "10000",
         "equity": "10000",
         "available": "10000",
     }
@@ -105,7 +112,7 @@ class TestCheckStructure:
         result = await prm.check(_make_signal())
         assert result.approved is True
         assert result.checks is not None
-        assert len(result.checks) == 6
+        assert len(result.checks) == 11
 
     @pytest.mark.asyncio
     async def test_signal_no_symbol_blocked(self) -> None:

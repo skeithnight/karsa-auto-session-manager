@@ -116,7 +116,7 @@ _PROFILES: dict[MarketRegime, RiskProfile] = {
         max_hold_time_mins=RANGE_MAX_HOLD_MINS,
         use_post_only=True,
         trail_atr_mult=Decimal("2.0"),
-        sl_atr_buffer=Decimal("1.8"),  # 1.8x ATR buffer protects against noise wicks while Kelly sizes risk
+        sl_atr_buffer=Decimal("1.2"),  # 1.2x ATR buffer for tighter stop on small accounts
     ),
     MarketRegime.CHOP: RiskProfile(
         regime="CHOP",
